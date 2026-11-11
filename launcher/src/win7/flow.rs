@@ -126,14 +126,22 @@ pub fn run(mut settings: Settings, emit: &dyn Fn(Event)) -> Result<(), String> {
     let resources = resources(&settings.minecraft, emit)?;
     backend::check_cancelled()?;
     emit(Event::Status(tr("Getting Horizon ready…").into()));
-    let program = client(&mut settings, emit)?;
+    let (program, managed) = client(&mut settings, emit)?;
     settings.save()?;
     backend::check_cancelled()?;
     let home = backend::game_home();
     fs::create_dir_all(&home).map_err(|e| e.to_string())?;
     let game_log = backend::data_dir().join("win7-game.log");
     let output = fs::File::create(&game_log).map_err(|e| e.to_string())?;
-    let cmd = offline_command(&program, &resources, &home, &settings.nickname);
+    let mut cmd = offline_command(&program, &resources, &home, &settings.nickname);
+    // Only installed releases need the core's stable update/runtime slot. Local clients
+    // run in place: keep their chosen filename and avoid copying an entire user folder.
+    #[cfg(windows)]
+    if managed {
+        crate::windows_runtime::mark(&mut cmd, program.parent().unwrap());
+    }
+    #[cfg(not(windows))]
+    let _ = (managed, &mut cmd);
     let (mut cmd, _runtime) = backend::prepare_command(cmd)?;
     cmd.stdin(Stdio::null())
         .stderr(output.try_clone().map_err(|e| e.to_string())?)
@@ -184,24 +192,20 @@ pub fn offline_command(program: &Path, resources: &Path, home: &Path, nickname: 
     ]) {
         cmd.env_remove(key);
     }
-    #[cfg(windows)]
-    if let Some(folder) = program.parent() {
-        crate::windows_runtime::mark(&mut cmd, folder);
-    }
     crate::process::hide_console(&mut cmd);
     cmd
 }
 
-fn client(settings: &mut Settings, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
+fn client(settings: &mut Settings, emit: &dyn Fn(Event)) -> Result<(PathBuf, bool), String> {
     if !settings.client.as_os_str().is_empty() {
-        return Ok(settings.client.clone());
+        return Ok((settings.client.clone(), false));
     }
     if let Some(bundled) = std::env::current_exe()
         .ok()
         .and_then(|e| e.parent().map(|p| p.join("horizon-client.exe")))
         .filter(|p| p.is_file())
     {
-        return Ok(bundled);
+        return Ok((bundled, false));
     }
     let installed = backend::installed();
     if !installed.contains(&settings.installed) {
@@ -242,7 +246,7 @@ fn client(settings: &mut Settings, emit: &dyn Fn(Event)) -> Result<PathBuf, Stri
     if !exe.is_file() {
         return Err(tr("The installed Horizon client executable is missing.").into());
     }
-    Ok(exe)
+    Ok((exe, true))
 }
 
 fn support_root() -> Result<PathBuf, String> {
@@ -399,11 +403,12 @@ mod tests {
     #[test]
     fn offline_launch_keeps_paths_and_name_separate_and_removes_sessions() {
         let cmd = offline_command(
-            Path::new("C:/My Game/horizon-client.exe"),
+            Path::new("C:/My Game/custom-client.exe"),
             Path::new("C:/Данные/resources"),
             Path::new("C:/My Game/home"),
             "Alex_7",
         );
+        assert_eq!(cmd.get_program(), "C:/My Game/custom-client.exe");
         let args: Vec<_> = cmd.get_args().map(|s| s.to_str().unwrap()).collect();
         assert_eq!(
             args,
