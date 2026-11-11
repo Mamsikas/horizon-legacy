@@ -464,6 +464,11 @@ pub fn installed() -> Option<Toolchain> {
 
 /// Downloads, checks and unpacks the pinned toolchain (once); `progress` gets the fraction done.
 pub fn install(progress: impl Fn(f32)) -> Result<Toolchain, String> {
+    if backend::LEGACY_WINDOWS {
+        if let Some(error) = backend::native_mod_architecture_error() {
+            return Err(error);
+        }
+    }
     if let Some(done) = installed() {
         return Ok(done);
     }

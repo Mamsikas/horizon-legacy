@@ -150,6 +150,15 @@ pub fn mojang_runtimes(dir: &Path) -> Vec<Runtime> {
 pub fn installed() -> Vec<Runtime> {
     let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
     let mut homes: Vec<PathBuf> = var("JAVA_HOME").map(PathBuf::from).into_iter().collect();
+    if backend::LEGACY_WINDOWS {
+        homes.extend(
+            fs::read_dir(backend::data_dir().join("java/win7-x64"))
+                .into_iter()
+                .flatten()
+                .flatten()
+                .map(|entry| entry.path()),
+        );
+    }
     if let Some(path) = var("PATH") {
         homes.extend(
             std::env::split_paths(&path)
@@ -237,6 +246,14 @@ pub fn pick(
 /// Downloads Mojang's runtime for `need` into [`runtimes_dir`] (what is already there and whole
 /// is kept).
 pub fn install(need: &Need, log: &dyn Fn(String)) -> Result<Runtime, String> {
+    #[cfg(feature = "win7")]
+    if backend::LEGACY_WINDOWS && need.major == 25 {
+        let home = crate::legacy_java::prepare(25, false, log)?;
+        return runtime(home, Source::Installed).ok_or_else(|| {
+            crate::i18n::tr("The managed Java archive does not contain the expected runtime.")
+                .to_owned()
+        });
+    }
     // Mojang builds its Linux Java for glibc: it cannot start without glibc's loader.
     if cfg!(all(target_os = "linux", target_arch = "x86_64"))
         && !Path::new(backend::GLIBC_LOADER).exists()
