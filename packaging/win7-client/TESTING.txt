@@ -14,7 +14,7 @@ No Java, Vulkan, OpenGL, D3D11/D3D12 or shader compiler is used by the DX9 rende
    horizon-client.exe --resources "C:\path\to\26.3" --game-dir "C:\path\to\test-game"
    Test in a COPY of a save. Render distance, FPS, resolution and vanilla graphics
    options stay under your control; no low preset is installed.
-3. Open a world, move around, open inventory/chat, type text, save/reopen the world,
+3. Open a world, move around, open inventory/chat, type/copy/paste Unicode text, save/reopen the world,
    resize, Alt+Tab and toggle fullscreen. F2 saves a screenshot. Send the client log
    and crash report (if any), GPU driver version and the build-info.txt from this ZIP.
    The log includes adapter caps, HAL/vertex mode, memory budgets, frame CPU/Present,

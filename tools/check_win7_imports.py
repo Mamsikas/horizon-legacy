@@ -179,6 +179,53 @@ SAFE_IMPORTS = {
         acos asin atan cosh frexp ldexp sinh tan tanh
     """,
 }
+# Native client additions: desktop COM/property conversions (Vista or earlier),
+# raw input/IME (XP or earlier), Win7 touch/display configuration/window affinity,
+# Vista IOCP/cancellation/thread accounting, Win7 K32 memory accounting, and the
+# system MSVCRT. Each symbol is explicit; no API-set/DLL-family wildcard is allowed.
+# Minimum-client contracts: learn.microsoft.com/windows/win32/api/ (individual API
+# reference pages, especially RegisterTouchWindow, QueryDisplayConfig,
+# SetWindowDisplayAffinity, GetQueuedCompletionStatusEx and K32GetProcessMemoryInfo).
+CLIENT_IMPORTS = {'advapi32.dll': 'AdjustTokenPrivileges LookupPrivilegeValueA ImpersonateAnonymousToken '
+                 'RevertToSelf',
+ 'dwmapi.dll': 'DwmEnableBlurBehindWindow DwmSetWindowAttribute',
+ 'gdi32.dll': 'AddFontMemResourceEx CreateBitmap CreateRectRgn SetBitmapBits ChoosePixelFormat '
+              'CreateDIBitmap DescribePixelFormat GetDIBits GetPixelFormat SetPixelFormat '
+              'SwapBuffers',
+ 'imm32.dll': 'ImmAssociateContextEx ImmGetCompositionStringW ImmGetContext ImmReleaseContext '
+              'ImmSetCandidateWindow ImmSetCompositionWindow',
+ 'kernel32.dll': 'CreateSemaphoreA GetHandleInformation GetModuleHandleExA GetProcessAffinityMask '
+                 'GetThreadPriority SuspendThread GetCurrentProcessorNumber GetDiskFreeSpaceW '
+                 'GetQueuedCompletionStatusEx GlobalSize K32GetProcessMemoryInfo '
+                 'QueryThreadCycleTime SetFileCompletionNotificationModes',
+ 'msvcrt.dll': '_beginthreadex _endthreadex _hypot _setjmp _vscprintf _vsnprintf _wgetenv fputs '
+               'getenv log10 longjmp printf strerror _strdup',
+ 'ntdll.dll': 'NtCancelIoFileEx NtDeviceIoControlFile',
+ 'ole32.dll': 'PropVariantClear PropVariantCopy OleInitialize RegisterDragDrop RevokeDragDrop',
+ 'oleaut32.dll': 'VariantClear VariantCopy',
+ 'propsys.dll': 'PropVariantCompareEx PropVariantToBSTR PropVariantToBoolean PropVariantToDouble '
+                'PropVariantToInt16 PropVariantToInt32 PropVariantToInt64 PropVariantToUInt16 '
+                'PropVariantToUInt32 PropVariantToUInt64 PropVariantToVariant VariantToBoolean '
+                'VariantToDouble VariantToInt16 VariantToInt32 VariantToInt64 VariantToPropVariant '
+                'VariantToUInt16 VariantToUInt32 VariantToUInt64',
+ 'shell32.dll': 'ILCreateFromPathW ILFree SHOpenFolderAndSelectItems',
+ 'user32.dll': 'CloseTouchInputHandle GetAsyncKeyState GetKeyboardLayout GetKeyboardState '
+               'GetRawInputData GetRawInputDeviceInfoW GetTouchInputInfo MapVirtualKeyExW '
+               'RegisterRawInputDevices RegisterTouchWindow SendInput ToUnicode ToUnicodeEx '
+               'TrackMouseEvent ClipCursor CountClipboardFormats CreateIcon CreateIconIndirect '
+               'DestroyCursor EnableMenuItem EnumClipboardFormats EnumDisplayMonitors '
+               'GetClipCursor GetClipboardFormatNameW GetSystemMenu IsClipboardFormatAvailable '
+               'IsProcessDPIAware MonitorFromRect MsgWaitForMultipleObjectsEx '
+               'RegisterClipboardFormatW RegisterWindowMessageA SetMenuDefaultItem '
+               'SetWindowDisplayAffinity ShowCursor SystemParametersInfoA ChangeDisplaySettingsExW '
+               'CreateWindowExA DefWindowProcA DisplayConfigGetDeviceInfo EnumDisplaySettingsExW '
+               'GetClassInfoExA GetDisplayConfigBufferSizes GetWindowPlacement InvalidateRgn '
+               'QueryDisplayConfig RegisterClassExA SetCursorPos SetWindowPlacement'}
+for _dll, _names in CLIENT_IMPORTS.items():
+    SAFE_IMPORTS[_dll] = SAFE_IMPORTS.get(_dll, "") + " " + _names
+
+# Standard COM IErrorInfo, available since Windows 2000 (not WinRT error origination).
+SAFE_IMPORTS["ole32.dll"] += " GetErrorInfo SetErrorInfo"
 SAFE_IMPORTS = {dll: frozenset(names.split()) for dll, names in SAFE_IMPORTS.items()}
 FORBIDDEN_APIS = frozenset("""
     CreateDXGIFactory2 GetDpiForWindow GetDpiForMonitor GetSystemTimePreciseAsFileTime
@@ -339,10 +386,17 @@ class PE:
         return imports
 
 
-def audit(data, architecture="x64"):
+def audit(data, architecture="x64", d3d9=False):
     pe = PE(data)
     imports = pe.imports()
     problems = []
+    if d3d9:
+        names = {item["dll"] for item in imports}
+        if not any(item["dll"] == "d3d9.dll" and "Direct3DCreate9" in item["symbols"] for item in imports):
+            problems.append("DX9 artifact does not import Direct3DCreate9")
+        for dll in sorted(names & {"vulkan-1.dll", "opengl32.dll", "dxgi.dll", "d3d11.dll", "d3d12.dll",
+                                   "d3dcompiler_43.dll", "d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll"}):
+            problems.append(f"DX9 artifact imports a modern graphics/shader dependency: {dll}")
     if (pe.machine, pe.magic) != MACHINES[architecture]:
         problems.append(f"wrong architecture: machine {pe.machine:#x}, magic {pe.magic:#x}; expected {architecture}")
     if pe.os_version > (6, 1) or pe.subsystem_version > (6, 1):
@@ -370,12 +424,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("binaries", nargs="+")
     parser.add_argument("--architecture", choices=MACHINES, default="x64")
+    parser.add_argument("--d3d9", action="store_true", help="require Direct3D9 and reject other graphics/shader DLLs")
     parser.add_argument("--json", action="store_true", help="print machine-readable audit results")
     args = parser.parse_args()
     reports = []
     for binary in args.binaries:
         try:
-            report = audit(Path(binary).read_bytes(), args.architecture)
+            report = audit(Path(binary).read_bytes(), args.architecture, args.d3d9)
         except (OSError, PEError) as error:
             report = {"passed": False, "problems": [str(error)]}
         report["file"] = binary

@@ -15,6 +15,7 @@
     "horizon-assets": "engine",
     "horizon-client": "engine",
     "horizon-client-core": "engine",
+    "horizon-client-d3d9": "engine",
     "horizon-client-input": "engine",
     "horizon-client-lib": "engine",
     "horizon-client-render": "engine",

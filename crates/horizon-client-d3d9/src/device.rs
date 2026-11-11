@@ -231,9 +231,19 @@ impl Device {
         {
             return Err(format!("D3D9 HAL {name}: missing two texture stages, MODULATE, alpha test or alpha blend; caps={raw:?}").into());
         }
+        let backbuffer = [D3DFMT_X8R8G8B8, D3DFMT_A8R8G8B8]
+            .into_iter()
+            .find(|&format| {
+                // SAFETY: capability query with no user pointers. Keep readback at 32 bits,
+                // including when the desktop itself uses a 16-bit display format.
+                unsafe {
+                    d3d.CheckDeviceType(0, D3DDEVTYPE_HAL, mode.Format, format, BOOL(1))
+                        .is_ok()
+                }
+            })
+            .ok_or("D3D9 HAL: no windowed 32-bit backbuffer compatible with the desktop format")?;
         // SAFETY: read-only capability probes on the adapter's desktop format.
         unsafe {
-            d3d.CheckDeviceType(0, D3DDEVTYPE_HAL, mode.Format, mode.Format, BOOL(1))?;
             d3d.CheckDeviceFormat(
                 0,
                 D3DDEVTYPE_HAL,
@@ -262,7 +272,7 @@ impl Device {
                                 0,
                                 D3DDEVTYPE_HAL,
                                 mode.Format,
-                                mode.Format,
+                                backbuffer,
                                 depth,
                             )
                             .is_ok()
@@ -286,7 +296,7 @@ impl Device {
         let mut present = D3DPRESENT_PARAMETERS {
             BackBufferWidth: size.width.max(1),
             BackBufferHeight: size.height.max(1),
-            BackBufferFormat: mode.Format,
+            BackBufferFormat: backbuffer,
             BackBufferCount: 1,
             MultiSampleType: D3DMULTISAMPLE_NONE,
             SwapEffect: D3DSWAPEFFECT_DISCARD,
@@ -544,10 +554,16 @@ impl Device {
     pub fn finish(&mut self) -> Result<bool> {
         if self.scene {
             // SAFETY: closes the matching BeginScene, including after a drawing error.
-            unsafe {
-                self.inner.device.EndScene()?;
-            }
+            let ended = unsafe { self.inner.device.EndScene() };
             self.scene = false;
+            match ended {
+                Err(e) if e.code() == D3DERR_DEVICELOST || e.code() == D3DERR_DEVICENOTRESET => {
+                    self.lost = true;
+                    return Ok(false);
+                }
+                Err(e) => return Err(e.into()),
+                Ok(()) => {}
+            }
         }
         // SAFETY: null rectangles present the complete windowed swapchain.
         match unsafe {
@@ -555,7 +571,7 @@ impl Device {
                 .device
                 .Present(ptr::null(), ptr::null(), HWND::default(), ptr::null())
         } {
-            Err(e) if e.code() == D3DERR_DEVICELOST => {
+            Err(e) if e.code() == D3DERR_DEVICELOST || e.code() == D3DERR_DEVICENOTRESET => {
                 self.lost = true;
                 Ok(false)
             }
@@ -569,6 +585,9 @@ impl Device {
             let _ = unsafe { self.inner.device.EndScene() };
             self.scene = false;
         }
+    }
+    pub fn mark_lost(&mut self) {
+        self.lost = true;
     }
     pub fn lost(&self) -> bool {
         self.lost
@@ -1004,6 +1023,9 @@ impl Device {
                 .GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO)?;
             let mut desc = D3DSURFACE_DESC::default();
             source.GetDesc(&mut desc)?;
+            if desc.Format != D3DFMT_X8R8G8B8 && desc.Format != D3DFMT_A8R8G8B8 {
+                return Err("D3D9 screenshot requires a 32-bit backbuffer".into());
+            }
             let mut dest = None;
             self.inner.device.CreateOffscreenPlainSurface(
                 desc.Width,
@@ -1017,6 +1039,10 @@ impl Device {
             self.inner.device.GetRenderTargetData(&source, &dest)?;
             let mut locked = D3DLOCKED_RECT::default();
             dest.LockRect(&mut locked, ptr::null(), D3DLOCK_READONLY as u32)?;
+            if locked.pBits.is_null() || locked.Pitch < (desc.Width * 4) as i32 {
+                dest.UnlockRect()?;
+                return Err("D3D9 readback returned an invalid pointer/pitch".into());
+            }
             let mut rgba = vec![0u8; desc.Width as usize * desc.Height as usize * 4];
             for y in 0..desc.Height as usize {
                 let row = std::slice::from_raw_parts(
@@ -1052,4 +1078,11 @@ pub fn rgba_to_argb(rgba: u32) -> u32 {
 pub fn argb(rgba: [f32; 4]) -> u32 {
     let [r, g, b, a] = rgba.map(|v| (v.clamp(0.0, 1.0) * 255.0) as u32);
     a << 24 | r << 16 | g << 8 | b
+}
+
+/// A loss may occur after the initial cooperative-level check, during upload/draw.
+pub fn is_device_lost(error: &(dyn std::error::Error + 'static)) -> bool {
+    error
+        .downcast_ref::<windows::core::Error>()
+        .is_some_and(|e| e.code() == D3DERR_DEVICELOST || e.code() == D3DERR_DEVICENOTRESET)
 }

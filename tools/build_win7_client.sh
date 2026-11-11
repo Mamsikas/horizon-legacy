@@ -24,7 +24,7 @@ export AR_x86_64_win7_windows_gnu=x86_64-w64-mingw32-ar
 export WINDRES="$cross/usr/bin/x86_64-w64-mingw32-windres"
 unset CARGO_ENCODED_RUSTFLAGS
 # N455 supports SSE3 and SSSE3; never inherit the build host's SSE4/POPCNT/AVX.
-export RUSTFLAGS='-C target-cpu=x86-64 -C target-feature=+sse3,+ssse3,+crt-static -C panic=abort -C link-arg=-Wl,--major-subsystem-version,6 -C link-arg=-Wl,--minor-subsystem-version,1 -C link-arg=-static'
+export RUSTFLAGS='--cfg windows_slim_errors -C target-cpu=x86-64 -C target-feature=+sse3,+ssse3,+crt-static -C panic=abort -C link-arg=-Wl,--major-subsystem-version,6 -C link-arg=-Wl,--minor-subsystem-version,1 -C link-arg=-static'
 cd -- "$repo"
 # Older windows-targets build scripts do not recognize the win7 vendor. Supply their
 # checksum-verified import libraries without patching the registry or the modern build.
@@ -46,8 +46,8 @@ cargo "+$toolchain" rustc --locked --profile legacy -p horizon-client-d3d9 --exa
     --target "$target" -Z build-std=std,panic_abort -- "${link_args[@]}"
 binary="$CARGO_TARGET_DIR/$target/legacy/horizon-client.exe"
 smoke="$CARGO_TARGET_DIR/$target/legacy/examples/smoke.exe"
-python3 tools/check_win7_imports.py --json "$binary" > "$work/imports-client-win7-x64.json"
-python3 tools/check_win7_imports.py --json "$smoke" > "$work/imports-smoke-win7-x64.json"
+python3 tools/check_win7_imports.py --d3d9 --json "$binary" > "$work/imports-client-win7-x64.json"
+python3 tools/check_win7_imports.py --d3d9 --json "$smoke" > "$work/imports-smoke-win7-x64.json"
 out=${1:-"$work/artifacts"}
 mkdir -p "$out"
 out=$(cd -- "$out" && pwd)

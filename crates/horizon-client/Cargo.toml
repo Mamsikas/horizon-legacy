@@ -46,7 +46,7 @@ horizon-narrator = { path = "../horizon-narrator" }
 # Horizon mods: sandboxed WebAssembly components, off unless installed and turned on (docs/mods.md).
 # Their runtime is the `mods` feature.
 horizon-mods = { path = "../horizon-mods", default-features = false, features = ["index"] }
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "naga-ir"] }
 winit = "0.30.13"
 pollster = "0.4"
 bytemuck = { version = "1.24", features = ["derive"] }
@@ -96,7 +96,7 @@ open = { version = "5.4.5", features = ["shellexecute-on-windows"] }
 # DirectX 12, where Vulkan has no adapter or device, or by choice (`graphicsApi`, graphics.rs).
 # Shaders compile with FXC (d3dcompiler_47.dll, part of Windows), or on integrated GPUs with DXC
 # (dxcompiler.dll beside the game, gfx/dx12_compiler.rs).
-wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
+
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Splitscreen: a window filling a monitor goes over its menu bar (game/split/windows.rs
@@ -105,7 +105,7 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSApplication", "NSResponder", "NSWindow", "NSScreen"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+[target.'cfg(all(not(target_os = "macos"), not(target_vendor = "win7")))'.dependencies]
 # OpenGL (WGL on Windows, EGL on Linux), the last fallback, for GPUs with no Vulkan or
 # DirectX 12 driver (`graphicsApi`, graphics.rs).
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
@@ -179,3 +179,11 @@ horizon-client-render = { path = "../horizon-client-render", features = ["test-s
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
 # Every WGSL shader translated as wgpu's DirectX 12 backend does (gfx.rs tests).
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "msl-out", "spv-out"] }
+
+# Keep every ordinary platform's GPU features, but do not link their native APIs
+# into the dedicated Win7 ABI. The Win7 executable uses legacy-d3d9 instead.
+[target.'cfg(not(target_vendor = "win7"))'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["vulkan", "metal"] }
+
+[target.'cfg(all(windows, not(target_vendor = "win7")))'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }

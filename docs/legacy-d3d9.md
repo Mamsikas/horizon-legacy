@@ -71,6 +71,17 @@ available memory, with explicit environment overrides and checked allocations. A
 exhausted budget produces a diagnostic, never an automatic render-distance reduction.
 Managed residency numbers describe requested resources, not measured physical VRAM.
 
+The first PE inspection found modern GPU dependencies despite never creating a wgpu
+device. Cargo now omits Vulkan/Metal/DX12/GLES **only for the Win7 vendor target**;
+ordinary platform feature sets are unchanged. `horizon-hdr` has a Win7 no-Vulkan
+adapter and the build enables `windows_slim_errors`, avoiding optional WinRT rich
+error origination. A second finding was arboard's static Win8 `PathCchStripPrefix`
+import. The Win7 input layer selects a small Unicode clipboard shim in the isolated
+presentation crate; normal platforms still use arboard. Keyboard/mouse/IME mappings
+and event handling are unchanged. The PE audit requires Direct3DCreate9 and rejects
+other graphics/shader DLLs in both normal and delay imports; unknown API contracts
+remain errors, not accepted wildcards.
+
 ## Preview features
 
 | Feature | Legacy path |
@@ -110,9 +121,10 @@ build information. Select the client exe in the existing Win7 launcher's native-
 setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
 Resources and saves are never distributed in this archive.
 
-Evidence before physical tests: two atlas behavior tests; Win7-target checks of the
+Evidence before physical tests: two atlas behavior tests and eleven PE policy/parser tests; Win7-target checks of the
 legacy client with audio, the smoke example, and the ordinary client with its default
-features. The new packaging workflow builds the ZIP and audits static/delay imports,
+features (also checked on the standard `x86_64-pc-windows-gnu` ABI after the Win7
+dependency separation). The new packaging workflow builds the ZIP and audits static/delay imports,
 architecture and subsystem version. Compiler warnings inherited from the current
 nightly/native dependencies are separate from a successful check. Full parity harnesses
 and a resource/world/launcher gameplay run were not performed in this environment.

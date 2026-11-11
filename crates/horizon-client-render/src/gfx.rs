@@ -1950,7 +1950,7 @@ fn instance_descriptor(
     // FXC spends about 2.6 s on every start compiling the pipelines (DXC about
     // 1 s); what it compiled once is kept in the game folder and read back
     // after that (third_party/wgpu-hal/src/dx12/disk_cache.rs).
-    #[cfg(windows)]
+    #[cfg(all(windows, not(target_vendor = "win7")))]
     if dx12 {
         wgpu::hal::dx12::disk_cache::set_file(dx12_shader_cache(&crate::logging::game_home()));
     }

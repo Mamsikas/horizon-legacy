@@ -107,15 +107,26 @@ impl Renderer {
                 [f.color[0], f.color[1], f.color[2]]
             })
         };
-        if !self.device.begin(clear)? {
-            self.last_wait = started.elapsed();
-            self.last_encode = Duration::ZERO;
-            return Ok(false);
+        match self.device.begin(clear) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.last_wait = started.elapsed();
+                self.last_encode = Duration::ZERO;
+                return Ok(false);
+            }
+            Err(error) if dx::is_device_lost(error.as_ref()) => {
+                self.device.mark_lost();
+                return Ok(false);
+            }
+            Err(error) => return Err(error),
         }
-        let result = self.draw_frame(frame);
-        if let Err(e) = result {
+        if let Err(error) = self.draw_frame(frame) {
             self.device.cancel_frame();
-            return Err(e);
+            if dx::is_device_lost(error.as_ref()) {
+                self.device.mark_lost();
+                return Ok(false);
+            }
+            return Err(error);
         }
         self.last_encode = started.elapsed();
         let wait = Instant::now();

@@ -7,3 +7,6 @@ pub use device::*;
 
 mod atlas;
 pub use atlas::AtlasLayout;
+
+#[cfg(windows)]
+pub mod clipboard;

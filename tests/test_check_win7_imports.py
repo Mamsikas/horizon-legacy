@@ -59,6 +59,14 @@ def fixture(dll="kernel32.dll", symbol="GetLastError", *, x86=False, delayed=Fal
 
 
 class Win7Imports(unittest.TestCase):
+    def test_dx9_contract_requires_real_d3d9_and_rejects_other_graphics(self):
+        self.assertTrue(CHECK.audit(fixture("d3d9.dll", "Direct3DCreate9"), d3d9=True)["passed"])
+        self.assertFalse(CHECK.audit(fixture(), d3d9=True)["passed"])
+        for delayed in (False, True):
+            report = CHECK.audit(fixture("opengl32.dll", "wglCreateContext", delayed=delayed), d3d9=True)
+            self.assertIn("DX9 artifact imports a modern graphics/shader dependency: opengl32.dll", report["problems"])
+
+
     def test_reads_named_load_and_delay_imports(self):
         for delayed in (False, True):
             with self.subTest(delayed=delayed):

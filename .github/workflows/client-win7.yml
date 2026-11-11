@@ -29,13 +29,14 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libmpc3 libisl23
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ". -> ${{ runner.temp }}/win7-client/target"
+          workspaces: ". -> work/win7-client/target"
           shared-key: win7-d3d9-nov11
           cache-on-failure: true
       - name: Install pinned cross compiler
         run: tools/bootstrap_win7_cross.sh "$RUNNER_TEMP/win7-client/cross"
       - name: Build DX9 client and audit Win7 imports
         env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/work/win7-client/target
           WIN7_BUILD_ROOT: ${{ runner.temp }}/win7-client
           WIN7_CROSS_ROOT: ${{ runner.temp }}/win7-client/cross
           CARGO_HOME: /home/runner/.cargo

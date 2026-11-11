@@ -57,7 +57,7 @@ smallvec = { version = "1", features = ["const_new"] }
 symphonia = { version = "0.5", default-features = false, features = ["ogg", "vorbis"] }
 unicode-bidi = "0.3.18"
 ureq = { version = "2", default-features = false, features = ["tls"] }
-wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "vulkan", "metal", "wgsl", "naga-ir"] }
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "wgsl", "naga-ir"] }
 winit = "0.30.13"
 zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 
@@ -66,9 +66,9 @@ rustix = { version = "1", default-features = false, features = ["std", "time"] }
 
 [target.'cfg(windows)'.dependencies]
 horizon-client-d3d9 = { path = "../horizon-client-d3d9", optional = true }
-wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
-[target.'cfg(not(target_os = "macos"))'.dependencies]
+
+[target.'cfg(all(not(target_os = "macos"), not(target_vendor = "win7")))'.dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
@@ -90,3 +90,11 @@ workspace = true
 horizon-theme = { path = "../horizon-theme" }
 horizon-items = { path = "../horizon-items", features = ["test-support"] }
 naga = { version = "30.0.1", features = ["wgsl-in", "hlsl-out", "glsl-out", "msl-out", "spv-out"] }
+
+# Keep every ordinary platform's GPU features, but do not link their native APIs
+# into the dedicated Win7 ABI. The Win7 executable uses legacy-d3d9 instead.
+[target.'cfg(not(target_vendor = "win7"))'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["vulkan", "metal"] }
+
+[target.'cfg(all(windows, not(target_vendor = "win7")))'.dependencies]
+wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
