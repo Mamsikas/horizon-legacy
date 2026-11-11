@@ -1,272 +1,236 @@
-# Horizon Launcher для Windows 7 x64: состояние реализации
+# Horizon Launcher for Windows 7 x64: implementation status
 
-Это отчёт о проверяемой части ТЗ №1, а не заявление о завершённой поддержке Windows 7.
-Приоритет после уточнения задания — Windows 7 SP1 x64, Atom N455/GMA 3150 и 2 ГБ ОЗУ.
-Windows 7 x64 с Radeon HD 4570 также требует отдельного аппаратного прогона.
-32-битная сборка оставлена за пределами этой реализации как разрешённая дополнительная цель.
+This is an experimental implementation report, **not completed Windows 7 support**.
+The required minimum is Windows 7 SP1 x64 on Atom N455/GMA 3150 with 2 GB RAM.
+Radeon HD 4570 needs a separate physical-system run. The user made x86 optional;
+no 32-bit build or compatibility claim is included.
 
-## База и границы изменений
+## Source baseline and scope
 
-Работа выполняется в форке `Mamsikas/horizon-legacy`.
-Базовый HEAD перед изменениями: `59aa0e53df43fe087849250c7fd91de3b8636f2e`.
-Указанный в ТЗ commit `36fc4fa187a4e1f3664c8891dc91e2c9e5a5b911` существует, но не является
-HEAD этого checkout. Между ним и базой в проверяемой области изменены
-`launcher/src/backend.rs`, `launcher/src/main.rs` и `launcher/src/nightly.rs`.
-Номера строк из ТЗ не использовались как контракт.
+Work is in `Mamsikas/horizon-legacy`. The checked HEAD before edits was
+`59aa0e53df43fe087849250c7fd91de3b8636f2e`. The specification's reference,
+`36fc4fa187a4e1f3664c8891dc91e2c9e5a5b911`, exists but was not this checkout's HEAD.
+The intervening launcher changes were in `backend.rs`, `main.rs`, and `nightly.rs`;
+line numbers from the specification were not treated as a contract.
 
-Современный `launcher/src/main.rs` и его GPUI-страницы сохраняются. Главный launcher по
-умолчанию собирается с `gui`; отдельный `horizon-launcher-win7` собирается с
-`--no-default-features --features win7`. Корневые README и roadmap не изменяются.
-Протокол игры, миры и общие графические настройки не изменяются.
+The modern `launcher/src/main.rs` and GPUI pages remain intact. `gui` stays the default
+feature; the separate native binary uses `--no-default-features --features win7`.
+Root README/roadmap, game protocol, world behavior and global graphics defaults are unchanged.
+The fork later advanced main to `9319ad4bf1c2271662f2caa52b1478c0a1bf2617`; those game-only
+changes do not overlap the launcher/preparation files changed here.
+The only protocol-crate change disables unused `ipconfig/computer` bindings; adapter DNS
+resolution is unchanged. The effective `serde_json/preserve_order` feature previously
+supplied by GPUI is explicit so the core-only build keeps the Forge planner's behavior.
 
-Native UI использует USER32 controls и GDI для текста. Формы описываются существующим
-`clap`-деревом CLI, проверяются тем же parser и запускают тот же CLI/core в дочернем
-worker-процессе. Вторая реализация установки, авторизации, миров или модов не создаётся.
-Длинные операции не выполняются в оконном цикле. Результаты показываются текстом/JSON;
-наличие формы не означает, что соответствующий сценарий уже прошёл приёмку на Win7.
+USER32 controls and GDI text replace the incompatible presentation layer. Forms come
+from the existing clap command definitions and invoke the same CLI/core in background
+workers. Shared wardrobe/shop/storage services supply the additional native actions.
+A form's presence is not proof that its complete scenario passed on Windows 7.
 
-## L0: карта исходных ограничений
+## L0 audit matrix
 
-| Подсистема | Исходные модули | Ограничение Win7/GMA 3150 | Принятое решение / остаток |
+| Subsystem | Modules inspected | Win7/GMA limitation | Solution and remaining work |
 |---|---|---|---|
-| Современный UI | `launcher/Cargo.toml`, `main.rs`, `*_page.rs`, `gpui-fast-windows 0.1.13` | `D3D11CreateDevice` с FL 11_1/11_0/10_1, `CreateDXGIFactory2`, `IDXGIFactory6`, compute, новые DirectWrite/DPI/Composition API | Полностью исключить GPUI из legacy graph; отдельный USER32/GDI entrypoint |
-| Общий core | `lib.rs`, `backend.rs`, `cli.rs` | Обязательные GPUI dependencies даже для библиотеки; Linux `pictures` делает GPU probe | Optional dependencies и `required-features`; GPU probe только при `gui`; core остаётся общим |
-| Microsoft и лицензия | `account.rs`, `account/session.rs`; `microsoft.rs` рисует кнопку | Нужны реальные TLS, Device Code, приложение Azure и ownership; legacy ОС сама это не подтверждает | Использовать существующие `SignIn`, token store и owner gate; не обходить отказ. Пользователь подтвердил отсутствие client ID |
-| Версии и архитектура | `backend::{PLATFORMS, OWN_ASSETS, ASSET, LAUNCHER_ASSET, GameArchitecture}` | Современный Windows x64 archive не является Win7 build; x86 исходно отсутствует | Отдельные имена `horizon-win7-x64.zip` и `horizon-launcher-win7-x64.zip`, без fallback к modern; маркер привязан к SHA-256 клиента |
-| Ресурсы | `sources.rs`, `mojang.rs`, `backend::preparer`, `horizon-prepare` | Подготовка вызывает Java 25 и код vanilla; готовые exporter classes не устраняют JVM | Отдельный pinned Liberica JRE/JDK candidate; существующие hash/ownership checks; fresh install остаётся непроверенным |
-| Память подготовки | `horizon-prepare/{java,worker,pool}.rs` | Несколько JVM и исходный `-Xmx2G` непригодны как гарантированный бюджет для машины с 2 ГБ | Worker native UI по умолчанию задаёт один job и cap 512 MiB; пользовательский override сохраняется. Достаточность cap требует vanilla-прогона |
-| Запуск | `backend::{client_as,client_command,spawn}`, `instances.rs`, `launch.rs`, `windows_runtime.rs` | Win7 ABI, собственный home/resources/session, стабильный путь запуска | Общая сборка `Command`, существующие owner/prepared checks и runtime guard; legacy renderer env только дочернему процессу |
-| Моды и паки | `packs.rs`, `modpacks.rs`, `browser/*`, `native_mods.rs`, `rust_toolchain.rs` | Content downloads отделимы от UI; native mods пересобирают весь клиент современным Rust target | Формы существующих операций; native build явно отказывает до появления Win7 toolchain/ABI/cache. Полный parity не заявлен |
-| Файлы и Shell | `shortcut.rs`, `desktop_seams.rs`, `installer.rs` | Windows wrappers могут импортировать WinRT/combase; удаление должно оставаться восстановимым | Прямой Win7 Shell/ole32 ABI для links/recycle. Длинные/UNC recycle paths пока отвергаются с сохранением исходных файлов |
-| Установка/обновление | `backend.rs`, `update_handoff.rs`, `update_recovery.rs`, `installer.rs` | Замена запущенного EXE, прерывание commit, архитектурная путаница | Отдельный launcher payload name, staging/rollback/recovery; настоящая Win7 self-update и installer-приёмка ещё нужны |
-| Rust ABI и CPU | Rust `std`, `getrandom`, transitive Windows bindings | Обычный современный `*-pc-windows-*` не гарантирует NT 6.1; N455 не имеет SSE4/POPCNT/AVX | `x86_64-win7-windows-gnu`, pinned nightly и `build-std`, CPU `x86-64`/SSE2; фактический PE audit обязателен |
+| Modern UI | `launcher/Cargo.toml`, `main.rs`, pages; gpui-fast-windows 0.1.13 | D3D11 FL 11_1/11_0/10_1, compute, CreateDXGIFactory2, IDXGIFactory6, newer text/composition APIs | Exclude GPUI from the legacy graph; separate USER32/GDI entrypoint |
+| Core/UI coupling | `lib.rs`, `cli.rs`, `pictures.rs` | Mandatory GUI dependencies; Linux GPU texture-limit probe | Optional GUI dependencies and required-features; probe only under `gui` |
+| Authentication | `account.rs`, `account/session.rs`, `microsoft.rs` | Real Device Code, TLS, token storage and ownership must work; Azure app configuration is required | Reuse SignIn/token store/owner gate; client ID is currently absent; no bypass |
+| Versions/architecture | `backend::{PLATFORMS,OWN_ASSETS,ASSET,LAUNCHER_ASSET,GameArchitecture}` | Modern x64 archives are not Win7 builds; x86 was absent | Separate signed legacy names, no modern fallback, hash-bound client identity |
+| Resource preparation | `sources.rs`, `mojang.rs`, `backend::preparer`, `horizon-prepare` | Vanilla exporters/data generation require Java 25 even with compiled exporter classes | Pinned official Liberica JRE/JDK candidate; retain license/input/hash checks; fresh install unproved |
+| Preparation memory | `horizon-prepare/{java,worker,pool}.rs` | Persistent workers request 2 GiB and several JVMs can coexist | Native workers opt into one job and a preparation-only 512 MiB cap; sufficiency unproved |
+| Launch/processes | `backend::{client_as,client_command,spawn}`, `instances.rs`, `launch.rs`, `windows_runtime.rs` | Win7 ABI, exact resources/home/session, stable runtime identity | Shared command/session pipeline; child-only legacy graphics selection; mock contract probe |
+| Mods/packs | `packs.rs`, `modpacks.rs`, `browser/*`, `native_mods.rs`, `rust_toolchain.rs` | Native mods rebuild the entire client with a modern host toolchain | Content operations remain available; unsupported native build/Rust installation fails explicitly |
+| Shell/files | `shortcut.rs`, `desktop_seams.rs`, `installer.rs` | Transitive WinRT/combase imports; recoverable deletion and path handling | Raw ole32/shell32 helpers; long/UNC recycle paths fail without deleting data |
+| Storage/update | `data_location.rs`, `relocation.rs`, `backend.rs`, `update_handoff.rs`, `update_recovery.rs` | PowerShell 3 is absent on stock Win7; replacement races and locked EXEs | Toolhelp32 migration guard, exclusive install/recovery lease, staged rollback; physical update tests pending |
+| Rust/CPU | std, getrandom, Windows bindings, release workflows | Current pc-windows targets do not guarantee NT 6.1; N455 lacks SSE4/POPCNT/AVX | Pinned Tier 3 Win7 target with build-std and x86-64/SSE2 baseline; imports and hardware both need checking |
 
-Проверка импортов нужна для всего итогового EXE, а не только исходного UI. Уже при
-первой линковке аудит обнаружил реальные транзитивные WinRT/combase imports; их нельзя
-считать допустимыми только из-за отсутствия GPUI в dependency tree.
-Прямые ole32 bindings устраняют конфликт импортов разных поколений Windows wrappers;
-у `ipconfig` отключается неиспользуемая feature `computer`, тянувшая Windows Registry/WinRT
-wrappers. Чтение DNS-адаптеров и игровой сетевой протокол этим не изменяются.
+The first linked binary exposed real transitive WinRT/combase imports. Removing GPUI
+alone was insufficient: unused ipconfig computer/registry bindings were removed and
+Shell COM calls use ole32 directly. No dependency implementation was copied. Runtime
+vendor documentation, binary metadata and imports were inspected; Wine/JVM source was not used.
 
-## Функциональный паритет
+## Functional parity
 
-В таблицах «форма есть» означает доступ к существующей операции core через native controls.
-Статус каждого действия на физических Win7-машинах пока **НЕ ПРОВЕРЕНО**.
-Unit/contract tests parser или core не заменяют этот статус.
+[win7-action-parity.md](win7-action-parity.md) records all **108 forms** individually.
+Both physical Win7 targets remain **NOT TESTED** for every action, regardless of host tests.
 
-| Современная страница `Page` | Доступные native операции | Что пока не перенесено / ограничено |
+| Modern page | Native operations through shared core | Remaining limitations |
 |---|---|---|
-| `Play` / Home | `play`; `prepare`; `account list/select/refresh/sign-out`; отдельная Device Code панель; операции `instance`; журналы | Нет подтверждённого запуска реального Win7 клиента; нет полного Home visual overview и всех GUI-only действий; внешний браузер/реальный вход не проверены |
-| `Versions` | `versions`, `install`, `remove`, `import-build`, `update --check`, `update`; выбранная версия через `settings` | Подписанные Win7 client/launcher releases ещё должны быть опубликованы; unverified import нельзя выдавать за совместимый клиент |
-| `Mods` | `mods list/search/check/install/update/remove/enable/disable/add-github/update-github`; `packs`; `modpack` | Нет визуальных карточек/preview; native compilation явно не завершена; часть Java/modpack операций зависит от JVM и клиента |
-| `Servers` | `servers list/create/set-up/run/forget`; `server`; `multiplayer`; `play --server/--join`; ввод строк в stdin worker из native окна | Реальная интерактивная server console и подключение требуют совместимого клиента/сервера; не проверены на Win7 |
-| `Wardrobe` | `legacy wardrobe-list/equip/unequip/visible/preferences/claim`; существующие offline skin/cape операции `account skin` | Используются account/wardrobe core и offline queue; сетевой сценарий требует входа. 3D preview отсутствует |
-| `Shop` | `legacy shop-catalogue/history/quote/checkout/claim` через существующие pricing и service API | Checkout возвращает проверенный HTTPS URL после явного Confirm; реальных платежей/сетевых покупок при проверке не выполняли. Визуальная примерка отсутствует |
-| `Notes` | `notes` с optional tag | Вывод текстом; исходный GPUI layout и rich media отсутствуют |
-| `Settings` | `settings`, `game-args`, `no-ai`, `native-cache`, `rust`, `java`, `data`, `links`; `legacy storage-status/move/retry/default` | Перенос запускает существующий relocation helper после выхода окна; Win7 использует Toolhelp32 вместо PowerShell 3. Appearance/accent/background/opening сохраняются для modern UI |
+| Play/Home | `play`, `prepare`, account selection/refresh/sign-out, Device Code panel, instances and logs | Real signed Win7 game/session launch and full Home overview are unverified |
+| Versions | `versions`, `install`, `remove`, `import-build`, `update`, selected version settings | Signed legacy releases must be published; an imported modern binary cannot inherit legacy identity |
+| Mods | `mods`, `packs`, `modpack`, visible native-build action | No visual cards/previews; native compilation is explicitly unsupported |
+| Servers | `servers`, `server`, `multiplayer`, `play --server/--join`, worker stdin input | Real server/client lifecycle and console input need compatible binaries and Win7 tests |
+| Wardrobe | `legacy wardrobe-list/equip/unequip/visible/preferences/claim`; offline skins/capes | Shared auth/service/offline queue used; real network flow unverified; no 3D preview |
+| Shop | `legacy shop-catalogue/history/quote/checkout/claim` | Explicit Confirm and validated external HTTPS checkout URL; no live purchase was performed; no visual try-on |
+| Notes | `notes` with optional tag | Text output instead of rich GPUI presentation |
+| Settings | `settings`, `game-args`, `no-ai`, `native-cache`, `rust`, `java`, `data`, `links`, storage status/move/retry/default | Appearance/background preferences remain modern-UI settings; physical migration/update acceptance pending |
 
-| Вкладка Home / действие | Native путь | Доказательство и оставшийся тест |
-|---|---|---|
-| Overview, версия, аргументы | `versions --installed`, `settings`, `game-args`, `instance version`, `instance launch`, `play` | Parser/core tests; полный Win7 сценарий не проверен |
-| Создание/выбор/редактирование экземпляров | `instance list/create/select/rename/group/icon/version/java/loader/launch/shortcut/delete` | Unicode/flags/repeated/default argument contract tests и существующие instance tests; Win7 UI/filesystem smoke ещё нужен |
-| Импорт/экспорт экземпляров | `instance import/export/others/copy-from`; `import-build` | Существующий core и его проверки используются; drag-and-drop и native file picker отсутствуют, путь вводится в форме |
-| Mods | `mods` и `native-build` | Content actions доступны; Win7 native build возвращает явную диагностическую ошибку |
-| Worlds | `worlds list/backup/copy/delete`; `play --world` | Существующие worlds tests; тест реальных пользовательских миров на Win7 не проводился |
-| Datapacks мира | `worlds datapack-list/datapack-add/datapack-remove`; browser install с `--world` | Существующий core; Win7 операция/пути/корзина не проверены |
-| Multiplayer list | `multiplayer list/add/remove`; `play --server` | Существующий `server_list`; присоединение к игре не проверено |
-| Resource/shader packs | `packs list/add/on/off/remove`; `mods search/install` | Contract test выбора pack/flags и существующие pack tests; GPU shader execution не является функцией лаунчера |
-| Screenshots | `screenshots list/delete` | Списки/удаление через core; native просмотр изображений/thumbnail gallery отсутствует |
-| Console, прогресс, ошибки | `logs`, `share-log`, `unshare-log`; stdout/stderr worker в native output control | Буфер ограничен по строкам и байтам, oversized line не выделяется целиком; GUI console input/real game lifecycle не прошли приёмку |
-| Аккаунты | Native SignIn panel и `account` формы | URL/код/status/copy предусмотрены; sign-in/refresh/ownership не выполнены без Azure client ID и реального аккаунта |
-| Установка ресурсов | `prepare --download` либо `prepare --minecraft PATH` | Existing SHA/ownership пути сохранены; самостоятельная чистая Win7 установка с Java 25 ещё не доказана |
+Instance create/select/edit/delete/import/export/other-launcher copy, world backup/copy/delete,
+data packs, resource/shader packs, mod browsing, screenshots and logs use their existing
+CLI/core operations. Paths are entered in native fields; GPUI gallery previews and drag-and-drop
+are not reproduced. Existing checks and settings formats remain shared.
 
-Каталог строит все видимые leaf-команды CLI, кроме `mcp`, `completions`, `agent-config`,
-`benchmark`, `account session` и `account sign-in`. Последняя обслуживается специальной
-панелью, а `account session` не выводится формой, поскольку это путь к секретному session
-file. CLI остаётся доступен тем же executable. Доступность `mcp` через CLI не означает,
-что native GUI-only операции появились в MCP.
+The form catalog excludes MCP/completions/agent configuration, the modern GUI benchmark,
+secret session-file output and CLI sign-in. A dedicated panel handles sign-in instead.
+The native wardrobe/shop/storage extension is not exposed as generated MCP tools.
+Storage handoff waits for the worker to finish, exits the window, then delegates to the
+existing relocation helper. On Win7 its process check conservatively blocks any active
+Java/Cargo/Rust build tool because Toolhelp32 does not provide its command line.
 
-## Сборка и артефакты
+## Preparation memory policy
 
-Воспроизводимый путь описан в [packaging/win7/TESTING.md](../packaging/win7/TESTING.md):
+There was **no launcher-level RAM-aware heap selector**. Persistent exporter workers used
+an explicit `-Xmx2G`. Java commands without an explicit heap used JVM ergonomics; parallel
+job count was selected from logical processors, capped at eight.
+
+Only native UI workers now supply these defaults when the corresponding variable is absent:
+
+```text
+HORIZON_PREPARE_JOBS=1
+HORIZON_PREPARE_MAX_HEAP_MIB=512
+```
+
+A user-supplied value wins. The cap affects preparation JVMs, not game heap or global game
+options. Manual CLI preparation is not implicitly assigned this native-worker profile.
+512 MiB is a conservative candidate for the 2 GB machine, **not a measured minimum**:
+a full vanilla exporter run can still expose an OutOfMemoryError and require adjustment.
+The modern launcher's arguments remain unchanged unless the heap-cap environment option is set.
+
+## Build, artifacts and trust
+
+See [TESTING.md](../packaging/win7/TESTING.md). On the documented Linux build host:
 
 ```sh
 bash tools/bootstrap_win7_cross.sh
 bash tools/build_win7_launcher.sh
 ```
 
-Скрипт использует `nightly-2026-11-01`, target `x86_64-win7-windows-gnu`,
-`-Z build-std=std,panic_abort`, `-C target-cpu=x86-64`, static CRT и subsystem 6.1.
-Сборка основного workspace не понижается на старый Rust. Bootstrap распаковывает
-SHA-256-pinned MinGW packages в локальный build-каталог; Windows-пользователю эти tools
-не нужны. Старому `windows-targets 0.48.5` отдельно передаётся путь его Cargo-verified
-import library, поскольку его build script не распознаёт vendor `win7`.
+The separate build pins `nightly-2026-11-01`, `x86_64-win7-windows-gnu`,
+`-Z build-std=std,panic_abort`, `-C target-cpu=x86-64`, static CRT and subsystem 6.1.
+SHA-pinned MinGW packages are extracted locally. windows-targets 0.48.5 needs its
+Cargo-verified import-library path supplied explicitly because it predates the win7 vendor target.
+The main workspace toolchain is not downgraded.
 
-Ожидаемые выходы успешного полного скрипта:
+Outputs are `horizon-launcher-win7-x64.zip`, the separate
+`horizon-win7-process-test-x64.zip`, PE reports, `build.txt`, and `SHA256SUMS.local`.
+The latter is an **unsigned local checksum list**, not a release signature.
+The ZIPs contain no Mojang jars/assets/prepared resources or account secrets.
 
-- `horizon-launcher-win7-x64.zip`: native launcher, инструкция, build provenance и PE report;
-- `horizon-win7-process-test-x64.zip`: отдельный mock client для проверки process contract;
-- `imports-win7-x64.json`, `imports-mock-win7-x64.json`, `build.txt`, `SHA256SUMS.local`.
+Legacy build-time `HORIZON_WIN7_RELEASE_REPO=owner/repository` and
+`HORIZON_WIN7_RELEASE_PUBLIC_KEYS` select an explicit fork feed and base64 Ed25519 keys.
+A custom feed without valid keys fails closed. Modern feeds/keys remain unchanged.
+The configuration mechanism does not publish or sign releases itself.
 
-`SHA256SUMS.local` — контрольные суммы локальной сборки, **не подпись релиза**.
-В ZIP не включаются Mojang assets, game jars, подготовленные ресурсы и чужие аккаунты.
-Основной download/release source и доверенные ключи Horizon сами по себе не создают
-подписанный Win7 release в пользовательском форке: публикация, источник и доверенная
-подпись остаются отдельной обязательной частью поставки. Для отдельной legacy сборки
-предусмотрены build-time `HORIZON_WIN7_RELEASE_REPO=owner/repository` и
-`HORIZON_WIN7_RELEASE_PUBLIC_KEYS` (base64 Ed25519, по одному ключу на строку).
-Произвольный fork без корректного публичного ключа не получает разрешения устанавливать
-unsigned releases. Modern builds продолжают использовать прежние repository/keys.
+## Recorded validation and its limits
 
-## Проверки и границы доказательств
-
-Получены следующие результаты (это не аппаратная приёмка Win7):
-
-- `cargo fmt --manifest-path launcher/Cargo.toml` и релевантный rustfmt: PASS.
-- Core-only library suite: **653 passed, 7 ignored**. Native entrypoint suite: **35 passed**.
-- После точечных изменений маршрутизации runtime: `java::` **9 passed**,
-  `rust_toolchain::` **17 passed**; Clippy core + native binary с `-D warnings`: PASS.
-- Подготовка Java: **5 passed**; DNS resolver после отключения неиспользуемой feature:
-  **7 passed**; PE audit tests: **10 passed**; полнота переводов: PASS.
-- `x86_64-win7-windows-gnu`, nightly-2026-11-01, `build-std`, release: собраны
-  launcher и отдельный mock. Статический PE audit обоих EXE: PASS, subsystem 6.1.
-  Legacy dependency graph не содержит GPUI/wgpu runtime; D3D/DXGI/Vulkan/WinRT/combase
-  imports отсутствуют. Динамические вызовы и инструкции CPU всё равно требуют проверки.
-- Wine 10 с версией 6.1.7601 / Xvfb 1024×600: окно, mouse/Tab/scroll, Versions worker,
-  создание и запись экземпляра `Тест Кириллица 1`, завершение worker и восстановление кнопок:
-  PASS. Без client ID Microsoft button вернула безопасный отказ.
-- Mock с кириллицей/пробелами проверил resources/home/cwd/inherited env и child renderer:
-  PASS. Это не игровой запуск и не проверка сессии реального владельца.
-- Liberica Java 25 `-Xmx512m -version` и managed helper с заранее скачанным официальным
-  SHA-проверенным архивом в ASCII каталоге: PASS под Wine. Сеть при этом не проверялась.
-  Обнаружен отказ JVM bootstrap в кириллическом каталоге; runtime перенесён в уже имеющийся
-  ASCII tool directory core. Повторный тест исправления и его точный SHA отражаются в
-  прилагаемом smoke-протоколе, если выполнены.
-
-Все **108 native форм** перечислены по отдельности в
-[win7-action-parity.md](win7-action-parity.md), с отдельными статусами обеих Win7 GPU-систем.
-`horizon-launcher-win7 --list-native-actions` выдаёт точное описание полей из текущего CLI.
-Подписанных публичных legacy-релизов пока нет; `SHA256SUMS.local` — контрольные суммы
-локальной экспериментальной сборки, а не подпись релиза. Точные hashes входят в артефакт.
-
-| Проверка | Что проверяет | Чего не доказывает |
+| Check | Result | Limit |
 |---|---|---|
-| `cargo check --lib --no-default-features` и вариант с `win7` | Core компилируется без обязательного GUI | Запуск EXE на Win7 |
-| `cargo tree --target x86_64-win7-windows-gnu --no-default-features --features win7` | Отсутствие GPUI/wgpu runtime в legacy graph | Отсутствие всех новых Windows imports в итоговом EXE |
-| Catalog/worker/backend/Java tests | Аргументы без shell quoting, Unicode, отмена signed transfer, hash identity, staging/rollback/recovery, границы output, сохранение предыдущего runtime | Реальный Microsoft login, exporter run и поведение Windows Shell на Win7 |
-| `tools/check_win7_imports.py` и Python tests | Архитектура/subsystem, normal и delay imports; неизвестные DLL/API отвергаются | Динамические `LoadLibrary/GetProcAddress`, CPU dispatch, все DLL runtime, железо |
-| `--smoke-client` с отдельным mock | Реальная граница процесса, `--resources`, home/cwd, env inheritance, child legacy graphics selector | Авторизованный игровой запуск и работоспособность ТЗ №2 |
-| Wine/Xvfb, если выполнено | Дополнительный запуск Windows binary вне Windows | Windows 7 SP1, драйвер Intel/AMD, Aero-off и производительность Atom |
+| Formatting and Clippy core/native with `-D warnings` | PASS | Does not prove Windows runtime behavior |
+| Core-only library tests | 653 passed, 7 ignored | Host tests; ignored cases remain unverified |
+| Native entrypoint tests | 35 passed | Parser/worker/core contracts, not physical GUI acceptance |
+| Java preparation / routing / Rust routing | 5 / 9 / 17 passed | Does not run the full licensed vanilla exporter pipeline |
+| Resolver / PE-audit tests / translation completeness | 7 / 10 passed / PASS | Resolver algorithm retained; import checker is static |
+| Both release EXEs and strict PE audit | PASS, x64, subsystem 6.1 | No GPUI/wgpu runtime or unconditional D3D/DXGI/Vulkan/WinRT/combase imports; late binding and CPU dispatch still need hardware tests |
+| Wine 10, NT 6.1.7601 profile, Xvfb 1024x600 | Native window, mouse/Tab/scroll, installed versions, Unicode instance persistence, worker completion/re-enabled controls: PASS | Wine is not Windows 7 or either target GPU |
+| Missing Microsoft client ID | Native button safely refused sign-in | Actual OAuth/ownership/refresh is untested |
+| Mock process with Unicode/spaces | resources/home/cwd/inherited env/child renderer: PASS | Not an authorized game launch or real game-session test |
+| Liberica 25 and cached managed-runtime helper | Version probe and checked archive extraction/publish: PASS in ASCII location under Wine | No network transfer or Minecraft exporter run |
 
-При отделении GUI выявлен скрытый effective feature: GPUI включал
-`serde_json/preserve_order`. Core-only build сохраняет эту feature явно, чтобы не менять
-порядок JSON objects, используемый существующим Forge installation planner.
+A vendor JVM bootstrap failed in a Unicode directory under Wine (`could not find java.dll`).
+The same runtime failed there when invoked directly. The helper preserved its archive and
+refused to publish it. Runtime storage now uses the core's existing ASCII tool directory.
+The shipping helper repeated the same test from a Unicode launcher home and passed through
+the ASCII ProgramData runtime path. Java discovery found the installed runtime; unsupported
+Rust installation was refused before any download. The local smoke protocol records exact
+EXE hashes in `packaging/win7/LOCAL_VALIDATION.json`. This remains a Wine result.
 
-### Аппаратная матрица
+| Physical target | GUI/input/DPI/Aero-off | Mock/game/fresh install | Startup/idle CPU/RSS/peak |
+|---|---|---|---|
+| Win7 SP1 x64, N455/GMA 3150, 2 GB, Intel driver | NOT TESTED | NOT TESTED | NOT MEASURED |
+| Win7 SP1 x64, Radeon HD 4570, AMD driver | NOT TESTED | NOT TESTED | NOT MEASURED |
+| Win7 x86 | Not built; optional target omitted | Not claimed | Not measured |
+| Modern Win10/11/Linux/macOS GPUI launcher | UI source preserved; full runtime regression still required | Not established by legacy checks | Not measured |
 
-| Цель | Native GUI / ввод / DPI / Aero-off | Mock process contract | Реальный клиент | Лицензионный fresh install | Startup/RSS/peak memory |
-|---|---|---|---|---|---|
-| Win7 SP1 x64, Atom N455, GMA 3150, 2 ГБ, Intel driver | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО на Win7 | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО | НЕ ИЗМЕРЕНО |
-| Win7 SP1 x64, Radeon HD 4570, AMD driver | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО на Win7 | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО | НЕ ИЗМЕРЕНО |
-| Win7 SP1 x86 | Не собрана, дополнительная цель исключена | — | — | — | — |
-| Современный GPUI launcher на Win10/11/Linux/macOS | Исходные UI сохранены; полный regression runtime ещё нужен | — | Не относится к mock | Не подтверждено этим legacy-прогоном | Не измерено |
+The fork's inherited checks select self-hosted runners that are unavailable here. The separate
+legacy workflow therefore also runs the existing default GPUI launcher formatting, Clippy
+and unit-test commands on a GitHub-hosted Linux runner. Its current result must be read
+from Actions; local core checks are not a substitute for that modern build.
 
-### Точные ограничения
+## Unmet criteria and stage status
 
-- **L3 не принят.** Установка pinned Liberica Java 25 — кандидат на автономный Win7 путь,
-  а не доказанная поддержка runtime. Детали: [win7-prepare-audit.md](win7-prepare-audit.md).
-  Нужны `java`/`javac` smoke на настоящей Win7 и полный exporter run на собственных
-  лицензионных данных без современного ПК. Ограничения 512 MiB/один job не доказывают
-  успешную подготовку всех данных.
-- **Microsoft вход не принят.** Пользователь сообщил, что Azure public client ID пока
-  отсутствует. Сборка должна сохранять существующий безопасный отказ и ownership gate,
-  пока не настроен `HORIZON_MSA_CLIENT_ID`. Токены в command line не добавляются.
-- **Native mods не завершены.** Текущий механизм пересобирает весь клиент, а не загружает
-  готовую совместимую DLL. Нужны Win7 target, корректный ABI, отдельный cache/toolchain и
-  проверка локальной либо явно реализованной делегированной сборки. Кнопка не скрывается.
-- **Отмена частичная.** Device Code отменяется через существующий token; signed archive
-  downloads проверяют cancel file до и между transfer/commit шагами. Browser/modpack
-  bespoke downloads и exporter loops не имеют полной сквозной отмены. UI ожидает безопасной
-  границы; принудительное убийство установки/сохранения мира не используется.
-- **Resume частичный.** Повторная попытка и уже проверенный Java archive сохраняются при
-  ошибке extraction/probe. Возобновление transfer произвольного файла с последнего байта
-  через HTTP Range не заявляется реализованным.
-- **Пути частично ограничены.** Unicode передаётся без shell, однако Win7 recycle fallback
-  отказывает extended/слишком длинным и UNC путям, не удаляя их. Полная приёмка длинных
-  путей installer/update/toolchain остаётся невыполненной.
-- **L4 частичный.** Есть отдельный ZIP/build pipeline и recovery code; нет подтверждённой
-  публичной подписанной legacy поставки и реального Win7 обновления. Native graphical
-  installer wizard не реализован. Native entrypoint не вызывает общий quiet installer,
-  чтобы не перезаписать регистрацию современного launcher; поставка пока только ZIP.
-- **L2 не принят аппаратно.** 108 форм дают доступ к существующим операциям, включая
-  wardrobe/shop/storage и console input. GPUI 3D previews, rich gallery и drag-and-drop
-  не перенесены; пути вводятся в native полях. Сетевые сценарии и полный паритет на Win7
-  требуют реального аккаунта и совместимого клиента.
-
-## Этапы и следующая приёмка
-
-| Этап | Состояние | Что осталось |
+| Stage | Demonstrated work | Remaining acceptance |
 |---|---|---|
-| L0 | Аудит и статический PE audit обоих EXE выполнены | Проверка поздних API и аппаратный запуск |
-| L1 | Native окно и process probe прошли Wine smoke | Реальная Win7 проверка обеих GPU-систем |
-| L2 | Общий core доступен через native forms, есть специальный вход/логи | Закрыть отмеченные GUI gaps, проверить каждое действие на Win7 |
-| L3 | Добавлен pinned JVM candidate и экономный explicit профиль подготовки | Доказать runtime и автономный fresh install с реальным владельцем |
-| L4 | Реализованы отдельная упаковка и legacy update policy/recovery | Подписанные releases, источник доверия, interrupted update/rollback на Win7 |
-| L5 | Не выполнен | GMA 3150/N455/2 ГБ, HD 4570 и regression modern launcher |
+| L0 | Source/dependency audit and both EXE static import checks | Late-bound API and physical-system validation |
+| L1 | Actual native window and mock contract passed Wine smoke | Both physical Win7 targets |
+| L2 | Shared core behind 108 forms, auth state, logs and extension actions | Per-action Win7 tests; real network/account/client scenarios; visual gaps recorded above |
+| L3 | Pinned JVM candidate, staged verification/rollback, explicit memory profile | Actual Win7 java/javac and licensed autonomous fresh install without a modern PC |
+| L4 | Separate ZIPs, signed-asset policy, update recovery and fork trust configuration | Published signed legacy releases and interrupted update/rollback on Win7 |
+| L5 | Not completed | N455/GMA 3150, HD 4570 and modern GUI runtime regressions |
 
-Порядок пользовательской проверки и команды mock приведены в `packaging/win7/TESTING.md`.
-Для обоих GPU нужно записать build7601, установленные KB, версию драйвера, права запуска,
-размер экрана/DPI, состояние Aero, startup time, idle CPU, RSS и peak memory.
-Каждое действие выше требует собственного PASS/FAIL/NOT TESTED с логом. Проверки неверного
-хеша/подписи, нет сети, отмены, нехватки диска, Unicode/длинного пути, неверного аккаунта и
-обновления после принудительного завершения остаются обязательными.
+The user confirmed no `HORIZON_MSA_CLIENT_ID` is available. Real sign-in and owner-gated
+launch remain blocked until an eligible Azure app is configured. Native mods rebuild the
+whole client with a modern compiler; a Win7 target/ABI/cache or implemented delegated
+builder is still required. Unsupported modern Rust installation is refused before download.
+The game binary itself remains separate work; a mock is not evidence that it runs.
 
-## Изменённые файлы и назначение
+Cancellation is cooperative for Device Code and signed archive transfers/commit boundaries;
+custom browser/modpack transfers and exporter loops do not yet have full cancellation.
+Checked Java archives survive failed extraction/probes, but generic HTTP Range byte-resume
+is not implemented. Long/extended/UNC recycle paths are rejected with files retained.
+The legacy entrypoint deliberately does not invoke the shared quiet installer registration;
+distribution is ZIP-only and the native graphical installer remains unimplemented.
 
-| Точный путь | Обязательная функция / причина |
+Use fresh folders and the procedure in TESTING.md. On each physical system record build 7601,
+installed KBs, GPU driver, privileges, resolution/DPI/Aero state, startup and memory measurements.
+For each action record PASS/FAIL/NOT TESTED and its log. Wrong hashes/signatures, invalid
+credentials, no network, cancellation, low disk, Unicode/long paths, interrupted downloads,
+forced-update termination and rollback still need the specified target-system checks.
+
+## Changed files and purpose
+
+| Exact file(s) | Required function or reason |
 |---|---|
-| `launcher/Cargo.toml` | Изолировать modern GUI и Win7 binary; не компилировать GPU framework; сохранить прежний JSON order |
-| `launcher/src/bin/horizon-launcher-win7.rs` | Отдельный startup/CLI/native entrypoint, recovery и диагностика без GPUI |
-| `launcher/src/bin/mock-horizon-client.rs` | Отдельный process-contract fixture; не игровой клиент и не owner bypass |
-| `launcher/src/win7/mod.rs` | Граница native UI модулей |
-| `launcher/src/win7/catalog.rs` | Формы из существующего CLI, flags/defaults/repeated args/Unicode и parser validation |
-| `launcher/src/win7/window.rs` | USER32/GDI окно, поля, фокус/scroll, Device Code, clipboard, status/output |
-| `launcher/src/win7/worker.rs` | Фоновые CLI workers, cooperative cancel, ограниченный журнал, профиль памяти подготовки |
-| `launcher/src/win7/smoke.rs` | Изолированный запуск mock через общий low-level launch contract |
-| `launcher/src/backend.rs` | Отдельные legacy assets/маркер SHA, launch env, совместимость, staging/rollback/recovery, cancel и подготовка Java |
-| `launcher/src/signed.rs` | Использовать выбранный при сборке legacy release source, сохраняя обязательную проверку подписи |
-| `launcher/src/backend/win7_tests.rs` | Контракт selection/identity/launch/update/recovery legacy без подмены реальным игровым запуском |
-| `launcher/src/cli.rs` | Прогресс pipe-worker и Win7-only extension над тем же core |
-| `launcher/src/cli_tools.rs` | Не включать checkout/storage extension в agent tools; modern command reference не изменяется |
-| `launcher/src/win7_actions.rs` | Wardrobe/shop/storage формы через существующие core API, Confirm и migration handoff |
-| `launcher/src/java.rs` | Java 25 manual install и discovery используют тот же legacy runtime |
-| `launcher/src/rust_toolchain.rs` | Отказ несовместимому современному Rust host до его загрузки на Win7 |
-| `launcher/src/relocation.rs`, `launcher/src/relocation/win7.rs`, `launcher/src/relocation/tests.rs` | Toolhelp32 guard вместо PowerShell 3 в Win7 migration и тест блокировки активных процессов |
-| `launcher/src/lib.rs` | Подключение изолированных Win7 helpers |
-| `launcher/src/legacy_java.rs` | Pinned official JVM download, SHA-256, layout/version probe, staging и rollback |
-| `launcher/src/native_mods.rs` | Явный отказ от несовместимой native сборки вместо скрытой modern установки |
-| `launcher/src/pictures.rs` | Исключение GPU probe из core-only сборки |
-| `launcher/src/win7_shell.rs` | Совместимые shell links/корзина без зависимости от WinRT wrappers |
-| `launcher/src/shortcut.rs` | Перенаправление legacy ShellLink в Win7 helper |
-| `launcher/src/desktop_seams.rs` | Использование совместимой Win7 корзины с существующим core |
-| `launcher/src/installer.rs` | Проверка shell shortcut также для core-only Windows target |
-| `crates/horizon-prepare/src/java.rs` | Explicit heap cap только при opt-in env, без изменения modern default |
-| `crates/horizon-prepare/src/worker.rs` | Применение heap cap к exporter JVM workers |
-| `crates/horizon-protocol/Cargo.toml` | Отключить неиспользуемую `ipconfig/computer` feature, тянувшую несовместимые Windows Registry/WinRT imports; алгоритм adapter DNS не меняется |
-| `Cargo.lock`, `launcher/Cargo.lock` | Зафиксировать минимальное изменение dependency graph, необходимое для Win7 ABI |
-| `tools/bootstrap_win7_cross.sh` | Воспроизводимые pinned cross tools в локальном каталоге |
-| `tools/build_win7_launcher.sh` | Отдельные target/std/CPU flags, no-GPU graph check, PE gate и ZIPs |
-| `tools/check_win7_imports.py` | Строгая статическая проверка Win7 PE normal/delay imports |
-| `tests/test_check_win7_imports.py` | Контракт проверки PE и отказ новых/неизвестных импортов |
-| `.github/workflows/launcher-win7.yml` | Отдельная experimental CI сборка без публикации как готового релиза |
-| `packaging/win7/TESTING.md` | Воспроизводимая сборка, mock и точная приёмка на целевом железе |
-| `packaging/win7/API_BASELINE.md` | Обоснование Win7-or-earlier API, включённых в строгий PE import allowlist |
-| `docs/win7-prepare-audit.md` | Доказательства Java blocker/candidate и оставшиеся exporter проверки |
-| `docs/win7-launcher-status.md` | Этот отчёт и неполные критерии; основной README не затронут |
-| `docs/win7-action-parity.md` | Отдельная строка и статус каждого native действия |
-| `launcher/lang/*.json` — точные имена ниже | Новые сообщения native UI/диагностики во всех существующих каталогах; там, где перевод ещё не готов, приняты существующие English fallbacks |
+| `launcher/Cargo.toml` | Optional GUI/core graph, native binaries, explicit preserved JSON order |
+| `launcher/Cargo.lock`, `Cargo.lock` | Minimal dependency graph changes for compatible imports |
+| `launcher/build.rs` | Rebuild when legacy release feed/public-key configuration changes |
+| `launcher/src/lib.rs` | Connect isolated native helpers while retaining shared core |
+| `launcher/src/bin/horizon-launcher-win7.rs` | Native startup, CLI/probes, recovery and error handling |
+| `launcher/src/bin/mock-horizon-client.rs` | Independent process-contract fixture, not a game or auth bypass |
+| `launcher/src/win7/mod.rs` | Native module boundary |
+| `launcher/src/win7/catalog.rs` | Forms from existing CLI, typed validation, Unicode/default/repeated arguments |
+| `launcher/src/win7/window.rs` | USER32/GDI controls, focus/scroll/DPI, sign-in state, clipboard, console and storage handoff |
+| `launcher/src/win7/worker.rs` | Background CLI execution, bounded output, cancellation and preparation profile |
+| `launcher/src/win7/smoke.rs` | Mock launch through shared low-level command contract |
+| `launcher/src/backend.rs` | Legacy selection/identity, launch env, staged install/recovery/lease, cancellation and Java routing |
+| `launcher/src/backend/win7_tests.rs` | Observable legacy selection, signed staging, ownership-independent command and recovery contracts |
+| `launcher/src/signed.rs` | Explicit compile-time legacy feed with mandatory signature verification |
+| `launcher/src/cli.rs` | Pipe progress and native extension routing through shared core |
+| `launcher/src/cli_tools.rs` | Keep native checkout/storage out of agent tools and preserve modern command reference |
+| `launcher/src/win7_actions.rs` | Existing wardrobe/shop/storage services, confirmation and relocation handoff |
+| `launcher/src/java.rs` | Route Java 25 install/discovery through the managed legacy runtime |
+| `launcher/src/legacy_java.rs` | Pinned official JVM download, hash/layout/version checks, ASCII tool path, staging/rollback |
+| `launcher/src/native_mods.rs` | Explicit unsupported legacy native-build diagnostic |
+| `launcher/src/rust_toolchain.rs` | Refuse unsupported modern host compiler before download on Win7 |
+| `launcher/src/pictures.rs` | Gate GPU probing behind the GUI feature |
+| `launcher/src/win7_shell.rs` | Win7 ole32/shell32 links and recoverable deletion without WinRT wrappers |
+| `launcher/src/shortcut.rs` | Route non-GUI Windows links to the compatible shell helper |
+| `launcher/src/desktop_seams.rs` | Use the compatible recycle-bin operation |
+| `launcher/src/installer.rs` | Exercise shell-link target checks without modern COM wrappers |
+| `launcher/src/relocation.rs`, `launcher/src/relocation/win7.rs` | Win7 Toolhelp32 process guard without PowerShell 3 |
+| `launcher/src/relocation/tests.rs` | Verify relocation refuses active games/build tools |
+| `crates/horizon-prepare/src/java.rs`, `crates/horizon-prepare/src/worker.rs` | Preparation-only opt-in heap cap, preserving modern defaults |
+| `crates/horizon-protocol/Cargo.toml` | Drop unused ipconfig computer/registry feature without changing DNS behavior |
+| `tools/bootstrap_win7_cross.sh` | SHA-pinned locally extracted cross tools |
+| `tools/build_win7_launcher.sh` | Pinned target/std/CPU, graph/import gates, provenance and ZIPs |
+| `tools/check_win7_imports.py`, `tests/test_check_win7_imports.py` | Fail-closed normal/delay PE import checker and rejection fixtures |
+| `packaging/win7/LOCAL_VALIDATION.json` | Exact local-binary Wine evidence and explicit untested hardware scenarios |
+| `.github/workflows/launcher-win7.yml` | Separate experimental build/artifact workflow |
+| `packaging/win7/TESTING.md`, `packaging/win7/API_BASELINE.md` | Reproducible build/hardware procedure and documented API baseline |
+| `docs/win7-launcher-status.md`, `docs/win7-prepare-audit.md`, `docs/win7-action-parity.md` | Audit, evidence, per-action status and unmet criteria |
+| `launcher/lang/*.json` below | Native UI/diagnostics in every existing locale table; established English fallbacks where untranslated |
 
-Точные изменённые каталоги переводов (одна и та же причина изменения каждого файла):
+## Exact locale-file appendix
+
+Each of these 86 files has the same purpose described above:
 
 ```text
 launcher/lang/af.json

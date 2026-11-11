@@ -1,124 +1,124 @@
-# Паритет native действий Win7
+# Win7 native action parity
 
-Источник: `horizon-launcher-win7 --list-native-actions`; 108 форм из текущего CLI.
+Source: `horizon-launcher-win7 --list-native-actions`; 108 forms generated from the existing CLI.
 
-PASS Wine означает только указанную дополнительную проверку вне настоящей Windows.
-Поля/flags проверяются существующим clap parser, операции выполняет общий core.
+Wine PASS records only the stated additional check outside real Windows. Fields and flags
+are validated by the same clap parser, and the shared core performs the operation.
 
-| Действие | Дополнительная проверка | Win7 x64 GMA 3150 / N455 | Win7 x64 HD 4570 |
+| Action | Additional evidence | Win7 x64 GMA 3150 / N455 | Win7 x64 HD 4570 |
 |---|---|---|---|
-| `legacy wardrobe-list` | Core API сохранён; ownership/confirmation unit checks; реальная сеть не проверена | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy wardrobe-equip` | Core API сохранён; ownership/confirmation unit checks; реальная сеть не проверена | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy wardrobe-unequip` | Core API сохранён; ownership/confirmation unit checks; реальная сеть не проверена | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy wardrobe-visible` | Core API сохранён; ownership/confirmation unit checks; реальная сеть не проверена | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy wardrobe-preferences` | Core API сохранён; ownership/confirmation unit checks; реальная сеть не проверена | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy wardrobe-claim` | Core API сохранён; ownership/confirmation unit checks; реальная сеть не проверена | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy shop-catalogue` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy shop-history` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy shop-quote` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy shop-checkout` | Confirm + существующий HTTPS checkout; сетевые операции не выполнялись | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy shop-claim` | Confirm + существующий HTTPS checkout; сетевые операции не выполнялись | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy storage-status` | Wine PASS: чтение roots | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy storage-move` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy storage-retry` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `legacy storage-default` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `versions` | Wine PASS: --installed, worker завершился | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `install` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `remove` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `import-build` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `prepare` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `play` | Контракт аргументов parser PASS; полный сценарий не проверен | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `server` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `native-cache` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `native-build` | Win7 build/host toolchain не поддержан; явный отказ | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `notes` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `links` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `account list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `account refresh` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `account sign-out` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `account select` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `account offline` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `account forget-offline` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `account skin` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `settings` | Контракт аргументов parser PASS; полный сценарий не проверен | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `game-args` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `share-log` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `unshare-log` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `logs` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `update` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `desktop-entry` | Linux-only операция; на Windows неприменима | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `data status` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `data allow` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `data deny` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `data show` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `data delete` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `data send` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `data bug` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `data benchmark` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance create` | Wine PASS: имя с кириллицей, запись JSON, worker завершился; parser test | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance versions` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance java` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance loader` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance rename` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance delete` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance icon` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance group` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance select` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance version` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance export` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance launch` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance shortcut` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance import` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance others` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `instance copy-from` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `worlds list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `worlds backup` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `worlds copy` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `worlds delete` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `worlds datapack-list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `worlds datapack-add` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `worlds datapack-remove` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `packs list` | Контракт аргументов parser PASS; полный сценарий не проверен | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `packs add` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `packs on` | Контракт аргументов parser PASS; полный сценарий не проверен | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `packs off` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `packs remove` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `java list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `java install` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `screenshots list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `screenshots delete` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `multiplayer list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `multiplayer add` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `multiplayer remove` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `modpack list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `modpack import` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `modpack port` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `modpack play` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `modpack remove` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods search` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods check` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods install` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods update` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods add-github` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods update-github` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods remove` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods enable` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `mods disable` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `rust status` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `rust install` | Win7 build/host toolchain не поддержан; явный отказ | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `rust remove` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `servers list` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `servers create` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `servers set-up` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `servers run` | Контракт аргументов parser PASS; полный сценарий не проверен | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `servers forget` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `no-ai` | Не выполнена отдельно; см. core tests и ручную приёмку | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| Microsoft Device Code panel | Wine PASS: отказ без client ID; настоящий OAuth не проверен | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `--smoke-client` | Wine PASS: Unicode paths, resources/home/env; mock, не игра | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
-| `--check-prepare-runtime` | SHA-проверенный локальный vendor archive + JVM probe под Wine; сеть/экспортёры не проверены | НЕ ПРОВЕРЕНО | НЕ ПРОВЕРЕНО |
+| `legacy wardrobe-list` | Shared core API; ownership/confirmation unit checks; live service not tested | NOT TESTED | NOT TESTED |
+| `legacy wardrobe-equip` | Shared core API; ownership/confirmation unit checks; live service not tested | NOT TESTED | NOT TESTED |
+| `legacy wardrobe-unequip` | Shared core API; ownership/confirmation unit checks; live service not tested | NOT TESTED | NOT TESTED |
+| `legacy wardrobe-visible` | Shared core API; ownership/confirmation unit checks; live service not tested | NOT TESTED | NOT TESTED |
+| `legacy wardrobe-preferences` | Shared core API; ownership/confirmation unit checks; live service not tested | NOT TESTED | NOT TESTED |
+| `legacy wardrobe-claim` | Shared core API; ownership/confirmation unit checks; live service not tested | NOT TESTED | NOT TESTED |
+| `legacy shop-catalogue` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `legacy shop-history` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `legacy shop-quote` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `legacy shop-checkout` | Explicit Confirm and existing HTTPS checkout; no live transaction performed | NOT TESTED | NOT TESTED |
+| `legacy shop-claim` | Explicit Confirm and existing HTTPS checkout; no live transaction performed | NOT TESTED | NOT TESTED |
+| `legacy storage-status` | Wine PASS: reading active roots | NOT TESTED | NOT TESTED |
+| `legacy storage-move` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `legacy storage-retry` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `legacy storage-default` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `versions` | Wine PASS: --installed and worker completion | NOT TESTED | NOT TESTED |
+| `install` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `remove` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `import-build` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `prepare` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `play` | Parser argument contract PASS; full scenario not tested | NOT TESTED | NOT TESTED |
+| `server` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `native-cache` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `native-build` | Win7 native-build/host toolchain unsupported; explicit refusal | NOT TESTED | NOT TESTED |
+| `notes` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `links` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `account list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `account refresh` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `account sign-out` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `account select` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `account offline` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `account forget-offline` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `account skin` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `settings` | Parser argument contract PASS; full scenario not tested | NOT TESTED | NOT TESTED |
+| `game-args` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `share-log` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `unshare-log` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `logs` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `update` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `desktop-entry` | Linux-only operation; not applicable to Windows | NOT TESTED | NOT TESTED |
+| `data status` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `data allow` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `data deny` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `data show` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `data delete` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `data send` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `data bug` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `data benchmark` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance create` | Wine PASS: Unicode name, JSON persistence, worker completion; parser test | NOT TESTED | NOT TESTED |
+| `instance versions` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance java` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance loader` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance rename` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance delete` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance icon` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance group` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance select` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance version` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance export` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance launch` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance shortcut` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance import` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance others` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `instance copy-from` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `worlds list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `worlds backup` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `worlds copy` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `worlds delete` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `worlds datapack-list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `worlds datapack-add` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `worlds datapack-remove` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `packs list` | Parser argument contract PASS; full scenario not tested | NOT TESTED | NOT TESTED |
+| `packs add` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `packs on` | Parser argument contract PASS; full scenario not tested | NOT TESTED | NOT TESTED |
+| `packs off` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `packs remove` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `java list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `java install` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `screenshots list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `screenshots delete` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `multiplayer list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `multiplayer add` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `multiplayer remove` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `modpack list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `modpack import` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `modpack port` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `modpack play` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `modpack remove` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods search` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods check` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods install` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods update` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods add-github` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods update-github` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods remove` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods enable` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `mods disable` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `rust status` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `rust install` | Win7 native-build/host toolchain unsupported; explicit refusal | NOT TESTED | NOT TESTED |
+| `rust remove` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `servers list` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `servers create` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `servers set-up` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `servers run` | Parser argument contract PASS; full scenario not tested | NOT TESTED | NOT TESTED |
+| `servers forget` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| `no-ai` | Not exercised separately; see core tests and the hardware checklist | NOT TESTED | NOT TESTED |
+| Microsoft Device Code panel | Wine PASS: safe refusal without client ID; real OAuth not tested | NOT TESTED | NOT TESTED |
+| `--smoke-client` | Wine PASS: Unicode paths, resources/home/env; mock only, not the game | NOT TESTED | NOT TESTED |
+| `--check-prepare-runtime` | Verified local vendor archive and JVM probe under Wine; network/exporters not tested | NOT TESTED | NOT TESTED |
 
-Отсутствуют GPUI visual previews/gallery/drag-and-drop. Native controls дают текстовые формы;
-полученный checkout URL открывается пользователем во внешнем браузере. Полнота рабочего
-сценария на обеих физических системах требует отдельного PASS/FAIL с логом для каждой строки.
+GPUI visual previews/gallery and drag-and-drop are not ported. Native controls provide
+text forms; the user opens a returned checkout URL in an external browser. Each row needs
+its own PASS/FAIL and log on both physical systems before hardware parity can be accepted.

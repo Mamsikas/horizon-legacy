@@ -68,6 +68,7 @@ python3 tools/check_win7_imports.py --json "$mock" > "$out/imports-mock-win7-x64
 cp -- "$binary" "$out/horizon-launcher-win7.exe"
 cp -- "$mock" "$out/mock-horizon-client.exe"
 cp -- packaging/win7/TESTING.md "$out/TESTING.md"
+cp -- packaging/win7/LOCAL_VALIDATION.json "$out/LOCAL_VALIDATION.json"
 for report in win7-launcher-status.md win7-prepare-audit.md win7-action-parity.md; do
     cp -- "docs/$report" "$out/$report"
 done
@@ -85,7 +86,8 @@ import zipfile
 
 out = pathlib.Path(sys.argv[1])
 names = ('horizon-launcher-win7.exe', 'TESTING.md', 'build.txt', 'imports-win7-x64.json',
-         'win7-launcher-status.md', 'win7-prepare-audit.md', 'win7-action-parity.md')
+         'win7-launcher-status.md', 'win7-prepare-audit.md', 'win7-action-parity.md',
+         'LOCAL_VALIDATION.json')
 with zipfile.ZipFile(out / 'horizon-launcher-win7-x64.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
     for name in names:
         archive.write(out / name, name)

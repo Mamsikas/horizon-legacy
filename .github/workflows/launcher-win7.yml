@@ -21,6 +21,34 @@ permissions:
   contents: read
 
 jobs:
+  modern-launcher-regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_DEV_DEBUG: '0'
+      CARGO_PROFILE_TEST_DEBUG: '0'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install the modern launcher's host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libxkbcommon-x11-dev libwayland-dev \
+            libx11-xcb-dev libfontconfig-dev libvulkan-dev libasound2-dev libudev-dev
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: launcher
+          shared-key: win7-modern-launcher-regression
+      - name: Preserve the default GPUI launcher checks
+        working-directory: launcher
+        run: |
+          cargo fmt --check
+          cargo clippy --all-targets --locked -- -D warnings
+          cargo test --locked --lib --bins
   cross-build:
     runs-on: ubuntu-24.04
     timeout-minutes: 45

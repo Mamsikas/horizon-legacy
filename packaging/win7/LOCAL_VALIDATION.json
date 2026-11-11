@@ -1,0 +1,100 @@
+{
+  "environment": "Wine 10 reporting NT 6.1.7601, Xvfb :98 1024x600x24",
+  "real_windows7_hardware": false,
+  "source_commit": "b6ac5690d90a7c289ba3010c25cd9b5cdc33c7be",
+  "binaries": {
+    "horizon-launcher-win7.exe": "f708f0575884bc2c0fcf6b69099b9afe8626d4de8ec03acd6ab132618fab6642",
+    "mock-horizon-client.exe": "2825953983a46fef96d123322b5a703c4df9c0c755a3b91e6c6e7304cc19263a"
+  },
+  "checks": {
+    "shipping-current-version": {
+      "exit": 0,
+      "expected_exit": 0,
+      "pass": true,
+      "seconds": 8.188,
+      "log": "shipping-current-version.log"
+    },
+    "managed_jre_marker": {
+      "pass": true,
+      "expected_archive_sha256": "6e1167a12a91fb5461f2cd304a91a5f4c4545dfb9e87a761a498c81e082414ae",
+      "path": "/workspace/work/win7-wine-prefix/drive_c/ProgramData/horizon-launcher-90d5597c/java/win7-x64/jre-25.0.5.0.3/.horizon-archive-sha256"
+    },
+    "shipping-current-jre-probe": {
+      "exit": 0,
+      "expected_exit": 0,
+      "pass": true,
+      "seconds": 9.593,
+      "log": "shipping-current-jre-probe.log",
+      "unicode_launcher_home": true,
+      "ascii_runtime_path": "C:\\ProgramData\\horizon-launcher-90d5597c\\java\\win7-x64\\jre-25.0.5.0.3"
+    },
+    "shipping-current-java-list": {
+      "exit": 0,
+      "expected_exit": 0,
+      "pass": true,
+      "seconds": 7.518,
+      "log": "shipping-current-java-list.log",
+      "contains_managed_java25": true
+    },
+    "shipping-current-rust-refusal": {
+      "exit": 1,
+      "expected_exit": 1,
+      "pass": true,
+      "seconds": 7.688,
+      "log": "shipping-current-rust-refusal.log",
+      "no_new_toolchain_files": true,
+      "message_refuses_modern_toolchain": true
+    },
+    "shipping-current-nonmodal-error": {
+      "exit": 1,
+      "expected_exit": 1,
+      "pass": true,
+      "seconds": 7.535,
+      "log": "shipping-current-nonmodal-error.log",
+      "stderr_usage_present": true
+    },
+    "shipping-current-mock": {
+      "exit": 0,
+      "expected_exit": 0,
+      "pass": true,
+      "seconds": 8.959,
+      "log": "shipping-current-mock.log",
+      "report": {
+        "mock": true,
+        "resources": "Z:\\workspace\\work\\abi-audit\\Mock Final Unicode _d0w5l1u\\\u0420\u0435\u0441\u0443\u0440\u0441\u044b test",
+        "home": "\\\\?\\Z:\\workspace\\work\\abi-audit\\Mock Final Unicode _d0w5l1u\\Home \u041a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u0430",
+        "cwd": "Z:\\workspace\\work\\abi-audit\\Mock Final Unicode _d0w5l1u\\Home \u041a\u0438\u0440\u0438\u043b\u043b\u0438\u0446\u0430",
+        "launcher": "Z:\\workspace\\work\\win7-build\\artifacts\\horizon-launcher-win7.exe",
+        "inherited": "legacy-contract"
+      }
+    },
+    "shipping-current-java-version": {
+      "exit": 0,
+      "expected_exit": 0,
+      "pass": true,
+      "seconds": 8.825,
+      "log": "shipping-current-java-version.log",
+      "version25": true
+    }
+  },
+  "not_tested": [
+    "Real Win7 SP1 loader and N455 instruction dispatch",
+    "Intel GMA3150 or Radeon HD4570 drivers",
+    "Licensed Minecraft fresh install or exporters",
+    "Microsoft OAuth with approved client ID",
+    "Native mod compilation",
+    "Network transfer of the runtime; the official checksum-pinned ZIP was seeded locally"
+  ],
+  "note": "The cached runtime was installed after its official ZIP was verified; the ASCII tool directory addresses the observed Wine JVM bootstrap failure in a Unicode home. Wine is additional evidence, not Win7 hardware acceptance.",
+  "scope": "Local build evidence only. GitHub-hosted rebuilds have their own hashes in SHA256SUMS.local; Wine is not hardware acceptance.",
+  "host_tests": {
+    "core_passed": 653,
+    "core_ignored": 7,
+    "native_passed": 35,
+    "prepare_java_passed": 5,
+    "resolver_passed": 7,
+    "pe_audit_tests_passed": 10,
+    "format": "pass",
+    "clippy_core_and_native": "pass"
+  }
+}
