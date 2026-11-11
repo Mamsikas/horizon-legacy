@@ -1493,7 +1493,10 @@ impl Game<'_> {
         let renderer = self.renderer.as_ref().map(|r| {
             let [arena_bytes, section_vertex_bytes] = r.section_vertex_bytes();
             // Device memory by the backend's allocator (Vulkan; absent elsewhere).
+            #[cfg(not(all(windows, feature = "legacy-d3d9")))]
             let memory = r.device.generate_allocator_report();
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            let memory: Option<wgpu::AllocatorReport> = None;
             json!({
                 "gpu": r.info.name,
                 "vendor": vendor_name(r.info.vendor),
@@ -1505,7 +1508,7 @@ impl Game<'_> {
                     wgpu::DeviceType::Cpu => "cpu",
                     wgpu::DeviceType::Other => "other",
                 },
-                "backend": format!("{:?}", r.info.backend),
+                "backend": if cfg!(all(windows, feature = "legacy-d3d9")) { "Direct3D9".to_owned() } else { format!("{:?}", r.info.backend) },
                 "size": [r.config.width, r.config.height],
                 "present_mode": format!("{:?}", r.config.present_mode),
                 "drawn_sections": r.drawn_sections,

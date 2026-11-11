@@ -44,6 +44,7 @@ pub struct DrawState {
     pub depth_test: bool,
     pub depth_write: bool,
     pub alpha_test: bool,
+    pub alpha_ref: u8,
     pub cull: bool,
     pub lightmap: bool,
     pub fog: Option<([f32; 3], f32, f32)>,
@@ -59,6 +60,7 @@ impl Default for DrawState {
             depth_test: true,
             depth_write: true,
             alpha_test: true,
+            alpha_ref: 127,
             cull: true,
             lightmap: true,
             fog: None,
@@ -103,6 +105,74 @@ impl Mesh {
         u64::from(self.vertices) * size_of::<Vertex>() as u64
     }
 }
+struct StateCache {
+    render: [Option<u32>; 256],
+    stage: [[Option<u32>; 33]; 2],
+    sampler: [[Option<u32>; 14]; 2],
+    textures: [usize; 2],
+}
+impl Default for StateCache {
+    fn default() -> Self {
+        Self {
+            render: [None; 256],
+            stage: [[None; 33]; 2],
+            sampler: [[None; 14]; 2],
+            textures: [usize::MAX; 2],
+        }
+    }
+}
+impl StateCache {
+    fn render(
+        &mut self,
+        device: &IDirect3DDevice9,
+        state: D3DRENDERSTATETYPE,
+        value: u32,
+    ) -> windows::core::Result<()> {
+        let slot = &mut self.render[state.0 as usize];
+        if *slot != Some(value) {
+            // SAFETY: a live owned device, with a documented render-state value.
+            unsafe {
+                device.SetRenderState(state, value)?;
+            }
+            *slot = Some(value);
+        }
+        Ok(())
+    }
+    fn stage(
+        &mut self,
+        device: &IDirect3DDevice9,
+        index: u32,
+        state: D3DTEXTURESTAGESTATETYPE,
+        value: u32,
+    ) -> windows::core::Result<()> {
+        let slot = &mut self.stage[index as usize][state.0 as usize];
+        if *slot != Some(value) {
+            // SAFETY: stages 0/1 were checked in caps; device and constants are live.
+            unsafe {
+                device.SetTextureStageState(index, state, value)?;
+            }
+            *slot = Some(value);
+        }
+        Ok(())
+    }
+    fn sampler(
+        &mut self,
+        device: &IDirect3DDevice9,
+        index: u32,
+        state: D3DSAMPLERSTATETYPE,
+        value: u32,
+    ) -> windows::core::Result<()> {
+        let slot = &mut self.sampler[index as usize][state.0 as usize];
+        if *slot != Some(value) {
+            // SAFETY: samplers 0/1 and their D3D9 values were checked in caps.
+            unsafe {
+                device.SetSamplerState(index, state, value)?;
+            }
+            *slot = Some(value);
+        }
+        Ok(())
+    }
+}
 pub struct Device {
     inner: Rc<Inner>,
     pub caps: Caps,
@@ -114,6 +184,7 @@ pub struct Device {
     lost: bool,
     scene: bool,
     cached_state: Option<(DrawState, usize, usize)>,
+    state_cache: StateCache,
     cached_transform: Option<[[f32; 16]; 3]>,
     pub draws: u64,
     pub binds: u64,
@@ -295,6 +366,7 @@ impl Device {
             lost: false,
             scene: false,
             cached_state: None,
+            state_cache: StateCache::default(),
             cached_transform: None,
             draws: 0,
             binds: 0,
@@ -319,6 +391,7 @@ impl Device {
             lost: self.lost,
             scene: false,
             cached_state: None,
+            state_cache: StateCache::default(),
             cached_transform: None,
             draws: 0,
             binds: 0,
@@ -428,6 +501,7 @@ impl Device {
         self.draws = 0;
         self.binds = 0;
         self.cached_state = None;
+        self.state_cache = StateCache::default();
         self.cached_transform = None;
         // SAFETY: state values are D3D9 constants; begin/finish pair on this thread.
         unsafe {
@@ -504,26 +578,30 @@ impl Device {
         view: [f32; 16],
         projection: [f32; 16],
     ) -> Result<()> {
-        if self.cached_transform == Some([world, view, projection]) {
-            return Ok(());
+        let previous = self.cached_transform;
+        // SAFETY: Matrix4x4 is repr(C), sixteen f32 values in row order; glam's
+        // column storage supplies the transpose for D3D's row-vector convention.
+        unsafe {
+            if previous.is_none_or(|p| p[0] != world) {
+                self.inner.device.SetTransform(
+                    D3DTS_WORLD,
+                    &std::mem::transmute::<[f32; 16], Matrix4x4>(world),
+                )?;
+            }
+            if previous.is_none_or(|p| p[1] != view) {
+                self.inner.device.SetTransform(
+                    D3DTS_VIEW,
+                    &std::mem::transmute::<[f32; 16], Matrix4x4>(view),
+                )?;
+            }
+            if previous.is_none_or(|p| p[2] != projection) {
+                self.inner.device.SetTransform(
+                    D3DTS_PROJECTION,
+                    &std::mem::transmute::<[f32; 16], Matrix4x4>(projection),
+                )?;
+            }
         }
         self.cached_transform = Some([world, view, projection]);
-        // glam's column arrays describe the transpose required by D3D's row-vector matrices.
-        // SAFETY: Matrix4x4 is repr(C), sixteen f32 fields in row order, same layout as the arrays.
-        unsafe {
-            self.inner.device.SetTransform(
-                D3DTS_WORLD,
-                &std::mem::transmute::<[f32; 16], Matrix4x4>(world),
-            )?;
-            self.inner.device.SetTransform(
-                D3DTS_VIEW,
-                &std::mem::transmute::<[f32; 16], Matrix4x4>(view),
-            )?;
-            self.inner.device.SetTransform(
-                D3DTS_PROJECTION,
-                &std::mem::transmute::<[f32; 16], Matrix4x4>(projection),
-            )?;
-        }
         Ok(())
     }
     pub fn texture(
@@ -678,20 +756,31 @@ impl Device {
         // SAFETY: validated resource ownership and documented D3D9 state constants.
         unsafe {
             let d = &self.inner.device;
-            d.SetTexture(0, &texture.raw)?;
-            d.SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE.0 as u32)?;
-            d.SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
-            d.SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
-            d.SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as u32)?;
-            d.SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE)?;
-            d.SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE)?;
-            d.SetTextureStageState(0, D3DTSS_TEXCOORDINDEX, 0)?;
+            let cache = &mut self.state_cache;
+            if cache.textures[0] != texture.raw.as_raw() as usize {
+                d.SetTexture(0, &texture.raw)?;
+                cache.textures[0] = texture.raw.as_raw() as usize;
+                self.binds += 1;
+            }
+            cache.stage(d, 0, D3DTSS_COLOROP, D3DTOP_MODULATE.0 as u32)?;
+            cache.stage(d, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
+            cache.stage(d, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
+            cache.stage(d, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as u32)?;
+            cache.stage(d, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE)?;
+            cache.stage(d, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE)?;
+            cache.stage(d, 0, D3DTSS_TEXCOORDINDEX, 0)?;
             let lm = if state.lightmap { lightmap } else { None };
             let light_texture = lm
                 .map(|t| t.raw.cast::<IDirect3DBaseTexture9>())
                 .transpose()?;
-            d.SetTexture(1, light_texture.as_ref())?;
-            d.SetTextureStageState(
+            let light_id = light_texture.as_ref().map_or(0, |t| t.as_raw() as usize);
+            if cache.textures[1] != light_id {
+                d.SetTexture(1, light_texture.as_ref())?;
+                cache.textures[1] = light_id;
+                self.binds += 1;
+            }
+            cache.stage(
+                d,
                 1,
                 D3DTSS_COLOROP,
                 if lm.is_some() {
@@ -700,11 +789,11 @@ impl Device {
                     D3DTOP_DISABLE.0
                 } as u32,
             )?;
-            d.SetTextureStageState(1, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
-            d.SetTextureStageState(1, D3DTSS_COLORARG2, D3DTA_CURRENT)?;
-            d.SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2.0 as u32)?;
-            d.SetTextureStageState(1, D3DTSS_ALPHAARG2, D3DTA_CURRENT)?;
-            d.SetTextureStageState(1, D3DTSS_TEXCOORDINDEX, 1)?;
+            cache.stage(d, 1, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
+            cache.stage(d, 1, D3DTSS_COLORARG2, D3DTA_CURRENT)?;
+            cache.stage(d, 1, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2.0 as u32)?;
+            cache.stage(d, 1, D3DTSS_ALPHAARG2, D3DTA_CURRENT)?;
+            cache.stage(d, 1, D3DTSS_TEXCOORDINDEX, 1)?;
             let (src, dst) = match state.blend {
                 Blend::Opaque | Blend::Alpha => (D3DBLEND_SRCALPHA, D3DBLEND_INVSRCALPHA),
                 Blend::Additive => (D3DBLEND_SRCALPHA, D3DBLEND_ONE),
@@ -712,16 +801,19 @@ impl Device {
                 Blend::Multiply => (D3DBLEND_ZERO, D3DBLEND_INVSRCCOLOR),
                 Blend::Cracks => (D3DBLEND_DESTCOLOR, D3DBLEND_SRCCOLOR),
             };
-            d.SetRenderState(
+            cache.render(
+                d,
                 D3DRS_ALPHABLENDENABLE,
                 u32::from(state.blend != Blend::Opaque),
             )?;
-            d.SetRenderState(D3DRS_SRCBLEND, src.0 as u32)?;
-            d.SetRenderState(D3DRS_DESTBLEND, dst.0 as u32)?;
-            d.SetRenderState(D3DRS_ZENABLE, u32::from(state.depth_test))?;
-            d.SetRenderState(D3DRS_ZWRITEENABLE, u32::from(state.depth_write))?;
-            d.SetRenderState(D3DRS_ALPHATESTENABLE, u32::from(state.alpha_test))?;
-            d.SetRenderState(
+            cache.render(d, D3DRS_SRCBLEND, src.0 as u32)?;
+            cache.render(d, D3DRS_DESTBLEND, dst.0 as u32)?;
+            cache.render(d, D3DRS_ZENABLE, u32::from(state.depth_test))?;
+            cache.render(d, D3DRS_ZWRITEENABLE, u32::from(state.depth_write))?;
+            cache.render(d, D3DRS_ALPHATESTENABLE, u32::from(state.alpha_test))?;
+            cache.render(d, D3DRS_ALPHAREF, u32::from(state.alpha_ref))?;
+            cache.render(
+                d,
                 D3DRS_CULLMODE,
                 if state.cull {
                     D3DCULL_CW.0
@@ -729,7 +821,11 @@ impl Device {
                     D3DCULL_NONE.0
                 } as u32,
             )?;
-            d.SetRenderState(D3DRS_SCISSORTESTENABLE, u32::from(state.scissor.is_some()))?;
+            cache.render(
+                d,
+                D3DRS_SCISSORTESTENABLE,
+                u32::from(state.scissor.is_some()),
+            )?;
             if let Some([x, y, w, h]) = state.scissor {
                 d.SetScissorRect(&RECT {
                     left: x as i32,
@@ -738,17 +834,18 @@ impl Device {
                     bottom: (y + h) as i32,
                 })?;
             }
-            d.SetRenderState(D3DRS_FOGENABLE, u32::from(state.fog.is_some()))?;
+            cache.render(d, D3DRS_FOGENABLE, u32::from(state.fog.is_some()))?;
             if let Some((color, start, end)) = state.fog {
-                d.SetRenderState(D3DRS_FOGCOLOR, argb([color[0], color[1], color[2], 1.0]))?;
-                d.SetRenderState(D3DRS_FOGTABLEMODE, D3DFOG_NONE.0 as u32)?;
-                d.SetRenderState(D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR.0 as u32)?;
-                d.SetRenderState(
+                cache.render(d, D3DRS_FOGCOLOR, argb([color[0], color[1], color[2], 1.0]))?;
+                cache.render(d, D3DRS_FOGTABLEMODE, D3DFOG_NONE.0 as u32)?;
+                cache.render(d, D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR.0 as u32)?;
+                cache.render(
+                    d,
                     D3DRS_RANGEFOGENABLE,
                     u32::from(self.caps.raw.RasterCaps & D3DPRASTERCAPS_FOGRANGE as u32 != 0),
                 )?;
-                d.SetRenderState(D3DRS_FOGSTART, start.to_bits())?;
-                d.SetRenderState(D3DRS_FOGEND, end.max(start + 0.01).to_bits())?;
+                cache.render(d, D3DRS_FOGSTART, start.to_bits())?;
+                cache.render(d, D3DRS_FOGEND, end.max(start + 0.01).to_bits())?;
             }
             for sampler in 0..2 {
                 let filter = if state.linear || sampler == 1 {
@@ -756,9 +853,10 @@ impl Device {
                 } else {
                     D3DTEXF_POINT
                 };
-                d.SetSamplerState(sampler, D3DSAMP_MINFILTER, filter.0 as u32)?;
-                d.SetSamplerState(sampler, D3DSAMP_MAGFILTER, filter.0 as u32)?;
-                d.SetSamplerState(
+                cache.sampler(d, sampler, D3DSAMP_MINFILTER, filter.0 as u32)?;
+                cache.sampler(d, sampler, D3DSAMP_MAGFILTER, filter.0 as u32)?;
+                cache.sampler(
+                    d,
                     sampler,
                     D3DSAMP_MIPFILTER,
                     if state.mipmaps && sampler == 0 {
@@ -772,11 +870,10 @@ impl Device {
                 } else {
                     D3DTADDRESS_CLAMP
                 };
-                d.SetSamplerState(sampler, D3DSAMP_ADDRESSU, address.0 as u32)?;
-                d.SetSamplerState(sampler, D3DSAMP_ADDRESSV, address.0 as u32)?;
+                cache.sampler(d, sampler, D3DSAMP_ADDRESSU, address.0 as u32)?;
+                cache.sampler(d, sampler, D3DSAMP_ADDRESSV, address.0 as u32)?;
             }
         }
-        self.binds += 1;
         Ok(())
     }
     pub fn draw(&mut self, mesh: &Mesh, first: u32, count: u32) -> Result<()> {

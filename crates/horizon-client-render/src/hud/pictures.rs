@@ -216,3 +216,10 @@ impl HudRenderer {
 
 #[cfg(test)]
 mod tests;
+
+impl Picture {
+    #[cfg(all(windows, feature = "legacy-d3d9"))]
+    pub(crate) fn legacy_data(&self) -> (u64, u32, u32, &[u8], TextureFlags) {
+        (self.id, self.width, self.height, &self.pixels, self.flags)
+    }
+}

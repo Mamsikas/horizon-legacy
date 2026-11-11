@@ -22,7 +22,8 @@ impl Game<'_> {
         }
     }
     pub(super) fn prepare_lod(&mut self) {
-        let enabled = self.far_terrain_choice().0 > 0
+        let enabled = !cfg!(all(windows, feature = "legacy-d3d9"))
+            && self.far_terrain_choice().0 > 0
             && self.renderer.is_some()
             && self.player.is_some()
             && self.title.is_none();

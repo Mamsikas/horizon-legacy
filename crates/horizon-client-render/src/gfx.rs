@@ -12839,6 +12839,14 @@ pub struct Frustum {
     planes: [Vec4; 6],
 }
 impl Frustum {
+    #[cfg(all(windows, feature = "legacy-d3d9"))]
+    /// Shared CPU culling for render backends using the same camera conventions.
+    pub(crate) fn from_view_projection(matrix: Mat4) -> Self {
+        Self {
+            planes: frustum(matrix),
+        }
+    }
+
     /// Whether the camera-relative box `min..max` is at least partly inside.
     pub fn intersects(&self, min: Vec3, max: Vec3) -> bool {
         !self.planes.iter().any(|p| {
