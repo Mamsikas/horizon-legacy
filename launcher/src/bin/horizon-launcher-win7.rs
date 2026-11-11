@@ -24,7 +24,9 @@ mod win7;
 fn main() {
     if let Err(error) = run() {
         #[cfg(windows)]
-        win7::window::error(&error);
+        if std::env::args_os().nth(1).is_none() {
+            win7::window::error(&error);
+        }
         eprintln!("{error}");
         std::process::exit(1);
     }
