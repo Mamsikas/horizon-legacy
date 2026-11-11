@@ -3,8 +3,9 @@ Horizon Direct3D9 preview - Windows 7 SP1 x64
 This preview requires the GPU manufacturer's Windows 7 driver, prepared legal
 Horizon resources matching Minecraft 26.3, and an Atom N455-compatible x64 CPU
 (SSE3/SSSE3). The owner reports the HAL smoke test works on GMA3150. Gameplay on that GPU and
-on Radeon HD4570 is not verified; the first RTX3050 game test exposed severe
-performance/memory bugs. This update needs an RTX3050 retest first.
+on Radeon HD4570 is not verified. The owner reports the second RTX3050 build
+reached 200+ FPS at 8 chunks, about 50 at 16, with severe resize/cache stalls.
+This update needs another RTX3050 retest before moving back to target hardware.
 No Java, Vulkan, OpenGL, D3D11/D3D12 or shader compiler is used by the DX9 renderer.
 
 1. Extract the entire ZIP. Run d3d9-smoke.exe first. It must show overlapping
@@ -13,7 +14,7 @@ No Java, Vulkan, OpenGL, D3D11/D3D12 or shader compiler is used by the DX9 rende
 2. In the existing legacy launcher select horizon-client.exe as the native client.
    Use your existing prepared resources. DX9 is the default for this executable.
    Direct launch, if needed:
-   horizon-client.exe --resources "C:\path\to\26.3" --game-dir "C:\path\to\test-game"
+   horizon-client.exe --control --resources "C:\path\to\26.3" --game-dir "C:\path\to\test-game"
    Test in a COPY of a save. Render distance, FPS, resolution and vanilla graphics
    options stay under your control; no low preset is installed.
 3. Open a world, move around, open inventory/chat, type/copy/paste Unicode text, save/reopen the world,
@@ -26,12 +27,17 @@ Performance diagnosis (no profiler installation needed):
 The normal log and F3 now separate lightmap, sprite animation, GUI patches,
 visibility, terrain cache, solid/translucent draws, entities, effects/hand and GUI.
 These are CPU elapsed times (including driver waits), not GPU timestamp queries.
-The five-second log also reports retained CPU geometry, DEFAULT GPU cache bytes,
-texture bytes and process memory [private resident estimate, resident, total RAM].
+The five-second log reports compressed CPU geometry and its decoded size, static
+DEFAULT GPU arenas, stream/index/mesh upload bytes, interval average/peak CPU time
+and stages of the worst frame, texture bytes and process memory [private resident estimate, resident, total RAM].
 Remove the old HORIZON_D3D9_MESH_MIB / HORIZON_D3D9_TEXTURE_MIB overrides to test
 automatic targets. For the RTX3050 retest use the same world/settings as before. Let chunks settle,
 then send latest.log, a screenshot of F3, and these optional local reports from a
-second terminal while the world runs (horizon-ctl finds the running client's home):
+second terminal while the world runs. IMPORTANT: start the game with --control
+(add it to the launcher's extra game arguments, or use the direct command above).
+Without --control the tool only returns a connection error, not a memory/FPS report.
+The local control endpoint is not silently enabled by this build:
+
   horizon-ctl.exe bench 20 > frame-stats.json
   horizon-ctl.exe memory > memory.json
   horizon-ctl.exe trace render-trace.json 10
@@ -40,8 +46,15 @@ If the launcher uses a custom HORIZON_HOME, set that same home in this terminal.
 
 Memory targets now manage caching, rather than aborting at 128 MiB. Native-sized
 sprite pages and small isolated animation/GUI pages avoid the old giant atlas.
-Terrain has one CPU copy and a bounded, lazy DEFAULT VB cache; offscreen GPU
-buffers are evicted first. Uncached geometry uses bounded transient draws. User
+CPU geometry is losslessly compressed. Immutable regional DEFAULT arenas share
+vertices across sections, and hardware vertex processing batches solid terrain by
+texture using visible quad indices. Software vertex processing keeps narrow direct
+draw ranges to avoid transforming sparse arena spans. Offscreen GPU buffers are
+evicted first. Automatic cache targets now scale beyond 128 MiB when the adapter
+and system RAM allow it. Dynamic vertex/index streams append with NOOVERWRITE and
+DISCARD only at wrap; uncached geometry remains drawable. GUI batching only reorders
+screen bounds that cannot overlap. Fog keeps its atmospheric/distance intervals
+intact; the stricter complete interval is used by the basic fixed-function path. User
 render distance and texture quality are not rewritten. The Video Settings API
 row explicitly shows Direct3D 9; this Win7 executable offers DX9 only.
 

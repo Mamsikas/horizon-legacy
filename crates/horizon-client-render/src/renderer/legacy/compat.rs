@@ -12,25 +12,20 @@ impl Renderer {
         [false; 2]
     }
     pub fn vertex_bytes_split(&self) -> [u64; 2] {
-        self.section_vertex_bytes()
+        [
+            self.arenas
+                .values()
+                .map(|a| u64::from(a.live) * size_of::<dx::Vertex>() as u64)
+                .sum(),
+            0,
+        ]
     }
     pub fn section_vertex_bytes(&self) -> [u64; 2] {
-        [
-            self.sections
-                .values()
-                .flat_map(|s| &s.solid)
-                .map(|p| u64::from(p.count) * size_of::<dx::Vertex>() as u64)
-                .sum(),
-            self.sections
-                .values()
-                .flat_map(|s| &s.translucent)
-                .map(|p| u64::from(p.count) * size_of::<dx::Vertex>() as u64)
-                .sum(),
-        ]
+        [self.gpu_mesh_bytes, self.vertex_bytes_split()[0]]
     }
     pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
         vec![
-            ("D3D9 section VBs (DEFAULT cache)", self.gpu_mesh_bytes),
+            ("D3D9 terrain arenas (DEFAULT cache)", self.gpu_mesh_bytes),
             ("D3D9 sprite pages (managed)", self.sprites.layout.bytes()),
             ("D3D9 GUI pages (managed)", self.hud.atlas.bytes()),
         ]
@@ -42,7 +37,16 @@ impl Renderer {
         [
             (
                 "D3D9 section metadata",
-                self.sections.capacity() * size_of::<Section>(),
+                self.sections.capacity() * size_of::<Section>()
+                    + self
+                        .sections
+                        .values()
+                        .map(|s| {
+                            (s.solid.capacity() + s.translucent.capacity())
+                                * size_of::<mesh::Packet>()
+                                + s.gpu.capacity() * size_of::<mesh::GpuSlice>()
+                        })
+                        .sum::<usize>(),
             ),
             (
                 "D3D9 GUI animation metadata",
@@ -50,7 +54,15 @@ impl Renderer {
                     * size_of::<(Rect, SpriteAnimation, (usize, usize, u32))>(),
             ),
             ("D3D9 retained CPU geometry", self.mesh_bytes as usize),
-            ("D3D9 textures (managed backing counted by driver)", 0),
+            (
+                "D3D9 index/decode scratch",
+                self.decode_scratch.capacity() * size_of::<dx::Vertex>()
+                    + self
+                        .solid_batches
+                        .values()
+                        .map(dx::IndexBatch::bytes)
+                        .sum::<usize>(),
+            ),
         ]
     }
     pub fn set_shared_material_maps(&mut self, maps: &[Option<crate::paged_maps::PagedMap>; 2]) {}
@@ -310,7 +322,14 @@ impl Renderer {
         Vec::new()
     }
     pub fn own_pass_times(&self) -> Vec<(String, f32)> {
-        self.stage_times.clone()
+        Vec::new()
+    }
+    pub fn cpu_pass_times(&self) -> Vec<(String, f32)> {
+        self.stage_times
+            .iter()
+            .filter(|(name, _)| name != "D3D9 CPU frame")
+            .cloned()
+            .collect()
     }
     pub fn define_pack_macros(&self, macros: &mut horizon_shaders::Macros) {}
     pub fn shader_pack_dimension(&self) -> Option<i32> {

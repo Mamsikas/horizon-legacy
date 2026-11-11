@@ -23,7 +23,7 @@ mod compat;
 mod frame;
 mod mesh;
 use atlas::{Pixels, Sprites};
-use mesh::Section;
+use mesh::{Arena, Section};
 
 pub struct Hud {
     pub sprite_animations: Vec<(Rect, SpriteAnimation, (usize, usize, u32))>,
@@ -73,6 +73,11 @@ pub struct Renderer {
     texture_budget: u64,
     pending_error: Option<String>,
     gpu_mesh_bytes: u64,
+    decoded_mesh_bytes: u64,
+    arenas: HashMap<u64, Arena>,
+    next_arena: u64,
+    decode_scratch: Vec<dx::Vertex>,
+    solid_batches: BTreeMap<(usize, bool, u64), dx::IndexBatch>,
     upload_cpu: Duration,
     timings: Vec<(&'static str, f32)>,
     texture_target_warned: bool,
@@ -84,6 +89,8 @@ pub struct Renderer {
     custom_sky_draws: Vec<crate::custom_sky::Draw>,
     last_log: Instant,
     frames: u64,
+    profile_window: (u64, f64, f64),
+    worst_stages: Vec<(&'static str, f32)>,
     stage_times: Vec<(String, f32)>,
     hold: WorldHold,
     shader_refusal: Option<(i32, String, Instant)>,
@@ -121,7 +128,9 @@ impl Renderer {
         let default_budget = if advisory == 0 {
             64 << 20
         } else {
-            (advisory / 3).clamp(16 << 20, 128 << 20)
+            (advisory / 3)
+                .min(horizon_threads::process_memory::usage().map_or(1 << 30, |m| m[2] / 8))
+                .clamp(16 << 20, 1 << 30)
         };
         let mesh_budget = budget("HORIZON_D3D9_MESH_MIB", default_budget)?;
         let texture_budget = budget("HORIZON_D3D9_TEXTURE_MIB", default_budget)?;
@@ -234,6 +243,11 @@ impl Renderer {
             texture_budget,
             pending_error: None,
             gpu_mesh_bytes: 0,
+            decoded_mesh_bytes: 0,
+            arenas: HashMap::new(),
+            next_arena: 0,
+            decode_scratch: Vec::new(),
+            solid_batches: BTreeMap::new(),
             upload_cpu: Duration::ZERO,
             timings: Vec::new(),
             texture_target_warned: false,
@@ -245,6 +259,8 @@ impl Renderer {
             custom_sky_draws: Vec::new(),
             last_log: Instant::now(),
             frames: 0,
+            profile_window: (0, 0.0, 0.0),
+            worst_stages: Vec::new(),
             stage_times: Vec::new(),
             hold: WorldHold::default(),
             shader_refusal: None,

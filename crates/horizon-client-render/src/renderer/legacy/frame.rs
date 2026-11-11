@@ -6,6 +6,55 @@ struct Batch {
     state: DrawState,
     vertices: Vec<dx::Vertex>,
 }
+struct GuiBatches {
+    state: DrawState,
+    order: dx::PaintWindow,
+    ready: Vec<Batch>,
+    open: Vec<Batch>,
+}
+impl GuiBatches {
+    fn new(state: DrawState) -> Self {
+        Self {
+            state,
+            order: dx::PaintWindow::default(),
+            ready: Vec::new(),
+            open: Vec::new(),
+        }
+    }
+    fn flush(&mut self) {
+        self.ready.append(&mut self.open);
+    }
+    fn push(&mut self, page: usize, poly: &[dx::Vertex]) {
+        let bounds = [
+            poly.iter().map(|v| v.pos[0]).fold(f32::INFINITY, f32::min),
+            poly.iter().map(|v| v.pos[1]).fold(f32::INFINITY, f32::min),
+            poly.iter()
+                .map(|v| v.pos[0])
+                .fold(f32::NEG_INFINITY, f32::max),
+            poly.iter()
+                .map(|v| v.pos[1])
+                .fold(f32::NEG_INFINITY, f32::max),
+        ];
+        if self.order.barrier(page, bounds) {
+            self.flush();
+        }
+        let at = if let Some(at) = self.open.iter().position(|b| b.page == page) {
+            at
+        } else {
+            self.open.push(Batch {
+                page,
+                state: self.state,
+                vertices: Vec::new(),
+            });
+            self.open.len() - 1
+        };
+        atlas::triangles(poly, &mut self.open[at].vertices);
+    }
+    fn finish(mut self) -> Vec<Batch> {
+        self.flush();
+        self.ready
+    }
+}
 fn batch(
     out: &mut Vec<Batch>,
     page: usize,
@@ -153,9 +202,16 @@ impl Renderer {
         ));
         self.stage_times
             .push(("D3D9 Present".into(), self.last_wait.as_secs_f32() * 1000.0));
+        let cpu_ms = self.last_encode.as_secs_f64() * 1000.0;
+        self.profile_window.0 += 1;
+        self.profile_window.1 += cpu_ms;
+        if cpu_ms >= self.profile_window.2 {
+            self.profile_window.2 = cpu_ms;
+            self.worst_stages.clone_from(&self.timings);
+        }
         if self.last_log.elapsed() >= Duration::from_secs(5) {
             log::info!(
-                "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_gpu_bytes={} texture_bytes={}",
+                "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_decoded_bytes={} mesh_gpu_bytes={} arenas={} texture_bytes={}",
                 self.frames,
                 self.last_encode.as_secs_f64() * 1000.0,
                 self.last_wait.as_secs_f64() * 1000.0,
@@ -165,7 +221,9 @@ impl Renderer {
                 self.drawn_sections,
                 self.sections.len(),
                 self.mesh_bytes,
+                self.decoded_mesh_bytes,
                 self.gpu_mesh_bytes,
+                self.arenas.len(),
                 self.texture_bytes()
             );
             log::info!(
@@ -174,6 +232,17 @@ impl Renderer {
                 self.upload_cpu.as_secs_f64() * 1000.0,
                 horizon_threads::process_memory::usage()
             );
+            log::info!(
+                "D3D9 window_frames={} cpu_avg_ms={:.3} cpu_peak_ms={:.3} peak_stages_ms={:?} mesh_uploads={} stream_uploads={} index_uploads={}",
+                self.profile_window.0,
+                self.profile_window.1 / self.profile_window.0 as f64,
+                self.profile_window.2,
+                self.worst_stages,
+                self.device.mesh_uploads,
+                self.device.stream_uploads,
+                self.device.index_uploads
+            );
+            self.profile_window = (0, 0.0, 0.0);
             self.last_log = Instant::now();
         }
         self.upload_cpu = Duration::ZERO;
@@ -255,8 +324,16 @@ impl Renderer {
                 .map(|f| {
                     (
                         [f.color[0], f.color[1], f.color[2]],
-                        f.environmental_start.min(f.render_distance_start),
-                        f.environmental_end.min(f.render_distance_end),
+                        dx::fog_interval(
+                            (f.environmental_start, f.environmental_end),
+                            (f.render_distance_start, f.render_distance_end),
+                        )
+                        .0,
+                        dx::fog_interval(
+                            (f.environmental_start, f.environmental_end),
+                            (f.render_distance_start, f.render_distance_end),
+                        )
+                        .1,
                     )
                 })
                 .or_else(|| {
@@ -297,16 +374,29 @@ impl Renderer {
             self.prepare_sections(&visible)?;
             self.stamp("terrain cache", &mut clock);
             self.drawn_sections = visible.len();
+            let mut decoded = std::mem::take(&mut self.decode_scratch);
+            let before = self.device.draws;
             for (key, origin, _) in &visible {
                 let section = &self.sections[key];
                 if section.solid.is_empty() {
                     continue;
                 }
-                self.device.transform(
-                    Mat4::from_translation(*origin).to_cols_array(),
-                    view.view.to_cols_array(),
-                    projection.to_cols_array(),
-                )?;
+                if section.gpu.is_empty() {
+                    section.vertices.decode(&mut decoded)?;
+                }
+                let direct = section.gpu.is_empty() || self.device.caps.software_vertices;
+                if direct {
+                    self.device.transform(
+                        Mat4::from_translation(mesh::region_origin(
+                            mesh::region_key(*key),
+                            self.layout,
+                            frame.camera,
+                        ))
+                        .to_cols_array(),
+                        view.view.to_cols_array(),
+                        projection.to_cols_array(),
+                    )?;
+                }
                 let mut runs = smallvec::SmallVec::<[Range<u32>; 7]>::new();
                 if self.sides {
                     section
@@ -324,21 +414,73 @@ impl Renderer {
                     {
                         continue;
                     }
-                    self.device.state(
-                        DrawState {
-                            alpha_test: !packet.opaque,
-                            fog,
-                            linear: self.linear,
-                            mipmaps: self.mipmaps,
-                            ..Default::default()
-                        },
-                        &self.sprites.pages[packet.page],
-                        Some(&self.lightmap),
-                    )?;
-                    mesh::draw_packet(&mut self.device, section, packet)?;
-                    self.section_draws += 1;
+                    if direct {
+                        self.device.state(
+                            DrawState {
+                                alpha_test: !packet.opaque,
+                                fog,
+                                linear: self.linear,
+                                mipmaps: self.mipmaps,
+                                ..Default::default()
+                            },
+                            &self.sprites.pages[packet.page],
+                            Some(&self.lightmap),
+                        )?;
+                        mesh::draw_packet(
+                            &mut self.device,
+                            &self.arenas,
+                            section,
+                            packet,
+                            &decoded,
+                        )?;
+                    } else {
+                        for slice in &section.gpu {
+                            let first = packet.first.max(slice.source.start);
+                            let end = (packet.first + packet.count).min(slice.source.end);
+                            if first < end {
+                                self.solid_batches
+                                    .entry((packet.page, !packet.opaque, slice.arena))
+                                    .or_default()
+                                    .append(
+                                        slice.first + first - slice.source.start,
+                                        end - first,
+                                    )?;
+                            }
+                        }
+                    }
                 }
             }
+            self.decode_scratch = decoded;
+            self.stamp("terrain indices/cold draws", &mut clock);
+            for (&(page, cutout, id), batch) in &self.solid_batches {
+                if batch.indices().is_empty() {
+                    continue;
+                }
+                let arena = &self.arenas[&id];
+                self.device.transform(
+                    Mat4::from_translation(mesh::region_origin(
+                        arena.region,
+                        self.layout,
+                        frame.camera,
+                    ))
+                    .to_cols_array(),
+                    view.view.to_cols_array(),
+                    projection.to_cols_array(),
+                )?;
+                self.device.state(
+                    DrawState {
+                        alpha_test: cutout,
+                        fog,
+                        linear: self.linear,
+                        mipmaps: self.mipmaps,
+                        ..Default::default()
+                    },
+                    &self.sprites.pages[page],
+                    Some(&self.lightmap),
+                )?;
+                self.device.draw_batch(&arena.mesh, batch)?;
+            }
+            self.section_draws = (self.device.draws - before) as usize;
             self.device.transform(
                 Mat4::IDENTITY.to_cols_array(),
                 view.view.to_cols_array(),
@@ -364,16 +506,25 @@ impl Renderer {
                 self.draw_entities(frame, &section.vertices, fog, 2)?;
             }
             self.stamp("entities", &mut clock);
-            for (key, origin, _) in visible.iter().rev() {
+            for (key, _, _) in visible.iter().rev() {
                 if self.sections[key].translucent.is_empty() {
                     continue;
                 }
                 self.device.transform(
-                    Mat4::from_translation(*origin).to_cols_array(),
+                    Mat4::from_translation(mesh::region_origin(
+                        mesh::region_key(*key),
+                        self.layout,
+                        frame.camera,
+                    ))
+                    .to_cols_array(),
                     view.view.to_cols_array(),
                     projection.to_cols_array(),
                 )?;
                 let section = &self.sections[key];
+                let mut decoded = std::mem::take(&mut self.decode_scratch);
+                if section.gpu.is_empty() {
+                    section.vertices.decode(&mut decoded)?;
+                }
                 for packet in &section.translucent {
                     self.device.state(
                         DrawState {
@@ -389,9 +540,10 @@ impl Renderer {
                         &self.sprites.pages[packet.page],
                         Some(&self.lightmap),
                     )?;
-                    mesh::draw_packet(&mut self.device, section, packet)?;
+                    mesh::draw_packet(&mut self.device, &self.arenas, section, packet, &decoded)?;
                     self.section_draws += 1;
                 }
+                self.decode_scratch = decoded;
             }
             self.stamp("terrain translucent", &mut clock);
             self.section_draw_calls = self.section_draws;
@@ -732,7 +884,7 @@ impl Renderer {
                 scissor,
                 ..Default::default()
             };
-            let mut batches = Vec::new();
+            let mut batches = GuiBatches::new(state);
             let input = &h.vertices[range.start as usize..range.end as usize];
             let pixels = if let crate::hud::Blend::Picture(id) = blend {
                 self.pictures.get(&id).unwrap_or(&self.hud.atlas)
@@ -753,11 +905,15 @@ impl Renderer {
                         light: [0.0; 2],
                     }
                 });
-                pixels.polygon(&vertices, |page, p| {
-                    batch(&mut batches, page, state, p, true)
-                });
+                pixels.polygon(&vertices, |page, p| batches.push(page, p));
             }
-            draw_pixels(&mut self.device, pixels, &self.lightmap, &batches, true)?;
+            draw_pixels(
+                &mut self.device,
+                pixels,
+                &self.lightmap,
+                &batches.finish(),
+                true,
+            )?;
         }
         Ok(())
     }

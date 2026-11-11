@@ -26,15 +26,7 @@ const D3DERR_DEVICENOTRESET: HRESULT = HRESULT(0x88760869u32 as i32);
 const D3DTS_WORLD: D3DTRANSFORMSTATETYPE = D3DTRANSFORMSTATETYPE(256);
 const FVF: u32 = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2;
 const MAX_QUADS: u32 = 16_383;
-#[repr(C)]
-#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct Vertex {
-    pub pos: [f32; 3],
-    /// D3DCOLOR (ARGB), unlike Horizon's little-endian RGBA.
-    pub color: u32,
-    pub uv: [f32; 2],
-    pub light: [f32; 2],
-}
+use crate::{IndexBatch, Ring, Vertex};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blend {
     Opaque,
@@ -108,6 +100,7 @@ pub struct Mesh {
     raw: Rc<MeshHandle>,
     owner: Rc<Inner>,
     pub vertices: u32,
+    filled: u32,
 }
 impl Mesh {
     /// Reset invalidates DEFAULT buffers; their owner can lazily upload its CPU data again.
@@ -193,6 +186,10 @@ pub struct Device {
     indices: Option<IDirect3DIndexBuffer9>,
     transient: Option<IDirect3DVertexBuffer9>,
     transient_capacity: usize,
+    transient_ring: Ring,
+    dynamic_indices: Option<IDirect3DIndexBuffer9>,
+    index_ring: Ring,
+    using_dynamic_indices: bool,
     reset_pending: bool,
     lost: bool,
     scene: bool,
@@ -202,6 +199,9 @@ pub struct Device {
     pub draws: u64,
     pub binds: u64,
     pub uploads: u64,
+    pub mesh_uploads: u64,
+    pub stream_uploads: u64,
+    pub index_uploads: u64,
 }
 impl Device {
     pub fn new(window: Arc<Window>, vsync: bool) -> Result<Self> {
@@ -386,6 +386,10 @@ impl Device {
             indices: None,
             transient: None,
             transient_capacity: 0,
+            transient_ring: Ring::default(),
+            dynamic_indices: None,
+            index_ring: Ring::default(),
+            using_dynamic_indices: false,
             reset_pending: false,
             lost: false,
             scene: false,
@@ -395,6 +399,9 @@ impl Device {
             draws: 0,
             binds: 0,
             uploads: 0,
+            mesh_uploads: 0,
+            stream_uploads: 0,
+            index_uploads: 0,
         };
         result.create_indices()?;
         // Test a real texture, VB and lightmap allocation before accepting the adapter.
@@ -411,6 +418,10 @@ impl Device {
             indices: self.indices.clone(),
             transient: None,
             transient_capacity: 0,
+            transient_ring: Ring::default(),
+            dynamic_indices: None,
+            index_ring: Ring::default(),
+            using_dynamic_indices: false,
             reset_pending: false,
             lost: self.lost,
             scene: false,
@@ -420,6 +431,9 @@ impl Device {
             draws: 0,
             binds: 0,
             uploads: 0,
+            mesh_uploads: 0,
+            stream_uploads: 0,
+            index_uploads: 0,
         }
     }
     fn create_indices(&mut self) -> Result<()> {
@@ -506,9 +520,13 @@ impl Device {
             }
             self.transient = None;
             self.transient_capacity = 0;
+            self.transient_ring.reset();
+            self.dynamic_indices = None;
+            self.index_ring.reset();
             // SAFETY: no outstanding lock, scene, stateblock or backbuffer reference exists.
             unsafe {
                 self.inner.device.SetStreamSource(0, None, 0, 0)?;
+                self.inner.device.SetIndices(None)?;
                 self.inner.device.SetTexture(0, None)?;
                 self.inner.device.SetTexture(1, None)?;
                 match self.inner.device.Reset(&mut self.present) {
@@ -528,6 +546,10 @@ impl Device {
             self.reset_pending = false;
             self.lost = false;
         }
+        self.using_dynamic_indices = false;
+        self.mesh_uploads = 0;
+        self.stream_uploads = 0;
+        self.index_uploads = 0;
         self.draws = 0;
         self.binds = 0;
         self.cached_state = None;
@@ -781,6 +803,7 @@ impl Device {
             ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
             raw.Unlock()?;
             self.uploads += bytes.len() as u64;
+            self.mesh_uploads += bytes.len() as u64;
             let raw = Rc::new(RefCell::new(Some(raw)));
             let mut handles = self.inner.default_meshes.borrow_mut();
             if handles.len() >= 4096 && handles.len().is_power_of_two() {
@@ -791,8 +814,104 @@ impl Device {
                 raw,
                 owner: self.inner.clone(),
                 vertices: vertices.len() as u32,
+                filled: vertices.len() as u32,
             })
         }
+    }
+    fn shared_indices(&mut self) -> Result<()> {
+        if self.using_dynamic_indices {
+            // SAFETY: index buffer is owned by this device and survives Reset.
+            unsafe {
+                self.inner.device.SetIndices(self.indices.as_ref())?;
+            }
+            self.using_dynamic_indices = false;
+        }
+        Ok(())
+    }
+    pub fn draw_batch(&mut self, mesh: &Mesh, batch: &IndexBatch) -> Result<()> {
+        let bytes = bytemuck::cast_slice::<_, u8>(batch.indices());
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        const CAPACITY: usize = 1 << 20;
+        if !Rc::ptr_eq(&mesh.owner, &self.inner)
+            || batch.end_vertex() > mesh.filled
+            || batch.indices().len() / 3 > self.caps.max_primitive_count as usize
+            || bytes.len() > CAPACITY
+        {
+            return Err("D3D9 terrain index batch exceeds its buffer/caps".into());
+        }
+        if self.dynamic_indices.is_none() {
+            let mut raw = None;
+            // SAFETY: bounded DEFAULT index ring, released/unbound before Reset.
+            unsafe {
+                self.inner.device.CreateIndexBuffer(
+                    CAPACITY as u32,
+                    (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32
+                        | if self.caps.software_vertices {
+                            D3DUSAGE_SOFTWAREPROCESSING as u32
+                        } else {
+                            0
+                        },
+                    D3DFMT_INDEX16,
+                    D3DPOOL_DEFAULT,
+                    &mut raw,
+                    ptr::null_mut(),
+                )?;
+            }
+            self.dynamic_indices = raw;
+            self.index_ring.reset();
+        }
+        let indices = self
+            .dynamic_indices
+            .as_ref()
+            .ok_or("D3D9 terrain index ring missing")?;
+        let (offset, discard) = self
+            .index_ring
+            .reserve(bytes.len(), CAPACITY)
+            .ok_or("D3D9 index ring overflow")?;
+        let raw = mesh.raw.borrow();
+        let raw = raw.as_ref().ok_or("D3D9 arena requires re-upload")?;
+        // SAFETY: IndexBatch validates quad indices, range checked against filled
+        // vertices above; NOOVERWRITE only appends to storage not used since DISCARD.
+        unsafe {
+            let mut memory = ptr::null_mut();
+            indices.Lock(
+                offset as u32,
+                bytes.len() as u32,
+                &mut memory,
+                if discard {
+                    D3DLOCK_DISCARD
+                } else {
+                    D3DLOCK_NOOVERWRITE
+                } as u32,
+            )?;
+            if memory.is_null() {
+                indices.Unlock()?;
+                return Err("D3D9 empty index lock".into());
+            }
+            ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
+            indices.Unlock()?;
+            if !self.using_dynamic_indices {
+                self.inner.device.SetIndices(indices)?;
+                self.using_dynamic_indices = true;
+            }
+            self.inner
+                .device
+                .SetStreamSource(0, raw, 0, size_of::<Vertex>() as u32)?;
+            self.inner.device.DrawIndexedPrimitive(
+                D3DPT_TRIANGLELIST,
+                0,
+                batch.start_vertex(),
+                batch.end_vertex() - batch.start_vertex(),
+                offset as u32 / 2,
+                batch.indices().len() as u32 / 3,
+            )?;
+        }
+        self.uploads += bytes.len() as u64;
+        self.index_uploads += bytes.len() as u64;
+        self.draws += 1;
+        Ok(())
     }
     pub fn state(
         &mut self,
@@ -939,13 +1058,14 @@ impl Device {
         if !Rc::ptr_eq(&mesh.owner, &self.inner)
             || first % 4 != 0
             || count % 4 != 0
-            || first.checked_add(count).is_none_or(|n| n > mesh.vertices)
+            || first.checked_add(count).is_none_or(|n| n > mesh.filled)
         {
             return Err("D3D9 mesh draw bounds/device mismatch".into());
         }
         if count == 0 {
             return Ok(());
         }
+        self.shared_indices()?;
         let raw = mesh.raw.borrow();
         let raw = raw
             .as_ref()
@@ -991,10 +1111,11 @@ impl Device {
                 continue;
             }
             let bytes = bytemuck::cast_slice::<_, u8>(chunk);
-            if self.transient_capacity < bytes.len() {
+            if self.transient.is_none() {
                 self.transient = None;
                 let mut buffer = None;
-                self.transient_capacity = bytes.len().next_power_of_two();
+                self.transient_capacity = self.max_vertices() * size_of::<Vertex>();
+                self.transient_ring.reset();
                 // SAFETY: capacity is bounded by max_vertices; DEFAULT is released before Reset.
                 unsafe {
                     self.inner.device.CreateVertexBuffer(
@@ -1013,6 +1134,14 @@ impl Device {
                 }
                 self.transient = buffer;
             }
+            if kind == 0 {
+                self.shared_indices()?;
+            }
+            let (offset, discard) = self
+                .transient_ring
+                .reserve(bytes.len(), self.transient_capacity)
+                .ok_or("D3D9 transient ring overflow")?;
+            let base = (offset / size_of::<Vertex>()) as u32;
             let buffer = self
                 .transient
                 .as_ref()
@@ -1020,26 +1149,37 @@ impl Device {
             // SAFETY: matching lock size/copy length. DISCARD allows the driver to rename in-flight storage.
             unsafe {
                 let mut memory = ptr::null_mut();
-                buffer.Lock(0, bytes.len() as u32, &mut memory, D3DLOCK_DISCARD as u32)?;
+                buffer.Lock(
+                    offset as u32,
+                    bytes.len() as u32,
+                    &mut memory,
+                    if discard {
+                        D3DLOCK_DISCARD
+                    } else {
+                        D3DLOCK_NOOVERWRITE
+                    } as u32,
+                )?;
                 ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
                 buffer.Unlock()?;
                 self.inner
                     .device
                     .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)?;
                 if kind == 2 {
-                    self.inner
-                        .device
-                        .DrawPrimitive(D3DPT_LINELIST, 0, chunk.len() as u32 / 2)?;
+                    self.inner.device.DrawPrimitive(
+                        D3DPT_LINELIST,
+                        base,
+                        chunk.len() as u32 / 2,
+                    )?;
                 } else if kind == 1 {
                     self.inner.device.DrawPrimitive(
                         D3DPT_TRIANGLELIST,
-                        0,
+                        base,
                         chunk.len() as u32 / 3,
                     )?;
                 } else {
                     self.inner.device.DrawIndexedPrimitive(
                         D3DPT_TRIANGLELIST,
-                        0,
+                        base as i32,
                         0,
                         chunk.len() as u32,
                         0,
@@ -1049,6 +1189,7 @@ impl Device {
             }
             self.draws += 1;
             self.uploads += bytes.len() as u64;
+            self.stream_uploads += bytes.len() as u64;
         }
         Ok(())
     }

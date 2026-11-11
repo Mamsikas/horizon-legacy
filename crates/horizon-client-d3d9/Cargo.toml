@@ -9,6 +9,7 @@ description = "Windows 7 HAL Direct3D 9 device and bounded resources, behind a s
 [dependencies]
 bytemuck = { version = "1.24", features = ["derive"] }
 log = "0.4"
+lz4_flex = { version = "0.14", default-features = false, features = ["std", "safe-encode", "safe-decode", "checked-decode"] }
 
 [target.'cfg(windows)'.dependencies]
 winit = "0.30.13"

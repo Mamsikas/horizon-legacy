@@ -63,14 +63,25 @@ uses a real depth surface; paired view/projection Z reflections keep the common 
 coordinates and positive fixed-function fog depth.
 
 Each VB is bounded by 16-bit indices and caps (at most 65,532 vertices); no 256 MiB
-arena pages. Changed sections convert once into a single contiguous CPU vertex
-array. Page/side/alpha packets reference ranges in that array; they share one VB
-per 65,532 vertices instead of one managed allocation per packet. A bounded DEFAULT
-GPU cache loads visible sections lazily, evicts offscreen buffers first, and draws
-uncached sections through bounded transient storage. Cache population is limited to
-2 ms per frame. CPU geometry remains until streaming releases its section; render
-distance is never reduced. There is no driver-managed second CPU shadow of terrain
-VBs. Allocator/driver overhead and physical residency still need measurement.
+arena pages. Section meshes convert once into losslessly compressed CPU shadows.
+The cache decodes only to load missing GPU data or draw uncached geometry. Nearby
+sections share an immutable DEFAULT VB with positions local to a 128-block region;
+negative coordinates use Euclidean division and the dimension's minimum Y is kept.
+New pages upload once and are never modified while draws can reference them. This
+also avoids placing permanent terrain in dynamic/AGP storage on discrete GPUs.
+
+On hardware vertex processing, visible solid quad ranges from multiple sections
+become one indexed batch per arena/page/alpha mode. CPU frustum and Sides culling
+still select the same geometry. On software vertex processing, narrow direct draws
+avoid transforming holes between sparse index ranges. Transparent sections/quads
+keep their original far-to-near order. Dynamic index and transient vertex rings use
+NOOVERWRITE on append and DISCARD only on wrap, rather than renaming a full buffer
+for every small draw. Terrain GPU residency is bounded, with offscreen pages evicted
+first; an allocation failure still permits transient draws. The automatic target is
+one third of the driver's available-memory hint, bounded by one eighth of system RAM
+and 16 MiB–1 GiB. It no longer imposes the GMA-scale 128 MiB ceiling on an RTX.
+Render distance and texture quality are never rewritten. CPU shadows, physical
+arena allocations, live GPU vertices and decode/index scratch are reported separately.
 
 Sprite pages group native resolutions, undoing only array upscaling (a 16 px sprite
 in a 64 px CPU array keeps its original detail). Animated sprites have separate
@@ -137,6 +148,30 @@ The Win7 executable explicitly offers Direct3D9 in both API settings rows. Exist
 saved API preferences remain stored; modern APIs require a different build and are
 not misleadingly offered by this executable. A unified Win7-safe executable would
 also need runtime backend dispatch and lazy modern API imports.
+
+## Second RTX3050 report and regional batching
+
+The owner reports 200+ FPS at 8 chunks and about 50 FPS at 16 after the first fix.
+The supplied log confirms the sprite atlas fell to 13,357,696 bytes, but CPU mesh
+shadows reached 528,287,232 bytes. A 128 MiB GPU cache stayed full while 24–100 MiB
+were uploaded per frame. After resize the log captured a 2,091.7 ms solid pass and
+231.6 ms translucent pass. These are old-build owner observations, not new timings.
+
+The regional arenas, compressed shadows, adaptive cache and stream rings above
+address those paths. GUI alpha batching preserves painter order at overlapping
+bounds, grouping only independent glyphs/polygons; a CPU compositing test compares
+its reordered output against the original image. The two independent fog intervals
+are no longer mixed into a start/end pair that fills the foreground with haze.
+The fixed-function approximation uses the stricter complete interval (it still does
+not exactly reproduce both modern spherical/cylindrical fog curves at once).
+
+The old F3 GPU heading double-counted the CPU frame and its own child stages. DX9
+now reports only CPU leaf times under a CPU heading; real GPU query data stays absent.
+The attached memory.json and frame-stats.json contain connection errors because the
+previous instructions omitted --control. TESTING.txt now gives the correct launch
+command. The game does not silently enable a control endpoint. Automatic log windows
+include CPU average/peak and the worst frame's stages, so stalls remain diagnosable
+without a control connection. Updated FPS, RAM and fog screenshots await owner testing.
 
 ## Build, package and test
 

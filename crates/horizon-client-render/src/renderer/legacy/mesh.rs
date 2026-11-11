@@ -9,15 +9,47 @@ pub(super) struct Packet {
 pub(super) struct Section {
     pub solid: Vec<Packet>,
     pub translucent: Vec<Packet>,
-    pub vertices: Vec<dx::Vertex>,
-    pub gpu: Vec<dx::Mesh>,
-    pub last_used: u64,
+    pub vertices: dx::MeshData,
+    pub gpu: Vec<GpuSlice>,
     pub retry_after: u64,
     pub sides: crate::mesher::Sides,
     pub bounds: Option<[Vec3; 2]>,
     pub blocks: Vec<([i32; 3], u32)>,
     pub revision: u64,
     pub bytes: u64,
+}
+pub(super) type RegionKey = (i32, i32, i32);
+pub(super) struct GpuSlice {
+    pub arena: u64,
+    pub first: u32,
+    pub source: Range<u32>,
+}
+pub(super) struct Arena {
+    pub mesh: dx::Mesh,
+    pub region: RegionKey,
+    pub live: u32,
+    pub last_used: u64,
+    pub sections: Vec<SectionKey>,
+}
+pub(super) fn region_key(key: SectionKey) -> RegionKey {
+    (
+        key.0.div_euclid(8),
+        key.1.div_euclid(8),
+        key.2.div_euclid(8),
+    )
+}
+pub(super) fn region_origin(region: RegionKey, layout: ColumnLayout, camera: DVec3) -> Vec3 {
+    (DVec3::new(
+        f64::from(region.0) * 128.0,
+        f64::from(region.1) * 128.0 + f64::from(layout.min_y()),
+        f64::from(region.2) * 128.0,
+    ) - camera)
+        .as_vec3()
+}
+struct PendingArena {
+    region: RegionKey,
+    vertices: Vec<dx::Vertex>,
+    sections: Vec<SectionKey>,
 }
 impl Renderer {
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
@@ -98,17 +130,23 @@ impl Renderer {
                 },
             )?;
         }
-        vertices.shrink_to_fit();
-        let bytes = vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
+        let offset = [
+            (key.0.rem_euclid(8) * 16) as f32,
+            (key.1.rem_euclid(8) * 16) as f32,
+            (key.2.rem_euclid(8) * 16) as f32,
+        ];
+        for v in &mut vertices {
+            for axis in 0..3 {
+                v.pos[axis] += offset[axis];
+            }
+        }
+        let decoded_bytes = vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
+        let vertices = dx::MeshData::new(&vertices);
+        let bytes = vertices.bytes();
+        self.release_gpu_section(key);
         if let Some(old) = self.sections.remove(&key) {
             self.mesh_bytes -= old.bytes;
-            self.gpu_mesh_bytes = self.gpu_mesh_bytes.saturating_sub(
-                old.gpu
-                    .iter()
-                    .filter(|b| b.resident())
-                    .map(dx::Mesh::bytes)
-                    .sum::<u64>(),
-            );
+            self.decoded_mesh_bytes -= old.vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
         }
         self.revision = self.revision.wrapping_add(1);
         self.sections.insert(
@@ -118,7 +156,6 @@ impl Renderer {
                 translucent,
                 vertices,
                 gpu: Vec::new(),
-                last_used: 0,
                 retry_after: 0,
                 sides,
                 bounds: mesh.bounds,
@@ -128,45 +165,133 @@ impl Renderer {
             },
         );
         self.mesh_bytes += bytes;
+        self.decoded_mesh_bytes += decoded_bytes;
         Ok(())
     }
-    /// Evict offscreen GPU copies first. CPU geometry remains available for the
-    /// bounded transient draw path, so cache pressure never removes blocks or
-    /// changes the user's distance. No mesh conversion is done in the frame loop.
+    pub(super) fn release_gpu_section(&mut self, key: SectionKey) {
+        let Some(section) = self.sections.get_mut(&key) else {
+            return;
+        };
+        let slices = std::mem::take(&mut section.gpu);
+        let mut empty = Vec::new();
+        for slice in slices {
+            if let Some(arena) = self.arenas.get_mut(&slice.arena) {
+                arena.live -= slice.source.end - slice.source.start;
+                if arena.live == 0 {
+                    empty.push(slice.arena);
+                }
+            }
+        }
+        for id in empty {
+            if let Some(arena) = self.arenas.remove(&id) {
+                self.gpu_mesh_bytes -= arena.mesh.bytes();
+            }
+        }
+    }
+    fn evict_arena(&mut self, id: u64) {
+        if let Some(arena) = self.arenas.remove(&id) {
+            self.gpu_mesh_bytes -= arena.mesh.bytes();
+            for key in arena.sections {
+                if self
+                    .sections
+                    .get(&key)
+                    .is_some_and(|s| s.gpu.iter().any(|slice| slice.arena == id))
+                {
+                    self.release_gpu_section(key);
+                }
+            }
+        }
+    }
+    fn cache_section(
+        &mut self,
+        key: SectionKey,
+        pending: &mut HashMap<u64, PendingArena>,
+        pending_bytes: &mut u64,
+        stale: &mut impl Iterator<Item = (u64, u64)>,
+    ) -> Result<bool> {
+        let bytes = self.sections[&key].vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
+        while self.gpu_mesh_bytes + *pending_bytes + bytes > self.mesh_budget {
+            let Some((_, id)) = stale.next() else {
+                return Ok(false);
+            };
+            if self
+                .arenas
+                .get(&id)
+                .is_some_and(|a| a.last_used != self.frames + 1)
+            {
+                self.evict_arena(id);
+            }
+        }
+        let region = region_key(key);
+        let mut decoded = std::mem::take(&mut self.decode_scratch);
+        self.sections[&key].vertices.decode(&mut decoded)?;
+        let limit = self.device.max_vertices();
+        let mut first = 0;
+        while first < decoded.len() {
+            let id = if let Some((&id, _)) = pending
+                .iter()
+                .find(|(_, a)| a.region == region && a.vertices.len() < limit)
+            {
+                id
+            } else {
+                self.next_arena += 1;
+                let id = self.next_arena;
+                pending.insert(
+                    id,
+                    PendingArena {
+                        region,
+                        vertices: Vec::new(),
+                        sections: Vec::new(),
+                    },
+                );
+                id
+            };
+            let arena = pending.get_mut(&id).unwrap();
+            let count = (limit - arena.vertices.len()).min(decoded.len() - first);
+            let offset = arena.vertices.len() as u32;
+            arena
+                .vertices
+                .extend_from_slice(&decoded[first..first + count]);
+            if arena.sections.last() != Some(&key) {
+                arena.sections.push(key);
+            }
+            self.sections.get_mut(&key).unwrap().gpu.push(GpuSlice {
+                arena: id,
+                first: offset,
+                source: first as u32..(first + count) as u32,
+            });
+            *pending_bytes += count as u64 * size_of::<dx::Vertex>() as u64;
+            first += count;
+        }
+        self.decode_scratch = decoded;
+        Ok(true)
+    }
+    /// Compressed CPU shadows survive Reset. Shared GPU arenas are immutable:
+    /// no in-flight data is overwritten, and indices alone change with visibility.
     pub(super) fn prepare_sections(&mut self, visible: &[(SectionKey, Vec3, f32)]) -> Result<()> {
-        self.gpu_mesh_bytes = 0;
-        for section in self.sections.values_mut() {
-            if section.gpu.iter().any(|b| !b.resident()) {
+        if self.arenas.values().any(|a| !a.mesh.resident()) {
+            self.arenas.clear();
+            self.gpu_mesh_bytes = 0;
+            for section in self.sections.values_mut() {
                 section.gpu.clear();
             }
-            self.gpu_mesh_bytes += section.gpu.iter().map(dx::Mesh::bytes).sum::<u64>();
         }
         for (key, _, _) in visible {
-            self.sections.get_mut(key).unwrap().last_used = self.frames + 1;
-        }
-        let needed: u64 = visible
-            .iter()
-            .map(|(key, _, _)| self.sections[key].bytes)
-            .sum();
-        if needed > self.mesh_budget && !self.cache_warning {
-            log::warn!(
-                "D3D9 visible geometry {} MiB exceeds the {} MiB GPU cache target; uncached geometry uses bounded transient draws, without changing render distance",
-                needed >> 20,
-                self.mesh_budget >> 20
-            );
-            self.cache_warning = true;
+            for slice in &self.sections[key].gpu {
+                self.arenas.get_mut(&slice.arena).unwrap().last_used = self.frames + 1;
+            }
         }
         let mut stale: Vec<_> = self
-            .sections
+            .arenas
             .iter()
-            .filter(|(_, s)| !s.gpu.is_empty() && s.last_used != self.frames + 1)
-            .map(|(&k, s)| (s.last_used, k))
+            .filter(|(_, a)| a.last_used != self.frames + 1)
+            .map(|(&id, a)| (a.last_used, id))
             .collect();
         stale.sort_unstable();
-        let mut evict = stale.into_iter();
-        // Limit cache population work, rather than stalling a frame to create
-        // thousands of D3D resources. New sections are immediately drawable.
+        let mut stale = stale.into_iter();
         let started = Instant::now();
+        let mut pending = HashMap::<u64, PendingArena>::new();
+        let mut pending_bytes = 0;
         for &(key, _, _) in visible {
             let section = &self.sections[&key];
             if !section.gpu.is_empty()
@@ -175,70 +300,113 @@ impl Renderer {
             {
                 continue;
             }
-            let bytes = section.bytes;
-            while self.gpu_mesh_bytes + bytes > self.mesh_budget {
-                let Some((_, key)) = evict.next() else {
-                    break;
-                };
-                let old = self.sections.get_mut(&key).unwrap();
-                self.gpu_mesh_bytes -= old.gpu.iter().map(dx::Mesh::bytes).sum::<u64>();
-                old.gpu.clear();
-            }
-            if self.gpu_mesh_bytes + bytes > self.mesh_budget {
-                continue;
-            }
-            let section = self.sections.get_mut(&key).unwrap();
-            let allocation: Result<Vec<_>> = section
-                .vertices
-                .chunks(self.device.max_vertices())
-                .map(|v| self.device.mesh(v))
-                .collect();
-            match allocation {
-                Ok(buffers) => {
-                    section.gpu = buffers;
-                    self.gpu_mesh_bytes += bytes;
+            match self.cache_section(key, &mut pending, &mut pending_bytes, &mut stale) {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.sections.get_mut(&key).unwrap().retry_after = self.frames + 30;
                 }
                 Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
                 Err(error) => {
                     if !self.cache_warning {
                         log::warn!(
-                            "D3D9 terrain GPU cache allocation failed ({error}); using transient draws"
+                            "D3D9 arena allocation failed ({error}); using bounded transient draws"
                         );
                         self.cache_warning = true;
                     }
-                    section.retry_after = self.frames + 120;
+                    self.sections.get_mut(&key).unwrap().retry_after = self.frames + 120;
                 }
             }
             if started.elapsed() >= Duration::from_millis(2) {
                 break;
             }
         }
+        // Upload each new region page once as immutable DEFAULT storage. Dynamic
+        // terrain VBs can live in AGP/system RAM on discrete GPUs; static pages
+        // avoid that extra residency and never lock data already used by a draw.
+        let pending_keys: Vec<_> = pending
+            .values()
+            .flat_map(|p| p.sections.iter().copied())
+            .collect();
+        for (id, page) in pending {
+            let live: u32 = page
+                .sections
+                .iter()
+                .filter_map(|k| self.sections.get(k))
+                .flat_map(|s| &s.gpu)
+                .filter(|s| s.arena == id)
+                .map(|s| s.source.end - s.source.start)
+                .sum();
+            if live == 0 {
+                continue;
+            }
+            match self.device.mesh(&page.vertices) {
+                Ok(mesh) => {
+                    self.gpu_mesh_bytes += mesh.bytes();
+                    self.arenas.insert(
+                        id,
+                        Arena {
+                            mesh,
+                            region: page.region,
+                            live,
+                            last_used: self.frames + 1,
+                            sections: page.sections,
+                        },
+                    );
+                }
+                Err(error) => {
+                    for key in page.sections {
+                        self.release_gpu_section(key);
+                        if let Some(s) = self.sections.get_mut(&key) {
+                            s.retry_after = self.frames + 120;
+                        }
+                    }
+                    if dx::is_device_lost(error.as_ref()) {
+                        for key in pending_keys {
+                            self.release_gpu_section(key);
+                        }
+                        return Err(error);
+                    }
+                    if !self.cache_warning {
+                        log::warn!(
+                            "D3D9 static arena allocation failed ({error}); using transient draws"
+                        );
+                        self.cache_warning = true;
+                    }
+                }
+            }
+        }
+        self.solid_batches
+            .retain(|(_, _, id), _| self.arenas.contains_key(id));
+        for batch in self.solid_batches.values_mut() {
+            batch.clear();
+        }
         Ok(())
     }
     pub fn clear_sections(&mut self, layout: ColumnLayout) {
         self.sections.clear();
+        self.arenas.clear();
+        self.solid_batches.clear();
+        self.decode_scratch.clear();
+        self.decoded_mesh_bytes = 0;
         self.layout = layout;
         self.mesh_bytes = 0;
         self.gpu_mesh_bytes = 0;
         self.revision = self.revision.wrapping_add(1);
     }
     pub fn remove_columns(&mut self, columns: impl IntoIterator<Item = (i32, i32)>) {
-        for (x, z) in columns {
-            self.sections.retain(|key, s| {
-                if key.0 == x && key.2 == z {
-                    self.mesh_bytes -= s.bytes;
-                    self.gpu_mesh_bytes = self.gpu_mesh_bytes.saturating_sub(
-                        s.gpu
-                            .iter()
-                            .filter(|b| b.resident())
-                            .map(dx::Mesh::bytes)
-                            .sum::<u64>(),
-                    );
-                    false
-                } else {
-                    true
-                }
-            });
+        let columns: std::collections::HashSet<_> = columns.into_iter().collect();
+        let keys: Vec<_> = self
+            .sections
+            .keys()
+            .copied()
+            .filter(|k| columns.contains(&(k.0, k.2)))
+            .collect();
+        for key in keys {
+            self.release_gpu_section(key);
+            if let Some(s) = self.sections.remove(&key) {
+                self.mesh_bytes -= s.bytes;
+                self.decoded_mesh_bytes -= s.vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
+            }
         }
     }
     pub fn has_section(&self, key: SectionKey) -> bool {
@@ -322,22 +490,26 @@ fn terrain_quad(input: &[TerrainVertex]) -> [dx::Vertex; 4] {
 
 pub(super) fn draw_packet(
     device: &mut dx::Device,
+    arenas: &HashMap<u64, Arena>,
     section: &Section,
     packet: &Packet,
+    decoded: &[dx::Vertex],
 ) -> Result<()> {
-    let limit = device.max_vertices();
-    let mut first = packet.first as usize;
-    let end = first + packet.count as usize;
-    while first < end {
-        let buffer = first / limit;
-        let offset = first % limit;
-        let count = (end - first).min(limit - offset);
-        if let Some(mesh) = section.gpu.get(buffer) {
-            device.draw(mesh, offset as u32, count as u32)?;
-        } else {
-            device.draw_transient(&section.vertices[first..first + count])?;
+    if section.gpu.is_empty() {
+        return device.draw_transient(
+            &decoded[packet.first as usize..(packet.first + packet.count) as usize],
+        );
+    }
+    for slice in &section.gpu {
+        let first = packet.first.max(slice.source.start);
+        let end = (packet.first + packet.count).min(slice.source.end);
+        if first < end {
+            device.draw(
+                &arenas[&slice.arena].mesh,
+                slice.first + first - slice.source.start,
+                end - first,
+            )?;
         }
-        first += count;
     }
     Ok(())
 }

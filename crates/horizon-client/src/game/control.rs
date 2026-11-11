@@ -167,6 +167,10 @@ impl Game<'_> {
                     .collect(),
             );
         }
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        if let Some(renderer) = &self.renderer {
+            summary["renderer_cpu_passes_ms"] = json!(renderer.cpu_pass_times());
+        }
         self.add_async_occlusion_stats(&mut summary);
         summary
     }
