@@ -1,0 +1,45 @@
+name: legacy launcher build (experimental)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['win7-*', 'codex/win7-*']
+  pull_request:
+    paths:
+      - 'launcher/**'
+      - 'crates/horizon-prepare/**'
+      - 'crates/horizon-protocol/**'
+      - 'tools/*win7*'
+      - 'packaging/win7/**'
+      - '.github/workflows/launcher-win7.yml'
+
+concurrency:
+  group: launcher-win7-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  cross-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2026-11-01
+          components: rust-src
+      - name: Install host dependencies
+        run: sudo apt-get update && sudo apt-get install -y libgmp10 libisl23 libmpc3 libmpfr6 libzstd1 zlib1g
+      - name: Extract pinned MinGW cross tools
+        run: bash tools/bootstrap_win7_cross.sh
+      - name: Unit tests for the PE audit
+        run: python3 -m unittest discover -s tests -p test_check_win7_imports.py
+      - name: Build with a Win7 standard library and audit imports
+        run: bash tools/build_win7_launcher.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-launcher-win7-x64-experimental
+          path: work/win7/artifacts/
+          retention-days: 7
