@@ -54,22 +54,34 @@ and physical measurements decide the path. Microsoft documents
 [HAL with software vertices](https://learn.microsoft.com/en-us/windows/win32/direct3d9/device-types)
 as hardware rasterization. No GPU vendor IDs decide compatibility.
 
-Managed textures/VBs/IBs survive Reset. DEFAULT transient storage and bound references
-are released before Reset. LOST waits for cooperative recovery; NOTRESET or resize
+Managed textures/IBs survive Reset. DEFAULT terrain and transient buffers and bound
+references are released before Reset. Terrain handles are invalidated through weak
+registrations and lazily reconstructed from the section CPU cache. LOST waits for cooperative recovery; NOTRESET or resize
 resets on the creating thread. Minimized windows skip drawing. Resources retain their
 device/window through owned COM handles and cannot move to another thread. Reverse Z
 uses a real depth surface; paired view/projection Z reflections keep the common clip
 coordinates and positive fixed-function fog depth.
 
 Each VB is bounded by 16-bit indices and caps (at most 65,532 vertices); no 256 MiB
-arena pages. Changed sections upload once, then draw through frustum/Sides culling
-and atlas-page batches; transparent sections draw far-to-near. Render/texture/sampler
-states and unchanged matrices are cached. Texture pages contain per-sprite mip gutters;
-GUI pages and standalone pictures are allocated only when needed. Panorama storage is
-released on entering a world. Default memory budgets derive from the driver's advisory
-available memory, with explicit environment overrides and checked allocations. An
-exhausted budget produces a diagnostic, never an automatic render-distance reduction.
-Managed residency numbers describe requested resources, not measured physical VRAM.
+arena pages. Changed sections convert once into a single contiguous CPU vertex
+array. Page/side/alpha packets reference ranges in that array; they share one VB
+per 65,532 vertices instead of one managed allocation per packet. A bounded DEFAULT
+GPU cache loads visible sections lazily, evicts offscreen buffers first, and draws
+uncached sections through bounded transient storage. Cache population is limited to
+2 ms per frame. CPU geometry remains until streaming releases its section; render
+distance is never reduced. There is no driver-managed second CPU shadow of terrain
+VBs. Allocator/driver overhead and physical residency still need measurement.
+
+Sprite pages group native resolutions, undoing only array upscaling (a 16 px sprite
+in a 64 px CPU array keeps its original detail). Animated sprites have separate
+pages at most 256 px, except when the sprite itself needs more space. Static pages
+are at most 1024 px, subject to caps. GUI uses sparse pages at most 512 px. This
+bounds the area a driver can dirty/copy for small animation/glyph updates. Per-sprite
+extruded mip chains remain. Panorama uses the same dedicated camera matrix as the
+ordinary renderer and releases storage on entering a world. Advisory memory targets
+derive from the driver's available-memory hint. Exceeding the texture target warns;
+exceeding the GPU mesh target falls back to transient draws, not a fatal budget
+error. Optional environment overrides remain for diagnosis; ordinary use needs none.
 
 The first PE inspection found modern GPU dependencies despite never creating a wgpu
 device. Cargo now omits Vulkan/Metal/DX12/GLES **only for the Win7 vendor target**;
@@ -100,6 +112,31 @@ remain errors, not accepted wildcards.
 Static block-entity snapshots currently use the dynamic entity draw path. GPU caching
 of those optional snapshots, finer transparent-quad sorting and CPU-transformed vertex
 A/B testing remain performance follow-ups requiring hardware evidence.
+
+## Performance investigation after the first player test
+
+The owner reports title/world/HUD rendering on RTX3050/i5-10400, but a nearly
+constant 12 FPS. The attached log records 70.8-78.0 ms renderer CPU frames while
+terrain draws rise from 1,141 to 8,493. Its 1,301 uniformly upscaled 64 px layers
+became one 8192-square, 357,892,096-byte managed atlas; total requested texture
+storage reached 525,666,308 bytes. Animation dirtied that static atlas. These are
+observations from the old build, not post-fix timings or measured physical VRAM.
+The owner also reports the standalone smoke test works on GMA3150; gameplay there
+and on HD4570 remains unverified.
+
+The atlas/mesh architecture changes above address confirmed allocation amplification
+and a likely driver-transfer bottleneck. The exact cause of the 75 ms wait and the
+resulting FPS must be verified by the next RTX3050 run. F3 and the five-second log
+now separate texture/lightmap/GUI updates, visibility, cache population, terrain,
+entities, effects/hand and GUI drawing, plus section conversion outside render.
+They report CPU elapsed time including driver waits, not GPU query times.
+`horizon-ctl.exe` is packaged for the existing `bench 20`, `memory` and
+`trace render-trace.json 10` diagnostics; TESTING.txt has the short procedure.
+Native-size atlas/isolation tests are synthetic CPU tests, not GPU benchmarks.
+The Win7 executable explicitly offers Direct3D9 in both API settings rows. Existing
+saved API preferences remain stored; modern APIs require a different build and are
+not misleadingly offered by this executable. A unified Win7-safe executable would
+also need runtime backend dispatch and lazy modern API imports.
 
 ## Build, package and test
 

@@ -42,25 +42,32 @@ for directory in "${import_dirs[@]}"; do link_args+=(-L "native=$directory"); do
 cargo "+$toolchain" rustc --locked --profile legacy -p horizon-client --bin horizon-client \
     --target "$target" -Z build-std=std,panic_abort \
     --no-default-features --features legacy-d3d9,audio -- "${link_args[@]}"
+# Ship the existing local diagnostics client: no separate profiler installation.
+cargo "+$toolchain" rustc --locked --profile legacy -p horizon-client-lib --bin horizon-ctl \
+    --target "$target" -Z build-std=std,panic_abort \
+    --no-default-features --features legacy-d3d9,audio -- "${link_args[@]}"
 cargo "+$toolchain" rustc --locked --profile legacy -p horizon-client-d3d9 --example smoke \
     --target "$target" -Z build-std=std,panic_abort -- "${link_args[@]}"
 binary="$CARGO_TARGET_DIR/$target/legacy/horizon-client.exe"
 smoke="$CARGO_TARGET_DIR/$target/legacy/examples/smoke.exe"
+control="$CARGO_TARGET_DIR/$target/legacy/horizon-ctl.exe"
 python3 tools/check_win7_imports.py --d3d9 --json "$binary" > "$work/imports-client-win7-x64.json"
 python3 tools/check_win7_imports.py --d3d9 --json "$smoke" > "$work/imports-smoke-win7-x64.json"
+python3 tools/check_win7_imports.py --json "$control" > "$work/imports-control-win7-x64.json"
 out=${1:-"$work/artifacts"}
 mkdir -p "$out"
 out=$(cd -- "$out" && pwd)
 rustc "+$toolchain" -Vv > "$out/build-info.txt"
 { git rev-parse HEAD; "$cc" --version | head -1; printf '%s\n' "$target" "$RUSTFLAGS"; } >> "$out/build-info.txt"
-cp "$work/imports-client-win7-x64.json" "$work/imports-smoke-win7-x64.json" "$out/"
-python3 - "$binary" "$smoke" "$repo/packaging/win7-client/TESTING.txt" "$out" <<'PY'
+cp "$work/imports-client-win7-x64.json" "$work/imports-smoke-win7-x64.json" "$work/imports-control-win7-x64.json" "$out/"
+python3 - "$binary" "$smoke" "$control" "$repo/packaging/win7-client/TESTING.txt" "$out" <<'PY'
 import hashlib, pathlib, sys, zipfile
-binary, smoke, instructions, out = map(pathlib.Path, sys.argv[1:])
+binary, smoke, control, instructions, out = map(pathlib.Path, sys.argv[1:])
 archive = out / 'horizon-client-win7-x64.zip'
 with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as package:
     package.write(binary, 'horizon-client.exe')
     package.write(smoke, 'd3d9-smoke.exe')
+    package.write(control, 'horizon-ctl.exe')
     package.write(instructions, 'TESTING.txt')
     package.write(out / 'build-info.txt', 'build-info.txt')
 (out / 'SHA256SUMS').write_text(f'{hashlib.sha256(archive.read_bytes()).hexdigest()}  {archive.name}\n', encoding='utf-8')

@@ -2,7 +2,9 @@ Horizon Direct3D9 preview - Windows 7 SP1 x64
 
 This preview requires the GPU manufacturer's Windows 7 driver, prepared legal
 Horizon resources matching Minecraft 26.3, and an Atom N455-compatible x64 CPU
-(SSE3/SSSE3). It has NOT been verified on physical GMA3150 or Radeon HD4570 yet.
+(SSE3/SSSE3). The owner reports the HAL smoke test works on GMA3150. Gameplay on that GPU and
+on Radeon HD4570 is not verified; the first RTX3050 game test exposed severe
+performance/memory bugs. This update needs an RTX3050 retest first.
 No Java, Vulkan, OpenGL, D3D11/D3D12 or shader compiler is used by the DX9 renderer.
 
 1. Extract the entire ZIP. Run d3d9-smoke.exe first. It must show overlapping
@@ -20,12 +22,34 @@ No Java, Vulkan, OpenGL, D3D11/D3D12 or shader compiler is used by the DX9 rende
    The log includes adapter caps, HAL/vertex mode, memory budgets, frame CPU/Present,
    draw calls, texture states and upload bytes. Counters are not a hardware benchmark.
 
-Optional diagnostics (environment variables, no options files edited):
-HORIZON_GRAPHICS_API=legacy-d3d9
+Performance diagnosis (no profiler installation needed):
+The normal log and F3 now separate lightmap, sprite animation, GUI patches,
+visibility, terrain cache, solid/translucent draws, entities, effects/hand and GUI.
+These are CPU elapsed times (including driver waits), not GPU timestamp queries.
+The five-second log also reports retained CPU geometry, DEFAULT GPU cache bytes,
+texture bytes and process memory [private resident estimate, resident, total RAM].
+Remove the old HORIZON_D3D9_MESH_MIB / HORIZON_D3D9_TEXTURE_MIB overrides to test
+automatic targets. For the RTX3050 retest use the same world/settings as before. Let chunks settle,
+then send latest.log, a screenshot of F3, and these optional local reports from a
+second terminal while the world runs (horizon-ctl finds the running client's home):
+  horizon-ctl.exe bench 20 > frame-stats.json
+  horizon-ctl.exe memory > memory.json
+  horizon-ctl.exe trace render-trace.json 10
+The last command records existing Horizon CPU spans for a browser trace viewer.
+If the launcher uses a custom HORIZON_HOME, set that same home in this terminal.
+
+Memory targets now manage caching, rather than aborting at 128 MiB. Native-sized
+sprite pages and small isolated animation/GUI pages avoid the old giant atlas.
+Terrain has one CPU copy and a bounded, lazy DEFAULT VB cache; offscreen GPU
+buffers are evicted first. Uncached geometry uses bounded transient draws. User
+render distance and texture quality are not rewritten. The Video Settings API
+row explicitly shows Direct3D 9; this Win7 executable offers DX9 only.
+
+Optional diagnostic overrides (normally unnecessary; no options files edited):
 HORIZON_D3D9_VERTEX_PROCESSING=software   (A/B fixed-function vertex processing)
 HORIZON_D3D9_VERTEX_PROCESSING=hardware   (only when caps expose hardware T&L)
-HORIZON_D3D9_MESH_MIB=128                (explicit section-buffer budget)
-HORIZON_D3D9_TEXTURE_MIB=128             (explicit texture budget)
+HORIZON_D3D9_MESH_MIB=128                (GPU cache target; excess geometry still draws)
+HORIZON_D3D9_TEXTURE_MIB=128             (advisory texture-residency target)
 
 The preview draws CPU-meshed terrain/models, lightmap, transparency, entities,
 hand/items, HUD/fonts/chat/inventory, weather, border and screen overlays.

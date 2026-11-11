@@ -2019,6 +2019,8 @@ fn backend_order(
         GraphicsApi::Dx12 if windows => vec![Backends::DX12],
         GraphicsApi::Vulkan | GraphicsApi::Dx12 => vec![Backends::VULKAN],
         GraphicsApi::OpenGl => vec![Backends::GL],
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        GraphicsApi::LegacyD3d9 => Vec::new(),
     }
 }
 fn backends_name(backends: wgpu::Backends) -> &'static str {

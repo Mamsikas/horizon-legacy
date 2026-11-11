@@ -123,9 +123,79 @@ impl AtlasLayout {
             * u64::from(self.pages)
     }
 }
+
+/// Native-resolution groups keep a single large sprite from enlarging every
+/// block texture. Animated layers have separate small pages: dirtying one must
+/// never make the driver re-upload the static world's atlas.
+pub struct AtlasSet {
+    pub layouts: Vec<AtlasLayout>,
+    pub locations: Vec<(usize, u32)>,
+    pub offsets: Vec<usize>,
+}
+impl AtlasSet {
+    pub fn new(sizes: &[u32], animated: &[u32], max_texture: u32) -> Result<Self, String> {
+        let mut groups = std::collections::BTreeMap::<(bool, u32), Vec<u32>>::new();
+        for (layer, &size) in sizes.iter().enumerate() {
+            groups
+                .entry((animated.contains(&(layer as u32)), size))
+                .or_default()
+                .push(layer as u32);
+        }
+        let mut result = Self {
+            layouts: Vec::new(),
+            locations: vec![(0, 0); sizes.len()],
+            offsets: Vec::new(),
+        };
+        let mut pages = 0;
+        for ((dynamic, size), layers) in groups {
+            let cap = max_texture
+                .min(if dynamic { 256 } else { 1024 })
+                .max((size * 2).min(max_texture));
+            let layout =
+                AtlasLayout::new(size, layers.len() as u32, cap, u64::from(cap).pow(2) * 4)?;
+            for (local, layer) in layers.into_iter().enumerate() {
+                result.locations[layer as usize] = (result.layouts.len(), local as u32);
+            }
+            result.offsets.push(pages);
+            pages += layout.pages as usize;
+            result.layouts.push(layout);
+        }
+        Ok(result)
+    }
+    pub fn uv(&self, layer: u32, uv: [f32; 2]) -> Result<(usize, [f32; 2]), String> {
+        let &(group, local) = self
+            .locations
+            .get(layer as usize)
+            .ok_or("D3D9 sprite layer outside atlas")?;
+        let (page, uv) = self.layouts[group].uv(local, uv)?;
+        Ok((self.offsets[group] + page, uv))
+    }
+    pub fn bytes(&self) -> u64 {
+        self.layouts.iter().map(AtlasLayout::bytes).sum()
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_sprites_and_animation_do_not_expand_or_dirty_the_static_atlas() {
+        let mut sizes = vec![16; 1300];
+        sizes.push(64);
+        let a = AtlasSet::new(&sizes, &[0, 1], 16384).unwrap();
+        assert!(a.bytes() < 12 * 1024 * 1024);
+        let (animated, _) = a.uv(0, [0.0; 2]).unwrap();
+        let (still, _) = a.uv(2, [0.0; 2]).unwrap();
+        assert_ne!(animated, still);
+        let (g, _) = a.locations[0];
+        assert!(a.layouts[g].side <= 256);
+        assert!(a.uv(1301, [0.0; 2]).is_err());
+        // Different sprites never overlap, even across native size groups.
+        let mut rectangles = std::collections::HashSet::new();
+        for layer in 0..1301 {
+            let (page, uv) = a.uv(layer, [0.0; 2]).unwrap();
+            assert!(rectangles.insert((page, uv[0].to_bits(), uv[1].to_bits())));
+        }
+    }
     #[test]
     fn pages_and_uv_stay_within_caps_and_keep_distinct_sprites() {
         let a = AtlasLayout::new(16, 10, 64, 64 * 64 * 4).unwrap();

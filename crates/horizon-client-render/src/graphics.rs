@@ -259,16 +259,21 @@ impl PresentMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum GraphicsApi {
     /// Vulkan, then DirectX 12 (Windows), then OpenGL when neither has a surface, adapter or device.
-    #[default]
+    #[cfg_attr(not(all(windows, feature = "legacy-d3d9")), default)]
     Auto,
+    #[cfg(all(windows, feature = "legacy-d3d9"))]
+    #[default]
+    LegacyD3d9,
     Vulkan,
     Dx12,
     /// OpenGL, for GPUs with no Vulkan or DirectX 12 driver (Windows and Linux).
     OpenGl,
 }
 impl GraphicsApi {
-    pub const ALL: [GraphicsApi; 4] = [
+    pub const ALL: [GraphicsApi; 4 + cfg!(all(windows, feature = "legacy-d3d9")) as usize] = [
         GraphicsApi::Auto,
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        GraphicsApi::LegacyD3d9,
         GraphicsApi::Vulkan,
         GraphicsApi::Dx12,
         GraphicsApi::OpenGl,
@@ -276,6 +281,9 @@ impl GraphicsApi {
     /// The APIs this system offers, in the order the setting cycles through
     /// them: DirectX 12 is Windows' third backend, and macOS has no choice.
     pub fn choices() -> &'static [GraphicsApi] {
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        const WINDOWS: [GraphicsApi; 1] = [GraphicsApi::LegacyD3d9];
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
         const WINDOWS: [GraphicsApi; 4] = [
             GraphicsApi::Auto,
             GraphicsApi::Vulkan,
@@ -296,6 +304,8 @@ impl GraphicsApi {
     pub fn name(self) -> &'static str {
         match self {
             GraphicsApi::Auto => "auto",
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            GraphicsApi::LegacyD3d9 => "legacy-d3d9",
             GraphicsApi::Vulkan => "vulkan",
             GraphicsApi::Dx12 => "dx12",
             GraphicsApi::OpenGl => "opengl",
@@ -304,6 +314,8 @@ impl GraphicsApi {
     pub fn label(self) -> &'static str {
         match self {
             GraphicsApi::Auto => "Auto",
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            GraphicsApi::LegacyD3d9 => "Direct3D 9",
             GraphicsApi::Vulkan => "Vulkan",
             GraphicsApi::Dx12 => "DirectX 12",
             GraphicsApi::OpenGl => "OpenGL",
@@ -315,12 +327,25 @@ impl GraphicsApi {
             .into_iter()
             .find(|api| api.name().eq_ignore_ascii_case(s.trim()))
     }
-    /// `HORIZON_GRAPHICS_API` (auto, vulkan, dx12 or opengl) if set, else the setting.
+    /// The API offered by this executable, without rewriting a saved preference.
+    /// A Win7 build cannot import the modern APIs just to offer inactive choices.
+    pub fn selected(self) -> Self {
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        {
+            Self::LegacyD3d9
+        }
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+        {
+            self
+        }
+    }
+    /// `HORIZON_GRAPHICS_API` if set, else the setting, restricted to this build.
     pub fn with_env(self) -> Self {
         std::env::var("HORIZON_GRAPHICS_API")
             .ok()
             .and_then(|v| Self::from_name(&v))
             .unwrap_or(self)
+            .selected()
     }
 }
 
@@ -935,7 +960,7 @@ impl Default for Graphics {
             hdr_failed_start: None,
             battery: false,
             shadow_cache: false,
-            api: GraphicsApi::Auto,
+            api: GraphicsApi::default(),
             translucent_batching: true,
             hdr_smooth_gradients: true,
             shader_pack: String::new(),
@@ -1407,7 +1432,9 @@ mod tests {
     #[test]
     fn the_api_choice_matches_the_system() {
         let choices = GraphicsApi::choices();
-        if cfg!(windows) {
+        if cfg!(all(windows, feature = "legacy-d3d9")) {
+            assert_eq!(choices, [GraphicsApi::default()]);
+        } else if cfg!(windows) {
             assert_eq!(choices, GraphicsApi::ALL);
         } else if cfg!(target_os = "macos") {
             assert_eq!(choices, [GraphicsApi::Auto]);

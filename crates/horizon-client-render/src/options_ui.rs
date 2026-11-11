@@ -755,6 +755,11 @@ impl Opt {
                 "options.textureFiltering.rgss",
                 "options.textureFiltering.anisotropic",
             ][s.file.int("textureFiltering").clamp(0, 2) as usize]),
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            Opt::GraphicsBackend => {
+                Text::literal(lang::get_or("options.graphicsApi.legacyD3d9", "Direct3D 9"))
+            }
+            #[cfg(not(all(windows, feature = "legacy-d3d9")))]
             Opt::GraphicsBackend => tr(match s.horizon.api {
                 crate::graphics::GraphicsApi::OpenGl => "options.graphicsApi.opengl",
                 crate::graphics::GraphicsApi::Vulkan => "options.graphicsApi.vulkan",
@@ -1059,10 +1064,16 @@ impl Opt {
             Opt::GraphicsBackend => {
                 // PreferredGraphicsApi: Default, OpenGL, Vulkan; a platform lacking one skips it.
                 use crate::graphics::GraphicsApi::{Auto, OpenGl, Vulkan};
-                let offered: Vec<_> = [Auto, OpenGl, Vulkan]
-                    .into_iter()
-                    .filter(|a| crate::graphics::GraphicsApi::choices().contains(a))
-                    .collect();
+                let offered: Vec<_> = [
+                    Auto,
+                    OpenGl,
+                    Vulkan,
+                    #[cfg(all(windows, feature = "legacy-d3d9"))]
+                    crate::graphics::GraphicsApi::LegacyD3d9,
+                ]
+                .into_iter()
+                .filter(|a| crate::graphics::GraphicsApi::choices().contains(a))
+                .collect();
                 let at = offered
                     .iter()
                     .position(|a| *a == s.horizon.api)
@@ -6185,7 +6196,7 @@ mod tests {
         }
         // Dx12 is Horizon's own Graphics page's; this option has the three of vanilla.
         assert!(!seen.contains(&GraphicsApi::Dx12));
-        assert_eq!(seen[0], GraphicsApi::Auto);
+        assert_eq!(seen[0], GraphicsApi::default());
         if offered.len() == 3 {
             assert_eq!(seen[1..], [GraphicsApi::OpenGl, GraphicsApi::Vulkan]);
             assert_eq!(s.file.name("preferredGraphicsBackend"), "vulkan");

@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) struct Sprites {
-    pub layout: dx::AtlasLayout,
+    pub layout: dx::AtlasSet,
     pub pages: Vec<dx::Texture>,
     pub animations: Vec<(SpriteAnimation, usize)>,
 }
@@ -11,55 +11,69 @@ impl Sprites {
         pixels: &[u8],
         size: u32,
         layers: u32,
-        budget: u64,
+        settings: &[crate::mipmap::Settings],
         animations: &[SpriteAnimation],
     ) -> Result<Self> {
-        let layout = dx::AtlasLayout::new(size, layers, device.caps.max_texture, budget / 4)?;
         if pixels.len() != size as usize * size as usize * 4 * layers as usize {
             return Err("D3D9 sprite pixels do not match their declared size/layers".into());
         }
-        if layout.bytes() > budget {
-            return Err(format!("D3D9 sprite pages need {} MiB, texture budget is {} MiB; use a smaller resource pack or HORIZON_D3D9_TEXTURE_MIB", layout.bytes() >> 20, budget >> 20).into());
-        }
-        let mut pages = Vec::new();
-        let per_page = layout.columns * layout.columns;
-        for page in 0..layout.pages {
-            let mut texture = None;
-            for level in 0..layout.levels {
-                let side = (layout.side >> level).max(1);
-                let mut out = vec![0; side as usize * side as usize * 4];
-                for layer in page * per_page..((page + 1) * per_page).min(layers) {
-                    let start = layer as usize * size as usize * size as usize * 4;
-                    let tile = layout.tile(
-                        level,
-                        &pixels[start..start + size as usize * size as usize * 4],
-                    )?;
-                    let (_, x, y) = layout.placement(layer)?;
-                    let cell = (layout.cell >> level).max(1);
-                    blit(&mut out, side, x >> level, y >> level, cell, cell, &tile);
-                }
-                if level == 0 {
-                    texture = Some(device.texture(side, side, layout.levels, &out)?);
+        let sizes: Vec<_> = (0..layers as usize)
+            .map(|i| {
+                let native = settings.get(i).map_or(0, |s| s.native_size);
+                if native == 0 {
+                    size
                 } else {
-                    device.patch(
-                        texture.as_ref().ok_or("D3D9 atlas not initialized")?,
-                        level,
-                        0,
-                        0,
-                        side,
-                        side,
-                        &out,
-                    )?;
+                    native.min(size).next_power_of_two()
+                }
+            })
+            .collect();
+        let animated: Vec<_> = animations.iter().map(|a| a.layer).collect();
+        let layout = dx::AtlasSet::new(&sizes, &animated, device.caps.max_texture)?;
+        let mut pages = Vec::new();
+        for (group, plan) in layout.layouts.iter().enumerate() {
+            let mut sources = vec![0; plan.layers as usize];
+            for (layer, &(g, local)) in layout.locations.iter().enumerate() {
+                if g == group {
+                    sources[local as usize] = layer;
                 }
             }
-            pages.push(texture.ok_or("D3D9 atlas has no mip levels")?);
+            let per_page = plan.columns * plan.columns;
+            for page in 0..plan.pages {
+                let mut texture = None;
+                for level in 0..plan.levels {
+                    let side = (plan.side >> level).max(1);
+                    let mut out = vec![0; side as usize * side as usize * 4];
+                    for local in page * per_page..((page + 1) * per_page).min(plan.layers) {
+                        let start = sources[local as usize] * size as usize * size as usize * 4;
+                        let tile = plan.tile(
+                            level,
+                            &pixels[start..start + size as usize * size as usize * 4],
+                        )?;
+                        let (_, x, y) = plan.placement(local)?;
+                        let cell = (plan.cell >> level).max(1);
+                        blit(&mut out, side, x >> level, y >> level, cell, cell, &tile);
+                    }
+                    if level == 0 {
+                        texture = Some(device.texture(side, side, plan.levels, &out)?);
+                    } else {
+                        device.patch(
+                            texture.as_ref().ok_or("D3D9 atlas not initialized")?,
+                            level,
+                            0,
+                            0,
+                            side,
+                            side,
+                            &out,
+                        )?;
+                    }
+                }
+                pages.push(texture.ok_or("D3D9 atlas has no mip levels")?);
+            }
         }
         log::info!(
-            "D3D9 sprites: {layers} layers -> {} pages {}x{}, {} mips, {} bytes",
-            layout.pages,
-            layout.side,
-            layout.side,
-            layout.levels,
+            "D3D9 sprites: {layers} native-resolution layers -> {} pages ({} animated layers isolated), {} bytes",
+            pages.len(),
+            animated.len(),
             layout.bytes()
         );
         Ok(Self {
@@ -78,10 +92,13 @@ impl Sprites {
             if *previous == frame {
                 continue;
             }
-            let (page, x, y) = self.layout.placement(animation.layer)?;
-            for level in 0..self.layout.levels {
-                let cell = (self.layout.cell >> level).max(1);
-                let pixels = self.layout.tile(level, animation.pixels(frame))?;
+            let (group, local) = self.layout.locations[animation.layer as usize];
+            let plan = &self.layout.layouts[group];
+            let (page, x, y) = plan.placement(local)?;
+            let page = self.layout.offsets[group] + page;
+            for level in 0..plan.levels {
+                let cell = (plan.cell >> level).max(1);
+                let pixels = plan.tile(level, animation.pixels(frame))?;
                 device.patch(
                     &self.pages[page],
                     level,
@@ -118,6 +135,17 @@ impl Sprites {
         let upper = std::array::from_fn::<_, 2, _>(|k| (max[k].ceil() as i32).max(lower[k] + 1));
         if upper[0] - lower[0] > 32 || upper[1] - lower[1] > 32 {
             return Err("D3D9 sprite quad repeats more than 32 times per axis".into());
+        }
+        if lower == [0, 0] && upper == [1, 1] {
+            let mut out = *vertices;
+            let mut page = 0;
+            for v in &mut out {
+                let (p, uv) = self.layout.uv(layer, v.uv)?;
+                page = p;
+                v.uv = uv;
+            }
+            emit(page, &out);
+            return Ok(());
         }
         for y in lower[1]..upper[1] {
             for x in lower[0]..upper[0] {
@@ -164,7 +192,7 @@ impl Pixels {
         if width == 0 || height == 0 || pixels.len() != width as usize * height as usize * 4 {
             return Err("D3D9 GUI image dimensions mismatch".into());
         }
-        let mut cap = device.caps.max_texture;
+        let mut cap = device.caps.max_texture.min(512);
         while u64::from(cap).pow(2) * 4 > page_budget {
             cap /= 2;
         }
@@ -271,6 +299,22 @@ impl Pixels {
                 .min(axis[k].div_ceil(tile[k]) - 1)
                 .max(start[k])
         });
+        if start == end && input.len() <= 8 {
+            let page = (start[1] * self.columns + start[0]) as usize;
+            if self.pages[page].is_some() {
+                let mut polygon = smallvec::SmallVec::<[dx::Vertex; 8]>::from_slice(input);
+                for v in &mut polygon {
+                    v.uv = [
+                        (v.uv[0] * self.width as f32 - start[0] as f32 * self.page_width as f32)
+                            / self.page_width as f32,
+                        (v.uv[1] * self.height as f32 - start[1] as f32 * self.page_height as f32)
+                            / self.page_height as f32,
+                    ];
+                }
+                emit(page, &polygon);
+            }
+            return;
+        }
         for y in start[1]..=end[1] {
             for x in start[0]..=end[0] {
                 let page = (y * self.columns + x) as usize;

@@ -72,6 +72,11 @@ pub struct Renderer {
     mesh_budget: u64,
     texture_budget: u64,
     pending_error: Option<String>,
+    gpu_mesh_bytes: u64,
+    upload_cpu: Duration,
+    timings: Vec<(&'static str, f32)>,
+    texture_target_warned: bool,
+    cache_warning: bool,
     dropped: bool,
     sides: bool,
     linear: bool,
@@ -91,7 +96,7 @@ impl Renderer {
         sprite_size: u32,
         _sprite_minimum_size: u32,
         layers: u32,
-        _sprite_mips: &[crate::mipmap::Settings],
+        sprite_mips: &[crate::mipmap::Settings],
         animations: &[SpriteAnimation],
         hud_atlas: (&[u8], u32, u32),
         _glint: (&[u8], u32, u32),
@@ -107,12 +112,6 @@ impl Renderer {
         _request: output::FrameRequest,
         _display: output::DisplayReading,
     ) -> Result<Self> {
-        if let Ok(api) = std::env::var("HORIZON_GRAPHICS_API")
-            && api != "legacy-d3d9"
-            && api != "auto"
-        {
-            return Err(format!("This executable uses Direct3D9. HORIZON_GRAPHICS_API={api} requires the modern client; use legacy-d3d9 or unset it").into());
-        }
         let size = window.inner_size();
         let mut device = match previous {
             Some(r) => r.device.reuse(),
@@ -131,7 +130,7 @@ impl Renderer {
             sprite_pixels,
             sprite_size,
             layers,
-            texture_budget,
+            sprite_mips,
             animations,
         )?;
         let atlas = Pixels::new(
@@ -146,7 +145,11 @@ impl Renderer {
         let lightmap = device.texture(16, 16, 1, &[255; 1024])?;
         let texture_bytes = sprites.layout.bytes() + atlas.bytes() + lightmap.bytes;
         if texture_bytes > texture_budget {
-            return Err(format!("D3D9 textures need {} MiB, budget {} MiB. HORIZON_D3D9_TEXTURE_MIB can raise the budget; settings have not been changed", texture_bytes >> 20, texture_budget >> 20).into());
+            log::warn!(
+                "D3D9 textures exceed the advisory target ({} / {} MiB); the driver's managed residency will page them as needed",
+                texture_bytes >> 20,
+                texture_budget >> 20
+            );
         }
         crate::mesher::packed::pack_quads(false);
         crate::mesher::group_parts(false);
@@ -230,6 +233,11 @@ impl Renderer {
             mesh_budget,
             texture_budget,
             pending_error: None,
+            gpu_mesh_bytes: 0,
+            upload_cpu: Duration::ZERO,
+            timings: Vec::new(),
+            texture_target_warned: false,
+            cache_warning: false,
             dropped: false,
             sides: true,
             linear: false,

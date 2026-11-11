@@ -98,6 +98,7 @@ impl Renderer {
             return Err(error.into());
         }
         let started = Instant::now();
+        self.timings.clear();
         let clear = if frame.end_sky {
             [0.0; 3]
         } else if frame.skybox && !frame.sky_blocked {
@@ -134,16 +135,25 @@ impl Renderer {
         self.last_wait = wait.elapsed();
         self.uploaded_bytes = std::mem::take(&mut self.device.uploads);
         self.frames += 1;
-        self.stage_times = vec![
-            (
-                "D3D9 CPU frame".into(),
-                self.last_encode.as_secs_f32() * 1000.0,
-            ),
-            ("D3D9 Present".into(), self.last_wait.as_secs_f32() * 1000.0),
-        ];
+        self.stage_times.clear();
+        self.stage_times.push((
+            "D3D9 CPU frame".into(),
+            self.last_encode.as_secs_f32() * 1000.0,
+        ));
+        self.stage_times.extend(
+            self.timings
+                .iter()
+                .map(|(name, ms)| (format!("D3D9 {name}"), *ms)),
+        );
+        self.stage_times.push((
+            "D3D9 section conversion (outside frame)".into(),
+            self.upload_cpu.as_secs_f32() * 1000.0,
+        ));
+        self.stage_times
+            .push(("D3D9 Present".into(), self.last_wait.as_secs_f32() * 1000.0));
         if self.last_log.elapsed() >= Duration::from_secs(5) {
             log::info!(
-                "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_bytes={} texture_bytes={}",
+                "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_gpu_bytes={} texture_bytes={}",
                 self.frames,
                 self.last_encode.as_secs_f64() * 1000.0,
                 self.last_wait.as_secs_f64() * 1000.0,
@@ -153,11 +163,24 @@ impl Renderer {
                 self.drawn_sections,
                 self.sections.len(),
                 self.mesh_bytes,
+                self.gpu_mesh_bytes,
                 self.texture_bytes()
+            );
+            log::info!(
+                "D3D9 stages_ms={:?} section_conversion_ms={:.3} process_memory_bytes={:?}",
+                self.timings,
+                self.upload_cpu.as_secs_f64() * 1000.0,
+                horizon_threads::process_memory::usage()
             );
             self.last_log = Instant::now();
         }
+        self.upload_cpu = Duration::ZERO;
         Ok(shown)
+    }
+    fn stamp(&mut self, name: &'static str, clock: &mut Instant) {
+        self.timings
+            .push((name, clock.elapsed().as_secs_f32() * 1000.0));
+        *clock = Instant::now();
     }
     fn texture_bytes(&self) -> u64 {
         self.sprites.layout.bytes()
@@ -169,10 +192,13 @@ impl Renderer {
             + self.lightmap.bytes
     }
     fn draw_frame(&mut self, frame: &Frame) -> Result<()> {
+        let mut clock = Instant::now();
         self.update_lightmap(frame)?;
+        self.stamp("lightmap", &mut clock);
         if self.animated_textures {
             self.sprites.animate(&mut self.device, frame.ticks)?;
         }
+        self.stamp("sprite animation", &mut clock);
         for patch in &frame.hud.patches {
             self.hud.atlas.patch(
                 &mut self.device,
@@ -195,9 +221,15 @@ impl Renderer {
                 .patch(&mut self.device, x, y, rect.w, rect.h, &pixels)?;
             *old = (selected, 0, 0);
         }
-        if self.texture_bytes() > self.texture_budget {
-            return Err("D3D9 GUI patches exceeded HORIZON_D3D9_TEXTURE_MIB; no graphics settings were changed".into());
+        if self.texture_bytes() > self.texture_budget && !self.texture_target_warned {
+            log::warn!(
+                "D3D9 textures exceed the advisory residency target: {} / {} MiB; continuing with managed paging",
+                self.texture_bytes() >> 20,
+                self.texture_budget >> 20
+            );
+            self.texture_target_warned = true;
         }
+        self.stamp("GUI patches", &mut clock);
         let views = self.views(frame);
         let view = views.primary();
         let projection = view.projection * frame.bob * frame.spin;
@@ -211,7 +243,7 @@ impl Renderer {
         self.section_draws = 0;
         self.section_draw_calls = 0;
         if frame.title {
-            self.draw_panorama(view)?;
+            self.draw_panorama(frame)?;
         } else {
             self.panorama = None;
             self.draw_end_sky(frame)?;
@@ -235,6 +267,7 @@ impl Renderer {
                     frame.distance * 0.75,
                     frame.distance,
                 )));
+            self.stamp("sky", &mut clock);
             let mut visible: Vec<(SectionKey, Vec3, f32)> = self
                 .sections
                 .iter()
@@ -255,6 +288,9 @@ impl Renderer {
                 })
                 .collect();
             visible.sort_unstable_by(|a, b| a.2.total_cmp(&b.2));
+            self.stamp("visibility", &mut clock);
+            self.prepare_sections(&visible)?;
+            self.stamp("terrain cache", &mut clock);
             self.drawn_sections = visible.len();
             for (key, origin, _) in &visible {
                 let section = &self.sections[key];
@@ -263,7 +299,7 @@ impl Renderer {
                     view.view.to_cols_array(),
                     projection.to_cols_array(),
                 )?;
-                let mut runs = Vec::new();
+                let mut runs = smallvec::SmallVec::<[Range<u32>; 7]>::new();
                 if self.sides {
                     section
                         .sides
@@ -291,7 +327,7 @@ impl Renderer {
                         &self.sprites.pages[packet.page],
                         Some(&self.lightmap),
                     )?;
-                    self.device.draw(&packet.mesh, 0, packet.mesh.vertices)?;
+                    mesh::draw_packet(&mut self.device, section, packet)?;
                     self.section_draws += 1;
                 }
             }
@@ -300,6 +336,7 @@ impl Renderer {
                 view.view.to_cols_array(),
                 projection.to_cols_array(),
             )?;
+            self.stamp("terrain solid", &mut clock);
             self.draw_entities(frame, frame.entities, fog, 0)?;
             self.draw_entities(frame, frame.world_primitives.quads, fog, 2)?;
             for section in frame.static_block_entities {
@@ -318,13 +355,15 @@ impl Renderer {
                 )?;
                 self.draw_entities(frame, &section.vertices, fog, 2)?;
             }
+            self.stamp("entities", &mut clock);
             for (key, origin, _) in visible.iter().rev() {
                 self.device.transform(
                     Mat4::from_translation(*origin).to_cols_array(),
                     view.view.to_cols_array(),
                     projection.to_cols_array(),
                 )?;
-                for packet in &self.sections[key].translucent {
+                let section = &self.sections[key];
+                for packet in &section.translucent {
                     self.device.state(
                         DrawState {
                             blend: Blend::Alpha,
@@ -339,10 +378,11 @@ impl Renderer {
                         &self.sprites.pages[packet.page],
                         Some(&self.lightmap),
                     )?;
-                    self.device.draw(&packet.mesh, 0, packet.mesh.vertices)?;
+                    mesh::draw_packet(&mut self.device, section, packet)?;
                     self.section_draws += 1;
                 }
             }
+            self.stamp("terrain translucent", &mut clock);
             self.section_draw_calls = self.section_draws;
             self.device.transform(
                 Mat4::IDENTITY.to_cols_array(),
@@ -373,7 +413,9 @@ impl Renderer {
             )?;
             self.draw_entities(frame, frame.hand, None, 2)?;
         }
+        self.stamp("effects/hand", &mut clock);
         self.draw_gui(frame)?;
+        self.stamp("GUI draw", &mut clock);
         self.save_screenshot();
         if self.capture.take().is_some() {
             self.capture_result = Some(Err(
@@ -512,7 +554,7 @@ impl Renderer {
         }
         Ok(())
     }
-    fn draw_panorama(&mut self, view: &View) -> Result<()> {
+    fn draw_panorama(&mut self, frame: &Frame) -> Result<()> {
         if self.panorama.is_none() {
             let pixels = self.panorama_faces.texels();
             self.panorama = Some(Pixels::new(
@@ -526,8 +568,14 @@ impl Renderer {
         let panorama = self.panorama.as_ref().ok_or("D3D9 panorama missing")?;
         self.device.transform(
             Mat4::IDENTITY.to_cols_array(),
-            view.view.to_cols_array(),
-            view.projection.to_cols_array(),
+            Mat4::IDENTITY.to_cols_array(),
+            panorama::projection(
+                self.config.width,
+                self.config.height,
+                frame.yaw,
+                frame.pitch,
+            )
+            .to_cols_array(),
         )?;
         let mut batches = Vec::new();
         for face in 0..6 {
@@ -685,15 +733,15 @@ impl Renderer {
                 if tri[0].uv[0] >= 2.0 {
                     continue;
                 }
-                let vertices = tri
-                    .iter()
-                    .map(|v| dx::Vertex {
+                let vertices: [dx::Vertex; 3] = std::array::from_fn(|i| {
+                    let v = &tri[i];
+                    dx::Vertex {
                         pos: [v.pos[0], v.pos[1], v.depth],
                         uv: v.uv,
                         color: dx::rgba_to_argb(v.color),
                         light: [0.0; 2],
-                    })
-                    .collect::<Vec<_>>();
+                    }
+                });
                 pixels.polygon(&vertices, |page, p| {
                     batch(&mut batches, page, state, p, true)
                 });

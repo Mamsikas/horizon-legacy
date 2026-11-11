@@ -943,7 +943,7 @@ impl H {
             H::ShadowCache => labelled("Shadow Cache", on_off(g.shadow_cache)),
             // A press across the row, as Calibrate...: the list it opens shows the pick.
             H::ShaderPacks => Text::literal(lang::get("Shader Packs...")),
-            H::GraphicsApi => labelled("Graphics API", g.api.label()),
+            H::GraphicsApi => labelled("Graphics API", g.api.selected().label()),
             // These two are greyed out where the device can't (`Item::blocked`): Off, as
             // they are there, while the saved value waits for a device that can.
             H::TranslucentBatching => labelled(

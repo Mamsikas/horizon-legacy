@@ -1,6 +1,12 @@
 //! All COM and locked-memory operations stay here. Resources keep their device and
 //! window alive and are deliberately !Send/!Sync: D3D9 Reset belongs to its creator.
-use std::{ffi::c_void, ptr, rc::Rc, sync::Arc};
+use std::{
+    cell::RefCell,
+    ffi::c_void,
+    ptr,
+    rc::{Rc, Weak},
+    sync::Arc,
+};
 use windows::{
     Foundation::Numerics::Matrix4x4,
     Win32::{
@@ -82,7 +88,9 @@ pub struct Caps {
     pub software_vertices: bool,
     pub raw: D3DCAPS9,
 }
+type MeshHandle = RefCell<Option<IDirect3DVertexBuffer9>>;
 struct Inner {
+    default_meshes: RefCell<Vec<Weak<MeshHandle>>>,
     device: IDirect3DDevice9,
     _d3d: IDirect3D9,
     _window: Arc<Window>,
@@ -97,11 +105,15 @@ pub struct Texture {
     pub bytes: u64,
 }
 pub struct Mesh {
-    raw: IDirect3DVertexBuffer9,
+    raw: Rc<MeshHandle>,
     owner: Rc<Inner>,
     pub vertices: u32,
 }
 impl Mesh {
+    /// Reset invalidates DEFAULT buffers; their owner can lazily upload its CPU data again.
+    pub fn resident(&self) -> bool {
+        self.raw.borrow().is_some()
+    }
     pub fn bytes(&self) -> u64 {
         u64::from(self.vertices) * size_of::<Vertex>() as u64
     }
@@ -364,6 +376,7 @@ impl Device {
         );
         let mut result = Self {
             inner: Rc::new(Inner {
+                default_meshes: RefCell::new(Vec::new()),
                 device,
                 _d3d: d3d,
                 _window: window,
@@ -484,7 +497,13 @@ impl Device {
             Ok(()) => {}
         }
         if self.reset_pending {
-            // All long-lived resources use MANAGED. Release DEFAULT and device bindings first.
+            // Textures/indices are MANAGED. Terrain buffers have a CPU cache in the
+            // caller; invalidate all DEFAULT handles, including reused-device owners.
+            for handle in self.inner.default_meshes.borrow_mut().drain(..) {
+                if let Some(buffer) = handle.upgrade() {
+                    buffer.borrow_mut().take();
+                }
+            }
             self.transient = None;
             self.transient_capacity = 0;
             // SAFETY: no outstanding lock, scene, stateblock or backbuffer reference exists.
@@ -745,9 +764,14 @@ impl Device {
         unsafe {
             self.inner.device.CreateVertexBuffer(
                 bytes.len() as u32,
-                D3DUSAGE_WRITEONLY as u32,
+                D3DUSAGE_WRITEONLY as u32
+                    | if self.caps.software_vertices {
+                        D3DUSAGE_SOFTWAREPROCESSING as u32
+                    } else {
+                        0
+                    },
                 FVF,
-                D3DPOOL_MANAGED,
+                D3DPOOL_DEFAULT,
                 &mut raw,
                 ptr::null_mut(),
             )?;
@@ -757,6 +781,12 @@ impl Device {
             ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
             raw.Unlock()?;
             self.uploads += bytes.len() as u64;
+            let raw = Rc::new(RefCell::new(Some(raw)));
+            let mut handles = self.inner.default_meshes.borrow_mut();
+            if handles.len() >= 4096 && handles.len().is_power_of_two() {
+                handles.retain(|h| h.strong_count() != 0);
+            }
+            handles.push(Rc::downgrade(&raw));
             Ok(Mesh {
                 raw,
                 owner: self.inner.clone(),
@@ -789,7 +819,7 @@ impl Device {
             let d = &self.inner.device;
             let cache = &mut self.state_cache;
             if cache.textures[0] != texture.raw.as_raw() as usize {
-                d.SetTexture(0, &texture.raw)?;
+                d.SetTexture(0, &texture.base)?;
                 cache.textures[0] = texture.raw.as_raw() as usize;
                 self.binds += 1;
             }
@@ -916,11 +946,15 @@ impl Device {
         if count == 0 {
             return Ok(());
         }
+        let raw = mesh.raw.borrow();
+        let raw = raw
+            .as_ref()
+            .ok_or("D3D9 terrain buffer needs re-upload after Reset")?;
         // SAFETY: range checked above; shared indices start at zero relative to the base vertex.
         unsafe {
             self.inner
                 .device
-                .SetStreamSource(0, &mesh.raw, 0, size_of::<Vertex>() as u32)?;
+                .SetStreamSource(0, raw, 0, size_of::<Vertex>() as u32)?;
             self.inner.device.DrawIndexedPrimitive(
                 D3DPT_TRIANGLELIST,
                 first as i32,
@@ -965,7 +999,12 @@ impl Device {
                 unsafe {
                     self.inner.device.CreateVertexBuffer(
                         self.transient_capacity as u32,
-                        (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32,
+                        (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32
+                            | if self.caps.software_vertices {
+                                D3DUSAGE_SOFTWAREPROCESSING as u32
+                            } else {
+                                0
+                            },
                         FVF,
                         D3DPOOL_DEFAULT,
                         &mut buffer,

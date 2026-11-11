@@ -19,18 +19,18 @@ impl Renderer {
             self.sections
                 .values()
                 .flat_map(|s| &s.solid)
-                .map(|p| p.mesh.bytes())
+                .map(|p| u64::from(p.count) * size_of::<dx::Vertex>() as u64)
                 .sum(),
             self.sections
                 .values()
                 .flat_map(|s| &s.translucent)
-                .map(|p| p.mesh.bytes())
+                .map(|p| u64::from(p.count) * size_of::<dx::Vertex>() as u64)
                 .sum(),
         ]
     }
     pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
         vec![
-            ("D3D9 section VBs (managed)", self.mesh_bytes),
+            ("D3D9 section VBs (DEFAULT cache)", self.gpu_mesh_bytes),
             ("D3D9 sprite pages (managed)", self.sprites.layout.bytes()),
             ("D3D9 GUI pages (managed)", self.hud.atlas.bytes()),
         ]
@@ -49,7 +49,7 @@ impl Renderer {
                 self.hud.sprite_animations.capacity()
                     * size_of::<(Rect, SpriteAnimation, (usize, usize, u32))>(),
             ),
-            ("D3D9 retained CPU geometry", 0),
+            ("D3D9 retained CPU geometry", self.mesh_bytes as usize),
             ("D3D9 textures (managed backing counted by driver)", 0),
         ]
     }
