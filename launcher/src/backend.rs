@@ -1167,6 +1167,7 @@ fn write_checked(
     let mut hash = horizon_release_sign::Sha256::default();
     let (mut done, mut buf) = (0u64, vec![0u8; 1 << 16]);
     loop {
+        check_cancelled()?;
         let n = reader
             .read(&mut buf)
             .map_err(|e| format!("Download interrupted: {e}"))?;
@@ -1181,7 +1182,7 @@ fn write_checked(
     horizon_release_sign::check(name, sha256, &hash.hex())
 }
 
-fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
+pub(crate) fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
     let file = fs::File::open(archive).map_err(|e| e.to_string())?;
     if url.ends_with(".tar.gz") {
         tar::Archive::new(flate2::read::GzDecoder::new(file))
@@ -7205,4 +7206,14 @@ pub fn {f}("
             Some(&Some(OsStr::new("kept")))
         );
     }
+}
+
+/// A cooperative download boundary used by the native launcher worker.
+pub(crate) fn check_cancelled() -> Result<(), String> {
+    if cfg!(feature = "win7")
+        && std::env::var_os("HORIZON_LAUNCHER_CANCEL_FILE").is_some_and(|p| Path::new(&p).exists())
+    {
+        return Err(crate::i18n::tr("Operation cancelled.").into());
+    }
+    Ok(())
 }
