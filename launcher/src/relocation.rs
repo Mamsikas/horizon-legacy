@@ -11,6 +11,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[cfg(all(windows, feature = "win7"))]
+mod win7;
+
 fn remap(value: &mut Value, source: &Roots, target: &Roots) {
     let Some(text) = value.as_str() else { return };
     let path = Path::new(text);
@@ -89,6 +92,32 @@ pub fn prepare_paths(stage: &Roots, source: &Roots, target: &Roots) -> Result<()
 
 /// Refuse live games/build tools even if the window that started them has already exited.
 fn ensure_idle(source: &Roots) -> Result<(), String> {
+    let roots: Vec<_> = [&source.launcher, &source.game, &source.build]
+        .iter()
+        .map(|p| p.to_string_lossy().replace('\\', "/").to_lowercase())
+        .collect();
+    #[cfg(all(windows, feature = "win7"))]
+    let processes =
+        win7::processes().map_err(|e| format!("Could not check running games and builds: {e}"))?;
+    #[cfg(not(all(windows, feature = "win7")))]
+    let processes = processes()?;
+    for (name, command) in processes {
+        if let Some(name) = relocation_blocker(
+            &name,
+            &command,
+            &roots,
+            cfg!(all(windows, feature = "win7")),
+        ) {
+            return Err(format!(
+                "Close games, servers and native builds before moving data ({name} is running)."
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(all(windows, feature = "win7")))]
+fn processes() -> Result<Vec<(String, String)>, String> {
     #[cfg(windows)]
     let output = process::command("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", "Get-CimInstance Win32_Process | Select-Object Name,ExecutablePath,CommandLine | ConvertTo-Json -Compress"])
@@ -101,10 +130,6 @@ fn ensure_idle(source: &Roots) -> Result<(), String> {
     if !output.status.success() {
         return Err("Could not check running games and builds; no files were moved.".into());
     }
-    let roots: Vec<_> = [&source.launcher, &source.game, &source.build]
-        .iter()
-        .map(|p| p.to_string_lossy().replace('\\', "/").to_lowercase())
-        .collect();
     #[cfg(windows)]
     let processes: Vec<(String, String)> = {
         let value: Value = serde_json::from_slice(&output.stdout)
@@ -130,30 +155,38 @@ fn ensure_idle(source: &Roots) -> Result<(), String> {
         .filter_map(|line| line.trim().split_once(char::is_whitespace))
         .map(|(name, command)| (name.to_owned(), command.to_owned()))
         .collect();
-    for (name, command) in processes {
-        let name = Path::new(&name)
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_ascii_lowercase();
-        let name = name.strip_suffix(".exe").unwrap_or(&name);
-        let command = command.replace('\\', "/").to_lowercase();
-        let managed = roots.iter().any(|root| command.contains(root));
-        if matches!(
+    Ok(processes)
+}
+
+fn relocation_blocker(
+    name: &str,
+    command: &str,
+    roots: &[String],
+    conservative: bool,
+) -> Option<String> {
+    let name = Path::new(name)
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_ascii_lowercase();
+    let name = name.strip_suffix(".exe").unwrap_or(&name);
+    let command = command.replace('\\', "/").to_lowercase();
+    let managed = roots.iter().any(|root| command.contains(root));
+    // Toolhelp32 on Win7 does not expose command lines. An external Java/Cargo binary
+    // may still be using a managed game/build directory, so the legacy guard refuses it
+    // rather than treating an unreadable command line as proof that relocation is safe.
+    if matches!(
+        name,
+        "horizon-client" | "horizon-server" | "horizon-prepare"
+    ) || ((conservative || managed)
+        && matches!(
             name,
-            "horizon-client" | "horizon-server" | "horizon-prepare"
-        ) || (managed
-            && matches!(
-                name,
-                "java" | "javaw" | "cargo" | "rustc" | "horizon-mixins"
-            ))
-        {
-            return Err(format!(
-                "Close games, servers and native builds before moving data ({name} is running)."
-            ));
-        }
+            "java" | "javaw" | "cargo" | "rustc" | "horizon-mixins"
+        ))
+    {
+        return Some(name.to_owned());
     }
-    Ok(())
+    None
 }
 
 /// Handled before normal startup, so this process owns no shared data-location lease.

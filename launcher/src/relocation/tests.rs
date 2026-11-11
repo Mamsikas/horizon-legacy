@@ -2,6 +2,46 @@ use super::*;
 use serde_json::json;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[test]
+fn relocation_refuses_uninspectable_legacy_build_tools_without_blocking_unrelated_apps() {
+    let roots = vec!["c:/games/horizon".to_owned()];
+    // An external Java executable can still be reading managed assets in its arguments.
+    // With no command line available on Win7, its apparently external location is not safe.
+    assert_eq!(
+        relocation_blocker("JAVA.EXE", "", &roots, true).as_deref(),
+        Some("java")
+    );
+    assert_eq!(
+        relocation_blocker("cargo.exe", "C:/Tools/Rust/cargo.exe", &roots, true).as_deref(),
+        Some("cargo")
+    );
+    assert_eq!(relocation_blocker("notepad.exe", "", &roots, true), None);
+    // The modern path still uses its inspected command line and permits unrelated builds.
+    assert_eq!(
+        relocation_blocker(
+            "cargo.exe",
+            "cargo build --manifest-path C:/Other/Cargo.toml",
+            &roots,
+            false
+        ),
+        None
+    );
+    assert_eq!(
+        relocation_blocker(
+            "javaw.exe",
+            "javaw -jar C:/Games/Horizon/exporter.jar",
+            &roots,
+            false
+        )
+        .as_deref(),
+        Some("javaw")
+    );
+    assert_eq!(
+        relocation_blocker("horizon-client.exe", "", &roots, false).as_deref(),
+        Some("horizon-client")
+    );
+}
+
 struct Fixture(PathBuf);
 impl Fixture {
     fn new() -> Self {
