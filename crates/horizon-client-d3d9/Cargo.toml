@@ -1,0 +1,18 @@
+[package]
+name = "horizon-client-d3d9"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version = "1.90"
+description = "Windows 7 HAL Direct3D 9 device and bounded resources, behind a safe API"
+
+[dependencies]
+bytemuck = { version = "1.24", features = ["derive"] }
+log = "0.4"
+
+[target.'cfg(windows)'.dependencies]
+winit = "0.30.13"
+windows = { version = "0.58", features = ["Foundation_Numerics", "Win32_Foundation", "Win32_Graphics_Direct3D9", "Win32_Graphics_Gdi"] }
+
+[lints]
+workspace = true

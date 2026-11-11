@@ -65,12 +65,14 @@ zip = { version = "9.1.3", default-features = false, features = ["deflate"] }
 rustix = { version = "1", default-features = false, features = ["std", "time"] }
 
 [target.'cfg(windows)'.dependencies]
+horizon-client-d3d9 = { path = "../horizon-client-d3d9", optional = true }
 wgpu = { version = "30.0.1", default-features = false, features = ["dx12"] }
 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
+legacy-d3d9 = ["dep:horizon-client-d3d9"]
 # Sound output: horizon-client's `audio` feature.
 audio = ["dep:cpal"]
 # Helpers horizon-client's tests build their fixtures with.

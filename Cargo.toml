@@ -13,6 +13,7 @@ members = [
     "crates/horizon-client-core",
     "crates/horizon-client-input",
     "crates/horizon-client-render",
+    "crates/horizon-client-d3d9",
     "crates/horizon-cosmetics",
     "crates/horizon-command",
     "crates/horizon-items",
