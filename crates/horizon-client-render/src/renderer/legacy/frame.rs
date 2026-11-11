@@ -121,6 +121,8 @@ impl Renderer {
             }
             Err(error) => return Err(error),
         }
+        self.timings
+            .push(("begin/reset", started.elapsed().as_secs_f32() * 1000.0));
         if let Err(error) = self.draw_frame(frame) {
             self.device.cancel_frame();
             if dx::is_device_lost(error.as_ref()) {
@@ -272,6 +274,9 @@ impl Renderer {
                 .sections
                 .iter()
                 .filter_map(|(&key, section)| {
+                    if section.vertices.is_empty() {
+                        return None;
+                    }
                     let origin = (DVec3::new(
                         f64::from(key.0) * 16.0,
                         f64::from(self.layout.min_y()) + f64::from(key.1) * 16.0,
@@ -294,6 +299,9 @@ impl Renderer {
             self.drawn_sections = visible.len();
             for (key, origin, _) in &visible {
                 let section = &self.sections[key];
+                if section.solid.is_empty() {
+                    continue;
+                }
                 self.device.transform(
                     Mat4::from_translation(*origin).to_cols_array(),
                     view.view.to_cols_array(),
@@ -357,6 +365,9 @@ impl Renderer {
             }
             self.stamp("entities", &mut clock);
             for (key, origin, _) in visible.iter().rev() {
+                if self.sections[key].translucent.is_empty() {
+                    continue;
+                }
                 self.device.transform(
                     Mat4::from_translation(*origin).to_cols_array(),
                     view.view.to_cols_array(),

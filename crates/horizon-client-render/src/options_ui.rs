@@ -1317,12 +1317,12 @@ fn set_filtering(s: &mut Settings, anisotropy_bit: i32, filtering: i32) {
 fn graphics_api_tooltip(s: &Settings) -> Text {
     let line = |key: &str| lang::get_or(key, key);
     let mut lines = Vec::new();
-    if s.horizon.api != s.startup_api {
+    if s.horizon.api.selected() != s.startup_api.selected() {
         lines.push(line("options.needsRestart"));
         lines.push(String::new());
     }
     lines.push(line("options.graphicsApi.tooltip"));
-    if s.horizon.api == crate::graphics::GraphicsApi::Vulkan {
+    if s.horizon.api.selected() == crate::graphics::GraphicsApi::Vulkan {
         lines.push(String::new());
         lines.push(line("options.graphicsApi.tooltip.vulkan"));
     }
@@ -6258,15 +6258,30 @@ mod tests {
             "Exclusive Fullscreen Mode: 2560x1440@59.94 (24bit)"
         );
         s.horizon.api = GraphicsApi::Vulkan;
-        assert_eq!(
-            Opt::GraphicsBackend.label(&s).plain(),
-            "Graphics API: Prefer Vulkan (Experimental)"
-        );
-        assert!(
-            graphics_api_tooltip(&s)
-                .plain()
-                .starts_with("Requires a game restart to take effect.\n\n")
-        );
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        {
+            assert_eq!(
+                Opt::GraphicsBackend.label(&s).plain(),
+                "Graphics API: Direct3D 9"
+            );
+            assert!(
+                graphics_api_tooltip(&s)
+                    .plain()
+                    .starts_with("Which graphics API")
+            );
+        }
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+        {
+            assert_eq!(
+                Opt::GraphicsBackend.label(&s).plain(),
+                "Graphics API: Prefer Vulkan (Experimental)"
+            );
+            assert!(
+                graphics_api_tooltip(&s)
+                    .plain()
+                    .starts_with("Requires a game restart to take effect.\n\n")
+            );
+        }
         s.startup_api = GraphicsApi::Vulkan;
         assert!(
             graphics_api_tooltip(&s)
