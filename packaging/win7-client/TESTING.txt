@@ -1,0 +1,34 @@
+Horizon Direct3D9 preview - Windows 7 SP1 x64
+
+This preview requires the GPU manufacturer's Windows 7 driver, prepared legal
+Horizon resources matching Minecraft 26.3, and an Atom N455-compatible x64 CPU
+(SSE3/SSSE3). It has NOT been verified on physical GMA3150 or Radeon HD4570 yet.
+No Java, Vulkan, OpenGL, D3D11/D3D12 or shader compiler is used by the DX9 renderer.
+
+1. Extract the entire ZIP. Run d3d9-smoke.exe first. It must show overlapping
+   textured quads and a translucent strip. Resize, minimize, restore and Alt+Tab.
+   Send d3d9-smoke.log if it fails. This program is a device test, not the game.
+2. In the existing legacy launcher select horizon-client.exe as the native client.
+   Use your existing prepared resources. DX9 is the default for this executable.
+   Direct launch, if needed:
+   horizon-client.exe --resources "C:\path\to\26.3" --game-dir "C:\path\to\test-game"
+   Test in a COPY of a save. Render distance, FPS, resolution and vanilla graphics
+   options stay under your control; no low preset is installed.
+3. Open a world, move around, open inventory/chat, type text, save/reopen the world,
+   resize, Alt+Tab and toggle fullscreen. F2 saves a screenshot. Send the client log
+   and crash report (if any), GPU driver version and the build-info.txt from this ZIP.
+   The log includes adapter caps, HAL/vertex mode, memory budgets, frame CPU/Present,
+   draw calls, texture states and upload bytes. Counters are not a hardware benchmark.
+
+Optional diagnostics (environment variables, no options files edited):
+HORIZON_GRAPHICS_API=legacy-d3d9
+HORIZON_D3D9_VERTEX_PROCESSING=software   (A/B fixed-function vertex processing)
+HORIZON_D3D9_VERTEX_PROCESSING=hardware   (only when caps expose hardware T&L)
+HORIZON_D3D9_MESH_MIB=128                (explicit section-buffer budget)
+HORIZON_D3D9_TEXTURE_MIB=128             (explicit texture budget)
+
+The preview draws CPU-meshed terrain/models, lightmap, transparency, entities,
+hand/items, HUD/fonts/chat/inventory, weather, border and screen overlays.
+Limitations: SDR, basic sky/fog/End portal, no fancy clouds/star field, enchantment
+foil, shader packs, PBR, post effects, LOD, GPU occlusion/skinning, frame generation
+or split-screen compositor. Modern client builds retain their original renderer.

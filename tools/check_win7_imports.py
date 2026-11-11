@@ -21,6 +21,8 @@ from pathlib import Path
 # Each name below exists on Win7 SP1. In particular, no API-set wildcard is allowed:
 # accepting every api-ms-win-* contract would silently accept Windows 8/10 imports.
 SAFE_IMPORTS = {
+    # Direct3DCreate9 is supplied by the Direct3D 9 runtime (Windows XP and later).
+    "d3d9.dll": "Direct3DCreate9",
     "kernel32.dll": """
         AcquireSRWLockExclusive AcquireSRWLockShared AddVectoredExceptionHandler
         AllocConsole AreFileApisANSI AttachConsole Beep CancelIo CancelIoEx

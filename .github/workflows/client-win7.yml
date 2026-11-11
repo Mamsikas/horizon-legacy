@@ -1,0 +1,47 @@
+name: Windows 7 Direct3D9 client
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/win7-d3d9-client]
+    paths:
+      - 'crates/horizon-client*/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'tools/*win7*'
+      - 'packaging/win7-client/**'
+      - '.github/workflows/client-win7.yml'
+  pull_request:
+    paths:
+      - 'crates/horizon-client-d3d9/**'
+      - 'crates/horizon-client-render/src/renderer*'
+      - 'crates/horizon-client-render/src/renderer/**'
+      - 'tools/build_win7_client.sh'
+      - 'packaging/win7-client/**'
+      - '.github/workflows/client-win7.yml'
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cross compiler host libraries
+        run: sudo apt-get update && sudo apt-get install -y libmpc3 libisl23
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> ${{ runner.temp }}/win7-client/target"
+          shared-key: win7-d3d9-nov11
+          cache-on-failure: true
+      - name: Install pinned cross compiler
+        run: tools/bootstrap_win7_cross.sh "$RUNNER_TEMP/win7-client/cross"
+      - name: Build DX9 client and audit Win7 imports
+        env:
+          WIN7_BUILD_ROOT: ${{ runner.temp }}/win7-client
+          WIN7_CROSS_ROOT: ${{ runner.temp }}/win7-client/cross
+          CARGO_HOME: /home/runner/.cargo
+          RUSTUP_HOME: /home/runner/.rustup
+        run: tools/build_win7_client.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-client-win7-x64
+          path: ${{ runner.temp }}/win7-client/artifacts/*

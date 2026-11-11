@@ -89,6 +89,7 @@ struct Inner {
 }
 pub struct Texture {
     raw: IDirect3DTexture9,
+    base: IDirect3DBaseTexture9,
     owner: Rc<Inner>,
     pub width: u32,
     pub height: u32,
@@ -575,9 +576,17 @@ impl Device {
     pub fn transform(
         &mut self,
         world: [f32; 16],
-        view: [f32; 16],
-        projection: [f32; 16],
+        mut view: [f32; 16],
+        mut projection: [f32; 16],
     ) -> Result<()> {
+        // A pair of Z reflections preserves every clip-space coordinate while
+        // making D3D fixed-function camera-space Z positive for linear vertex fog.
+        for index in [2, 6, 10, 14] {
+            view[index] = -view[index];
+        }
+        for index in [8, 9, 10, 11] {
+            projection[index] = -projection[index];
+        }
         let previous = self.cached_transform;
         // SAFETY: Matrix4x4 is repr(C), sixteen f32 values in row order; glam's
         // column storage supplies the transpose for D3D's row-vector convention.
@@ -640,8 +649,11 @@ impl Device {
                 ptr::null_mut(),
             )?;
         }
+        let raw = raw.ok_or("D3D9 texture missing")?;
+        let base = raw.cast::<IDirect3DBaseTexture9>()?;
         let texture = Texture {
-            raw: raw.ok_or("D3D9 texture missing")?,
+            raw,
+            base,
             owner: self.inner.clone(),
             width,
             height,
@@ -770,12 +782,10 @@ impl Device {
             cache.stage(d, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE)?;
             cache.stage(d, 0, D3DTSS_TEXCOORDINDEX, 0)?;
             let lm = if state.lightmap { lightmap } else { None };
-            let light_texture = lm
-                .map(|t| t.raw.cast::<IDirect3DBaseTexture9>())
-                .transpose()?;
-            let light_id = light_texture.as_ref().map_or(0, |t| t.as_raw() as usize);
+            let light_texture = lm.map(|t| &t.base);
+            let light_id = light_texture.map_or(0, |t| t.as_raw() as usize);
             if cache.textures[1] != light_id {
-                d.SetTexture(1, light_texture.as_ref())?;
+                d.SetTexture(1, light_texture)?;
                 cache.textures[1] = light_id;
                 self.binds += 1;
             }
