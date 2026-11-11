@@ -2,6 +2,7 @@
 use super::flow::{self, Event, Settings};
 use crate::i18n::tr;
 use std::{
+    cell::RefCell,
     ffi::c_void,
     fs,
     io::Write,
@@ -281,7 +282,6 @@ struct App {
     playing: bool,
     closing: bool,
     game_started: bool,
-    dispatching: bool,
     startup_error: Option<String>,
     tail: String,
     log: Option<fs::File>,
@@ -738,12 +738,14 @@ fn work_area() -> Rect {
 
 unsafe extern "system" fn procedure(hwnd: Handle, message: u32, wp: usize, lp: isize) -> isize {
     if message == 0x81 {
-        // WM_NCCREATE: Box<App> remains stable until the message loop ends.
+        // WM_NCCREATE: Box<RefCell<App>> remains stable until the message loop ends.
         let create = &*(lp as *const Create);
         SetWindowLongPtrW(hwnd, -21, create.parameter as isize);
-        (*(create.parameter as *mut App)).hwnd = hwnd;
+        (*(create.parameter as *const RefCell<App>))
+            .borrow_mut()
+            .hwnd = hwnd;
     }
-    let ptr = GetWindowLongPtrW(hwnd, -21) as *mut App;
+    let ptr = GetWindowLongPtrW(hwnd, -21) as *const RefCell<App>;
     if ptr.is_null() {
         return DefWindowProcW(hwnd, message, wp, lp);
     }
@@ -757,12 +759,10 @@ unsafe extern "system" fn procedure(hwnd: Handle, message: u32, wp: usize, lp: i
     if message == 0x111 && (wp >> 16) != 0 {
         return 0;
     }
-    if (*ptr).dispatching {
+    let Ok(mut app) = (*ptr).try_borrow_mut() else {
         return DefWindowProcW(hwnd, message, wp, lp);
-    }
-    (*ptr).dispatching = true;
-    let app = &mut *ptr;
-    let result = match message {
+    };
+    match message {
         1 => {
             app.init();
             0
@@ -802,9 +802,7 @@ unsafe extern "system" fn procedure(hwnd: Handle, message: u32, wp: usize, lp: i
             0
         }
         _ => DefWindowProcW(hwnd, message, wp, lp),
-    };
-    (*ptr).dispatching = false;
-    result
+    }
 }
 
 pub fn run(startup_error: Option<String>) {
@@ -833,7 +831,7 @@ pub fn run(startup_error: Option<String>) {
                 wide("Segoe UI").as_ptr(),
             )
         };
-        let mut app = Box::new(App {
+        let app = Box::new(RefCell::new(App {
             hwnd: 0,
             font: font(15, 400),
             heading_font: font(29, 600),
@@ -863,7 +861,6 @@ pub fn run(startup_error: Option<String>) {
             playing: false,
             closing: false,
             game_started: false,
-            dispatching: false,
             startup_error,
             tail: String::new(),
             log: fs::OpenOptions::new()
@@ -871,7 +868,7 @@ pub fn run(startup_error: Option<String>) {
                 .append(true)
                 .open(flow::log_path())
                 .ok(),
-        });
+        }));
         let name = wide("HorizonWin7Launcher");
         let class = Class {
             style: 3,
@@ -887,8 +884,8 @@ pub fn run(startup_error: Option<String>) {
         };
         RegisterClassW(&class);
         let area = work_area();
-        let width = app.scale(680).min(area.right - area.left);
-        let height = app.scale(475).min(area.bottom - area.top);
+        let width = app.borrow().scale(680).min(area.right - area.left);
+        let height = app.borrow().scale(475).min(area.bottom - area.top);
         let hwnd = CreateWindowExW(
             0x10000,
             name.as_ptr(),
@@ -901,7 +898,7 @@ pub fn run(startup_error: Option<String>) {
             0,
             0,
             class.instance,
-            &mut *app as *mut App as *mut c_void,
+            &*app as *const RefCell<App> as *mut c_void,
         );
         if hwnd == 0 {
             MessageBoxW(
@@ -920,8 +917,8 @@ pub fn run(startup_error: Option<String>) {
                 }
             }
         }
-        DeleteObject(app.font);
-        DeleteObject(app.heading_font);
+        DeleteObject(app.borrow().font);
+        DeleteObject(app.borrow().heading_font);
         if com >= 0 {
             CoUninitialize();
         }
