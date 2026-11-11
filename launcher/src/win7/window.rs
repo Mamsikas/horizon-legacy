@@ -424,7 +424,11 @@ impl App {
     }
     fn add_log(&mut self, line: &str) {
         if let Some(log) = &mut self.log {
-            let _ = writeln!(log, "{line}");
+            let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+            for part in line.lines() {
+                let _ = writeln!(log, "[{timestamp}] {part}");
+            }
+            let _ = log.flush();
         }
         self.tail.push_str(&line.replace('\n', "\r\n"));
         self.tail.push_str("\r\n");
@@ -460,7 +464,20 @@ impl App {
             return;
         }
         let _ = fs::remove_file(flow::cancel_path());
-        self.log = fs::File::create(flow::log_path()).ok();
+        self.log.take();
+        let previous = flow::log_path().with_file_name("win7-launcher.previous.log");
+        let _ = fs::remove_file(&previous);
+        let _ = fs::rename(flow::log_path(), previous);
+        self.log = match fs::File::create(flow::log_path()) {
+            Ok(log) => Some(log),
+            Err(error) => {
+                self.error(&crate::i18n::trf(
+                    "Could not create the launcher log: {error}",
+                    &[("error", &error.to_string())],
+                ));
+                return;
+            }
+        };
         self.tail.clear();
         self.game_started = false;
         let (tx, rx) = mpsc::channel();
@@ -484,11 +501,20 @@ impl App {
     }
     fn error(&mut self, error: &str) {
         self.add_log(error);
-        set(self.status, error);
+        set(self.status, error.lines().next().unwrap_or(error));
+        // Keep the dialog usable on a small screen; the full diagnostics stay in the log.
+        let mut message = error.lines().take(16).collect::<Vec<_>>().join("\n");
+        message = message.chars().take(1800).collect();
+        if message.len() < error.len() {
+            message.push_str(&crate::i18n::trf(
+                "\n\nFull details: {path}",
+                &[("path", &flow::log_path().display().to_string())],
+            ));
+        }
         unsafe {
             MessageBoxW(
                 self.hwnd,
-                wide(error).as_ptr(),
+                wide(&message).as_ptr(),
                 wide(tr("Horizon")).as_ptr(),
                 0x10,
             );

@@ -8,12 +8,15 @@ pub(crate) struct Worker {
     child: Child,
     input: ChildStdin,
     replies: Receiver<std::io::Result<String>>,
+    java: PathBuf,
+    log_path: PathBuf,
 }
 
 impl Worker {
     pub(crate) fn new(run: &Run, name: &str, classes: &Path, cp: &str) -> Result<Self, String> {
         java::cancelled()?;
-        let log = run.log_file(&run.local.join(format!("{name}-worker.log")))?;
+        let log_path = run.local.join(format!("{name}-worker.log"));
+        let log = run.log_file(&log_path)?;
         let mut child = java::command(&run.jdk.java)
             .args(java::BATCH_OPTIONS)
             .args(java::bounded_args(&[
@@ -48,10 +51,17 @@ impl Worker {
             child,
             input,
             replies,
+            java: run.jdk.java.clone(),
+            log_path,
         })
     }
 
     pub(crate) fn run(&mut self, main: &str, args: &[String], log: &Path) -> Result<(), String> {
+        self.request(main, args, log)
+            .map_err(|error| java::export_failure(error, &self.java, &self.log_path))
+    }
+
+    fn request(&mut self, main: &str, args: &[String], log: &Path) -> Result<(), String> {
         let task = Value::Array(vec![
             Value::Str(arg(log)),
             Value::Str(main.into()),
@@ -74,10 +84,7 @@ impl Worker {
         };
         match pyjson::loads(&reply)?.as_str() {
             Some("") => Ok(()),
-            _ => Err(format!(
-                "Exporter {main} failed: {reply}{}",
-                java::heap_diagnostic()
-            )),
+            _ => Err(format!("Exporter {main} failed: {reply}")),
         }
     }
 }

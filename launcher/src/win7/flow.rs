@@ -123,7 +123,20 @@ pub fn run(mut settings: Settings, emit: &dyn Fn(Event)) -> Result<(), String> {
     lock.try_lock().map_err(|_| {
         tr("Horizon is already starting or running in another launcher.").to_string()
     })?;
-    let resources = resources(&settings.minecraft, emit)?;
+    emit(Event::Log(trf(
+        "Launcher {version}; {os}/{arch}",
+        &[
+            ("version", backend::VERSION),
+            ("os", std::env::consts::OS),
+            ("arch", std::env::consts::ARCH),
+        ],
+    )));
+    let resources = resources(&settings.minecraft, emit).map_err(|error| {
+        trf(
+            "Resource preparation failed before the game was started.\n{error}",
+            &[("error", &error)],
+        )
+    })?;
     backend::check_cancelled()?;
     emit(Event::Status(tr("Getting Horizon ready…").into()));
     let (program, managed) = client(&mut settings, emit)?;
@@ -266,6 +279,10 @@ fn support_root() -> Result<PathBuf, String> {
 
 fn resources(chosen: &Path, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
     let root = support_root()?;
+    emit(Event::Log(trf(
+        "Preparation folder: {path}",
+        &[("path", &root.display().to_string())],
+    )));
     let resources = prepare::resources_dir(&root, horizon_platform::version::VANILLA_VERSION, None);
     emit(Event::Status(tr("Checking game files…").into()));
     let log = |s: String| emit(Event::Log(s));
@@ -321,6 +338,21 @@ fn resources(chosen: &Path, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
     let java = crate::legacy_java::prepare(25, true, &log)?;
     // This process has one preparation worker. Pin discovery to the verified managed JVM.
     std::env::set_var("JAVA_HOME", &java);
+    log(trf(
+        "Preparation compiler: {path}",
+        &[("path", &java.join("bin/javac.exe").display().to_string())],
+    ));
+    log(trf(
+        "Preparation Java: {path}",
+        &[("path", &java.join("bin/java.exe").display().to_string())],
+    ));
+    log(trf(
+        "Preparation heap limit: {mib} MiB",
+        &[(
+            "mib",
+            &std::env::var("HORIZON_PREPARE_MAX_HEAP_MIB").unwrap_or_default(),
+        )],
+    ));
     emit(Event::Status(
         tr("Preparing Minecraft 26.3 — first setup may take a while…").into(),
     ));
@@ -400,6 +432,19 @@ fn download_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bundled_exporters_include_every_compiler_input() {
+        for name in prepare::exporters::source_files() {
+            let path = format!("mods/horizon/src/test/java/dev/horizonlab/parity/{name}");
+            assert!(
+                support::FILES
+                    .iter()
+                    .any(|(file, bytes)| *file == path && !bytes.is_empty()),
+                "missing bundled Java source: {name}"
+            );
+        }
+    }
+
     #[test]
     fn offline_launch_keeps_paths_and_name_separate_and_removes_sessions() {
         let cmd = offline_command(

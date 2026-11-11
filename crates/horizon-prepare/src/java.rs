@@ -3,7 +3,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -78,16 +78,6 @@ fn bounded_args_with(args: &[String], limit: Option<u32>) -> Vec<String> {
         bounded.insert(0, capped);
     }
     bounded
-}
-
-pub(crate) fn heap_diagnostic() -> String {
-    match heap_limit() {
-        Ok(Some(limit)) => format!(
-            "; the preparation heap is capped at {limit} MiB. Check its log for OutOfMemoryError. \
-             If memory permits, increase HORIZON_PREPARE_MAX_HEAP_MIB and retry"
-        ),
-        _ => String::new(),
-    }
 }
 
 /// An optional caller-owned cancellation flag. Interrupted output is not stamped current,
@@ -418,33 +408,62 @@ fn find_tools(major: i64, more: &[PathBuf], compiler: bool) -> Result<Jdk, Strin
 
 /// Add a repair hint only for a failure the exporter actually reported.
 pub(crate) fn export_failure(error: String, java: &Path, log: &Path) -> String {
-    // An incomplete JDK can still pass `java -version`. Diagnose its actual failure,
-    // rather than requiring one vendor's runtime layout from every Java installation.
-    let mut bytes = Vec::new();
-    let read = fs::File::open(log).and_then(|file| file.take(64 * 1024).read_to_end(&mut bytes));
-    if read.is_ok()
-        && String::from_utf8_lossy(&bytes).lines().any(|line| {
-            let missing = [
-                "java.io.FileNotFoundException: ",
-                "java.nio.file.NoSuchFileException: ",
-            ]
-            .into_iter()
-            .find_map(|exception| line.split_once(exception).map(|(_, path)| path));
-            missing.is_some_and(|path| {
-                ["/lib/tzdb.dat", r"\lib\tzdb.dat"]
-                    .into_iter()
-                    .filter_map(|name| path.split_once(name).map(|(_, rest)| rest))
-                    .any(|rest| rest.is_empty() || rest.starts_with(" ("))
-            })
+    // Keep failure messages useful without loading an unbounded JVM output file into RAM.
+    let output = process_output(log);
+    let reported = format!("{error}\n{output}");
+    let mut result = error;
+    // An incomplete JDK can still pass java -version; only diagnose what it reported.
+    if reported.lines().any(|line| {
+        let missing = [
+            "java.io.FileNotFoundException: ",
+            "java.nio.file.NoSuchFileException: ",
+        ]
+        .into_iter()
+        .find_map(|exception| line.split_once(exception).map(|(_, path)| path));
+        missing.is_some_and(|path| {
+            ["/lib/tzdb.dat", r"\lib\tzdb.dat"]
+                .into_iter()
+                .filter_map(|name| path.split_once(name).map(|(_, rest)| rest))
+                .any(|rest| rest.is_empty() || rest.starts_with(" ("))
         })
-    {
-        return format!(
-            "{error}\nJava at {} cannot load its timezone data (lib/tzdb.dat). \
+    }) {
+        result.push_str(&format!(
+            "\nJava at {} cannot load its timezone data (lib/tzdb.dat). \
              Repair that Java installation or select another compatible Java runtime.",
             java.display()
-        );
+        ));
     }
-    error
+    if log.is_file() {
+        result.push_str(&format!("\nProcess log: {}", log.display()));
+    }
+    if !output.trim().is_empty() {
+        result.push_str("\nProcess output:\n");
+        result.push_str(output.trim());
+    }
+    result
+}
+
+fn process_output(path: &Path) -> String {
+    fn read(path: &Path) -> std::io::Result<String> {
+        const PART: u64 = 8 * 1024;
+        let mut file = fs::File::open(path)?;
+        let size = file.metadata()?.len();
+        let mut first = Vec::new();
+        (&mut file).take(PART).read_to_end(&mut first)?;
+        let mut output = String::from_utf8_lossy(&first).into_owned();
+        if size > PART {
+            let tail = (size - PART).min(PART);
+            if size > PART * 2 {
+                output.push_str("\n[... output omitted; see full process log ...]\n");
+            }
+            file.seek(SeekFrom::End(-(tail as i64)))?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            output.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        Ok(output)
+    }
+    read(path).unwrap_or_default()
 }
 
 /// A classpath with the platform's separator.
@@ -515,7 +534,7 @@ fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
             return if status.success() {
                 Ok(())
             } else {
-                Err(format!("{program} failed ({status}){}", heap_diagnostic()))
+                Err(format!("{program} failed ({status})"))
             };
         }
         if start.elapsed() > TIMEOUT {
@@ -530,6 +549,31 @@ fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_failure_preserves_output_without_inventing_a_memory_error() {
+        let root = std::env::temp_dir().join(format!("prepare-javac-error-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("server.log");
+        let log = fs::File::create(&path).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "printf 'error: file not found: PrepareWorker.java\n' >&2; exit 2",
+        ]);
+        let failure = run(command, &log).unwrap_err();
+        let error = export_failure(failure, Path::new("javac"), &path);
+        assert!(error.contains("2"), "{error}");
+        assert!(
+            error.contains("error: file not found: PrepareWorker.java"),
+            "{error}"
+        );
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(!error.contains("OutOfMemoryError"), "{error}");
+        assert!(!error.contains("increase HORIZON_PREPARE"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn missing_timezone_data_explains_which_java_to_repair() {
@@ -565,10 +609,11 @@ mod tests {
             "java.io.FileNotFoundException: /pack/tzdb.dat (missing)",
         ] {
             fs::write(&log, text).unwrap();
-            assert_eq!(
-                export_failure("java failed (-1)".into(), Path::new("java"), &log),
-                "java failed (-1)"
-            );
+            let error = export_failure("java failed (-1)".into(), Path::new("java"), &log);
+            assert!(error.starts_with("java failed (-1)"));
+            assert!(error.contains(text));
+            assert!(!error.contains("Repair"));
+            assert!(!error.contains("OutOfMemoryError"));
         }
         fs::remove_file(&log).unwrap();
         assert_eq!(
