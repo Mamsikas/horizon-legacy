@@ -199,6 +199,7 @@ pub struct Device {
     pub draws: u64,
     pub binds: u64,
     pub uploads: u64,
+    pub resets: u64,
     pub mesh_uploads: u64,
     pub stream_uploads: u64,
     pub index_uploads: u64,
@@ -399,6 +400,7 @@ impl Device {
             draws: 0,
             binds: 0,
             uploads: 0,
+            resets: 0,
             mesh_uploads: 0,
             stream_uploads: 0,
             index_uploads: 0,
@@ -431,6 +433,7 @@ impl Device {
             draws: 0,
             binds: 0,
             uploads: 0,
+            resets: self.resets,
             mesh_uploads: 0,
             stream_uploads: 0,
             index_uploads: 0,
@@ -545,6 +548,7 @@ impl Device {
             );
             self.reset_pending = false;
             self.lost = false;
+            self.resets += 1;
         }
         self.using_dynamic_indices = false;
         self.mesh_uploads = 0;
@@ -1159,6 +1163,10 @@ impl Device {
                         D3DLOCK_NOOVERWRITE
                     } as u32,
                 )?;
+                if memory.is_null() {
+                    buffer.Unlock()?;
+                    return Err("D3D9 empty transient lock".into());
+                }
                 ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
                 buffer.Unlock()?;
                 self.inner

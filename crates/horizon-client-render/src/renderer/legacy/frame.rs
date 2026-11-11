@@ -506,6 +506,7 @@ impl Renderer {
                 self.draw_entities(frame, &section.vertices, fog, 2)?;
             }
             self.stamp("entities", &mut clock);
+            let before_translucent = self.device.draws;
             for (key, _, _) in visible.iter().rev() {
                 if self.sections[key].translucent.is_empty() {
                     continue;
@@ -541,11 +542,11 @@ impl Renderer {
                         Some(&self.lightmap),
                     )?;
                     mesh::draw_packet(&mut self.device, &self.arenas, section, packet, &decoded)?;
-                    self.section_draws += 1;
                 }
                 self.decode_scratch = decoded;
             }
             self.stamp("terrain translucent", &mut clock);
+            self.section_draws += (self.device.draws - before_translucent) as usize;
             self.section_draw_calls = self.section_draws;
             self.device.transform(
                 Mat4::IDENTITY.to_cols_array(),

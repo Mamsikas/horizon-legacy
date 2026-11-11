@@ -269,11 +269,15 @@ impl Renderer {
     /// Compressed CPU shadows survive Reset. Shared GPU arenas are immutable:
     /// no in-flight data is overwritten, and indices alone change with visibility.
     pub(super) fn prepare_sections(&mut self, visible: &[(SectionKey, Vec3, f32)]) -> Result<()> {
-        if self.arenas.values().any(|a| !a.mesh.resident()) {
+        if self.seen_resets != self.device.resets
+            || self.arenas.values().any(|a| !a.mesh.resident())
+        {
+            self.seen_resets = self.device.resets;
             self.arenas.clear();
             self.gpu_mesh_bytes = 0;
             for section in self.sections.values_mut() {
                 section.gpu.clear();
+                section.retry_after = 0;
             }
         }
         for (key, _, _) in visible {
