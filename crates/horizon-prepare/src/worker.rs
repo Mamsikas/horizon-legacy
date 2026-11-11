@@ -15,17 +15,17 @@ impl Worker {
         let log = run.log_file(&run.local.join(format!("{name}-worker.log")))?;
         let mut child = java::command(&run.jdk.java)
             .args(java::BATCH_OPTIONS)
-            .args([
-                "-Xmx2G",
-                "-cp",
-                &format!(
+            .args(java::bounded_args(&[
+                "-Xmx2G".into(),
+                "-cp".into(),
+                format!(
                     "{}{}{}",
                     classes.display(),
                     if cfg!(windows) { ";" } else { ":" },
                     cp
                 ),
-                "dev.horizonlab.parity.PrepareWorker",
-            ])
+                "dev.horizonlab.parity.PrepareWorker".into(),
+            ])?)
             // Vanilla's code logs relative to it (logs/): in the scratch, as `Run::run`.
             .current_dir(&run.local)
             .stdin(Stdio::piped())
@@ -66,7 +66,10 @@ impl Worker {
             .map_err(|e| e.to_string())?;
         match pyjson::loads(&reply)?.as_str() {
             Some("") => Ok(()),
-            _ => Err(format!("Exporter {main} failed: {reply}")),
+            _ => Err(format!(
+                "Exporter {main} failed: {reply}{}",
+                java::heap_diagnostic()
+            )),
         }
     }
 }

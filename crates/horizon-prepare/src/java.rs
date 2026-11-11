@@ -22,6 +22,73 @@ const TIMEOUT: Duration = Duration::from_secs(3600);
 /// 1.25 GB instead of 2 GB.
 pub(crate) const BATCH_OPTIONS: [&str; 2] = ["-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC"];
 
+/// An explicit preparation-only cap, in MiB. Absent it, the modern launcher's JVM arguments
+/// remain unchanged. Legacy workers opt in; this never changes the game's heap or options.
+fn heap_limit() -> Result<Option<u32>, String> {
+    match std::env::var("HORIZON_PREPARE_MAX_HEAP_MIB") {
+        Ok(value) => value
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|n| *n >= 64)
+            .map(Some)
+            .ok_or_else(|| {
+                "HORIZON_PREPARE_MAX_HEAP_MIB must be a whole number of at least 64 MiB".into()
+            }),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(format!("HORIZON_PREPARE_MAX_HEAP_MIB: {error}")),
+    }
+}
+
+pub(crate) fn bounded_args(args: &[String]) -> Result<Vec<String>, String> {
+    Ok(bounded_args_with(args, heap_limit()?))
+}
+
+fn bounded_args_with(args: &[String], limit: Option<u32>) -> Vec<String> {
+    let Some(limit) = limit else {
+        return args.to_vec();
+    };
+    let capped = format!("-Xmx{limit}m");
+    // These are the preparer's own arguments, before a class or -jar; keep their other values.
+    // A cap replaces every larger Xmx, since HotSpot accepts the last repeated heap option.
+    let mut found = false;
+    let mut bounded: Vec<String> = args
+        .iter()
+        .map(|arg| {
+            let Some(heap) = arg.strip_prefix("-Xmx") else {
+                return arg.clone();
+            };
+            found = true;
+            let (number, unit) = match heap.as_bytes().last().copied() {
+                Some(b'k' | b'K') => (&heap[..heap.len() - 1], 1024u64),
+                Some(b'm' | b'M') => (&heap[..heap.len() - 1], 1024u64 * 1024),
+                Some(b'g' | b'G') => (&heap[..heap.len() - 1], 1024u64 * 1024 * 1024),
+                _ => (heap, 1),
+            };
+            let bytes = number.parse::<u64>().ok().and_then(|n| n.checked_mul(unit));
+            if bytes.is_some_and(|n| n <= u64::from(limit) * 1024 * 1024) {
+                arg.clone()
+            } else {
+                capped.clone()
+            }
+        })
+        .collect();
+    if !found {
+        bounded.insert(0, capped);
+    }
+    bounded
+}
+
+pub(crate) fn heap_diagnostic() -> String {
+    match heap_limit() {
+        Ok(Some(limit)) => format!(
+            "; the preparation heap is capped at {limit} MiB. Check its log for OutOfMemoryError. \
+             If memory permits, increase HORIZON_PREPARE_MAX_HEAP_MIB and retry"
+        ),
+        _ => String::new(),
+    }
+}
+
 /// The variables a JVM reads extra options from. A collector chosen there, such as a player's
 /// global `-XX:+UseZGC`, stops a JVM started with [`BATCH_OPTIONS`]: "Multiple garbage collectors
 /// selected" (#10067).
@@ -364,6 +431,7 @@ impl Jdk {
         let mut command = command(&self.javac);
         command
             .args(BATCH_OPTIONS.map(|option| format!("-J{option}")))
+            .args(heap_limit()?.map(|limit| format!("-J-Xmx{limit}m")))
             .args(["--release", &major.to_string(), "-proc:none"])
             .args(args);
         run(command, log)
@@ -371,7 +439,7 @@ impl Jdk {
 
     pub fn java(&self, args: &[String], cwd: Option<&Path>, log: &fs::File) -> Result<(), String> {
         let mut command = command(&self.java);
-        command.args(BATCH_OPTIONS).args(args);
+        command.args(BATCH_OPTIONS).args(bounded_args(args)?);
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
@@ -399,7 +467,7 @@ fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
             return if status.success() {
                 Ok(())
             } else {
-                Err(format!("{program} failed ({status})"))
+                Err(format!("{program} failed ({status}){}", heap_diagnostic()))
             };
         }
         if start.elapsed() > TIMEOUT {
@@ -414,6 +482,26 @@ fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preparation_heap_cap_covers_workers_datagen_and_preserves_smaller_heaps() {
+        let args = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            bounded_args_with(
+                &args(&["-Xmx2G", "-cp", "classes", "PrepareWorker"]),
+                Some(512)
+            ),
+            args(&["-Xmx512m", "-cp", "classes", "PrepareWorker"])
+        );
+        assert_eq!(
+            bounded_args_with(&args(&["-jar", "server.jar", "--reports"]), Some(512)),
+            args(&["-Xmx512m", "-jar", "server.jar", "--reports"])
+        );
+        let smaller = args(&["-Xmx256M", "Exporter"]);
+        assert_eq!(bounded_args_with(&smaller, Some(512)), smaller);
+        let modern = args(&["-Xmx2G", "PrepareWorker"]);
+        assert_eq!(bounded_args_with(&modern, None), modern);
+    }
 
     #[test]
     fn jvms_ignore_the_players_global_options() {

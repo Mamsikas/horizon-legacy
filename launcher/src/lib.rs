@@ -24,6 +24,8 @@ pub mod instances_mrpack;
 pub mod java;
 pub mod java_launch;
 pub mod launch;
+#[cfg(feature = "win7")]
+mod legacy_java;
 pub mod loaders;
 #[cfg(target_os = "macos")]
 mod mac_update;

@@ -2534,6 +2534,10 @@ fn java(
     manifest: &Path,
     log: &dyn Fn(String),
 ) -> Result<PathBuf, String> {
+    #[cfg(feature = "win7")]
+    if LEGACY_WINDOWS {
+        return crate::legacy_java::prepare(major, compiler, log);
+    }
     let find = if compiler {
         horizon_prepare::java::find
     } else {
@@ -2579,6 +2583,24 @@ fn java(
         format!("{missing}\n  • Horizon also tried to download Minecraft's own Java from Mojang, but: {e}")
     })?;
     find(major, &[home]).map(|jdk| jdk.home())
+}
+
+/// Probe the legacy preparation runtime independently of game files and authentication.
+/// This downloads vendor Java only; it neither prepares Minecraft resources nor grants
+/// ownership. Normal preparation still performs its original license and input checks.
+pub fn check_legacy_prepare_runtime(
+    compiler: bool,
+    log: &dyn Fn(String),
+) -> Result<PathBuf, String> {
+    #[cfg(feature = "win7")]
+    if LEGACY_WINDOWS {
+        return crate::legacy_java::prepare(25, compiler, log);
+    }
+    let _ = (compiler, log);
+    Err(crate::i18n::tr(
+        "The managed legacy preparation runtime can only be checked by the Win7 Windows x64 build.",
+    )
+    .to_owned())
 }
 
 /// The dynamic loader glibc programs on x86-64 Linux start through.
