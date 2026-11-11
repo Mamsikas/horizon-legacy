@@ -18,6 +18,16 @@ name = "horizon-launcher"
 path = "src/main.rs"
 required-features = ["gui"]
 
+[[bin]]
+name = "horizon-launcher-win7"
+path = "src/bin/horizon-launcher-win7.rs"
+required-features = ["win7"]
+
+[[bin]]
+name = "mock-horizon-client"
+path = "src/bin/mock-horizon-client.rs"
+required-features = ["win7"]
+
 [dependencies]
 # The catalog and mod-owned trait injections share their generation rules.
 horizon-mod-api-gen = { path = "../crates/horizon-mod-api-gen" }
