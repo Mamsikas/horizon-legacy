@@ -1,7 +1,7 @@
 //! Standalone device/resize/depth/alpha smoke test. This is not the Horizon game.
 #[cfg(windows)]
 mod windows_smoke {
-    use horizon_client_d3d9::{Blend, Device, DrawState, Result, Texture, Vertex};
+    use horizon_client_d3d9::{Blend, Device, DrawState, Mesh, Result, Texture, Vertex};
     use std::{
         fs::File,
         io::Write,
@@ -35,6 +35,7 @@ mod windows_smoke {
         window: Option<Arc<Window>>,
         device: Option<Device>,
         texture: Option<Texture>,
+        mesh: Option<Mesh>,
     }
     impl App {
         fn draw(&mut self) -> Result<()> {
@@ -74,7 +75,11 @@ mod windows_smoke {
                     light: [0.0; 2],
                 })
             };
-            device.draw_transient(&quad(-0.8, 0.8, 0.5, -0.5, 0.7, 0xff80ffff))?;
+            // Exercise the same DEFAULT-buffer invalidation/re-upload as terrain.
+            if self.mesh.as_ref().is_none_or(|m| !m.resident()) {
+                self.mesh = Some(device.mesh(&quad(-0.8, 0.8, 0.5, -0.5, 0.7, 0xff80ffff))?);
+            }
+            device.draw(self.mesh.as_ref().unwrap(), 0, 4)?;
             // Drawn later but further away: overlap must still show the first quad.
             device.draw_transient(&quad(-0.5, 0.5, 0.8, -0.8, 0.3, 0xffff8080))?;
             device.state(
