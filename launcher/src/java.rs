@@ -151,13 +151,15 @@ pub fn installed() -> Vec<Runtime> {
     let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
     let mut homes: Vec<PathBuf> = var("JAVA_HOME").map(PathBuf::from).into_iter().collect();
     if backend::LEGACY_WINDOWS {
-        homes.extend(
-            fs::read_dir(backend::data_dir().join("java/win7-x64"))
-                .into_iter()
-                .flatten()
-                .flatten()
-                .map(|entry| entry.path()),
-        );
+        for parent in [backend::data_dir(), backend::build_dir()] {
+            homes.extend(
+                fs::read_dir(parent.join("java/win7-x64"))
+                    .into_iter()
+                    .flatten()
+                    .flatten()
+                    .map(|entry| entry.path()),
+            );
+        }
     }
     if let Some(path) = var("PATH") {
         homes.extend(

@@ -44,7 +44,9 @@ pub(crate) fn prepare(major: i64, compiler: bool, log: &dyn Fn(String)) -> Resul
         return Err(tr("This legacy launcher has a pinned preparation runtime only for Java 25 on Windows x64.").to_string());
     }
     backend::check_cancelled()?;
-    let root = backend::data_dir().join("java").join("win7-x64");
+    // The vendor's Windows java.exe bootstrap may use ANSI paths. Reuse the core's real
+    // ASCII tool directory, rather than putting the JVM beneath a Cyrillic profile name.
+    let root = backend::build_dir().join("java").join("win7-x64");
     fs::create_dir_all(&root).map_err(|e| e.to_string())?;
     let lock = fs::OpenOptions::new()
         .create(true)
