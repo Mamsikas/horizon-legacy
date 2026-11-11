@@ -128,7 +128,7 @@ impl Ring {
 /// Preserve a complete interval: mixing the start of disabled atmospheric fog
 /// with the end of distance fog incorrectly fills the whole scene with haze.
 pub fn fog_interval(environment: (f32, f32), distance: (f32, f32)) -> (f32, f32) {
-    if environment.1 < distance.1 {
+    if environment.1 < distance.1 || (environment.1 == distance.1 && environment.0 < distance.0) {
         environment
     } else {
         distance
@@ -206,6 +206,7 @@ mod tests {
         assert_eq!(fog_interval((-8.0, 1e9), (230.0, 256.0)), (230.0, 256.0));
         assert_eq!(fog_interval((-8.0, 96.0), (230.0, 256.0)), (-8.0, 96.0));
         assert_eq!(fog_interval((30.0, 180.0), (230.0, 256.0)), (30.0, 180.0));
+        assert_eq!(fog_interval((64.0, 256.0), (230.0, 256.0)), (64.0, 256.0));
     }
 }
 
