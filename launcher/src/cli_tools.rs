@@ -76,6 +76,11 @@ pub fn all() -> Vec<Tool> {
 
 fn walk(cmd: &Command, path: &mut Vec<String>, out: &mut Vec<Tool>) {
     for sub in cmd.get_subcommands() {
+        // These native forms include checkout and storage handoff. They are deliberate
+        // player actions, and are never promoted to generated MCP tools.
+        if path.is_empty() && sub.get_name() == "legacy" {
+            continue;
+        }
         path.push(sub.get_name().to_owned());
         if sub.has_subcommands() {
             walk(sub, path, out);
@@ -345,7 +350,11 @@ With No AI on, `mcp` and `agent-config` are hidden and refuse; every other comma
 /// Every command a player can type, groups included when they run on their own.
 #[cfg(test)]
 fn collect(cmd: &Command, path: &mut Vec<String>, out: &mut Vec<(String, Command)>) {
-    for sub in cmd.get_subcommands().filter(|c| c.get_name() != "help") {
+    let root = path.is_empty();
+    for sub in cmd
+        .get_subcommands()
+        .filter(|c| c.get_name() != "help" && !(root && c.get_name() == "legacy"))
+    {
         path.push(sub.get_name().to_owned());
         if sub.has_subcommands() {
             collect(sub, path, out);
@@ -480,6 +489,15 @@ mod tests {
                 tool.name
             );
         }
+    }
+
+    #[cfg(feature = "win7")]
+    #[test]
+    fn native_checkout_and_storage_forms_are_not_generated_agent_tools() {
+        assert!(crate::cli::command().find_subcommand("legacy").is_some());
+        assert!(!all()
+            .iter()
+            .any(|tool| tool.path.first().is_some_and(|p| p == "legacy")));
     }
 
     #[test]

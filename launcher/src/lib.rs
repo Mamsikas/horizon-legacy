@@ -60,6 +60,8 @@ pub mod uninstall_aside;
 pub mod update_handoff;
 pub mod update_recovery;
 pub mod wardrobe;
+#[cfg(feature = "win7")]
+pub mod win7_actions;
 #[cfg(all(windows, not(feature = "gui")))]
 mod win7_shell;
 #[cfg(windows)]

@@ -701,6 +701,12 @@ impl SourceArg {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Native launcher actions backed by the shared wardrobe, shop and storage services
+    #[cfg(feature = "win7")]
+    Legacy {
+        #[command(subcommand)]
+        action: horizon_launcher::win7_actions::Action,
+    },
     /// Write a shell completion script to stdout
     Completions { shell: clap_complete::Shell },
     /// List Horizon releases, or the installed versions
@@ -1196,7 +1202,15 @@ fn progress(label: String) -> impl Fn(f32) {
     let tty = std::io::stderr().is_terminal();
     move |p| {
         let pct = (p * 100.) as i32;
-        if !tty || pct == last.replace(pct) {
+        if pct == last.replace(pct) {
+            return;
+        }
+        if !tty {
+            if cfg!(feature = "win7")
+                && std::env::var_os("HORIZON_LAUNCHER_NATIVE_PROGRESS").is_some()
+            {
+                eprintln!("HORIZON_PROGRESS\t{pct}%\t{label}");
+            }
             return;
         }
         eprint!("\r{label} {pct:>3}%");
@@ -1240,6 +1254,8 @@ fn execute(command: Cmd, as_json: bool) -> Result<(), String> {
         }
     }
     match command {
+        #[cfg(feature = "win7")]
+        Cmd::Legacy { action } => horizon_launcher::win7_actions::execute(action)?,
         Cmd::Completions { shell } => {
             clap_complete::generate(
                 shell,
