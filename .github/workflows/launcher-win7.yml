@@ -1,0 +1,44 @@
+name: Windows 7 launcher
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/win7-launcher-v2]
+    paths:
+      - 'launcher/**'
+      - 'crates/horizon-prepare/**'
+      - 'crates/horizon-protocol/Cargo.toml'
+      - 'tools/*win7*'
+      - 'packaging/win7/**'
+      - '.github/workflows/launcher-win7.yml'
+  pull_request:
+    paths:
+      - 'launcher/**'
+      - 'crates/horizon-prepare/**'
+      - 'crates/horizon-protocol/Cargo.toml'
+      - 'tools/*win7*'
+      - 'packaging/win7/**'
+      - '.github/workflows/launcher-win7.yml'
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Host compiler dependencies
+        run: sudo apt-get update && sudo apt-get install -y libmpc3 libisl23
+      - name: Install pinned cross compiler
+        run: tools/bootstrap_win7_cross.sh "$RUNNER_TEMP/win7/cross"
+      - name: Build standalone launcher and audit imports
+        env:
+          WIN7_BUILD_ROOT: ${{ runner.temp }}/win7
+          WIN7_CROSS_ROOT: ${{ runner.temp }}/win7/cross
+          CARGO_HOME: /home/runner/.cargo
+          RUSTUP_HOME: /home/runner/.rustup
+        run: tools/build_win7_launcher.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-launcher-win7-x64
+          path: |
+            ${{ runner.temp }}/win7/artifacts/horizon-launcher-win7-x64.zip
+            ${{ runner.temp }}/win7/artifacts/SHA256SUMS

@@ -4,19 +4,35 @@ version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Downloads, prepares and starts Horizon builds"
+default-run = "horizon-launcher"
 
 [workspace]
+
+[features]
+default = ["gui"]
+gui = ["dep:gpui", "dep:gpui_platform", "dep:wgpu", "dep:windows", "dep:trash"]
+win7 = []
+
+[[bin]]
+name = "horizon-launcher"
+path = "src/main.rs"
+required-features = ["gui"]
+
+[[bin]]
+name = "horizon-launcher-win7"
+path = "src/bin/horizon-launcher-win7.rs"
+required-features = ["win7"]
 
 [dependencies]
 # The catalog and mod-owned trait injections share their generation rules.
 horizon-mod-api-gen = { path = "../crates/horizon-mod-api-gen" }
 # GPUI Fast (longbridge/gpui-fast): Zed's GPUI with retained views and cached scroll layers, under
 # its own name. wgpu renders on Linux, not blade (#3812).
-gpui = { package = "gpui-fast", version = "0.1.13" }
-gpui_platform = { package = "gpui-fast-platform", version = "0.1.13", features = ["wayland", "x11", "font-kit"] }
+gpui = { package = "gpui-fast", version = "0.1.13", optional = true }
+gpui_platform = { package = "gpui-fast-platform", version = "0.1.13", features = ["wayland", "x11", "font-kit"], optional = true }
 ureq = { version = "2", features = ["json", "tls"], default-features = false }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 # Validate trait injection bindings before passing them to the shared generator.
 syn = { version = "2", features = ["full", "visit"] }
 # Match generated helpers to the compiler's byte spans, without depending on formatting.
@@ -60,8 +76,6 @@ horizon-shader-api = { path = "../crates/horizon-shader-api" }
 horizon-release-sign = { path = "../crates/horizon-release-sign" }
 # Opt-in data collection: the consent, the outbox and its upload (docs/telemetry.md).
 horizon-telemetry = { path = "../crates/horizon-telemetry" }
-# Deleting a world moves it to the system's trash
-trash = "5"
 # Backup names carry the local time, as vanilla's do
 base64 = "0.22"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
@@ -74,6 +88,9 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 png = "0.18"
 
 # Native builds at low priority (rust_toolchain::low_priority); already in the lockfile.
+[target.'cfg(not(windows))'.dependencies]
+trash = "5"
+
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 # Microsoft account secrets in the OS keychain: the Secret Service on Linux through oo7 (the same
@@ -81,7 +98,7 @@ libc = "0.2"
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 # The GPU's texture limit, which caps the pictures made for GPUI's atlas (`pictures::gpu_limit`): the
 # wgpu GPUI itself uses on Linux.
-wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "gles"] }
+wgpu = { version = "=30.0.1", default-features = false, features = ["std", "vulkan", "gles"], optional = true }
 oo7 = { version = "0.6", default-features = false, features = ["async-std", "native_crypto"] }
 futures-lite = "2"
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -94,12 +111,13 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["NSAcce
 raw-window-handle = "0.6"
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", features = ["windows-native"] }
+trash = { version = "5", optional = true }
 # Java's heap slider reads the computer's memory; the uninstaller hides its running copy; an
 # abandoned launcher update is one whose process has gone. Already in the lockfile.
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_SystemInformation", "Win32_System_Threading"] }
 # Shortcuts written by the shell itself (shortcut::write_windows_link): the hand-laid Shell Link has
 # no target ID list, so Explorer shows an empty target and starts nothing.
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"], optional = true }
 # Per-user setup: the Uninstall entry and the launcher's own key under HKCU (installer.rs).
 winreg = "0.56"
 
