@@ -10,6 +10,94 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 pub const REPO: &str = "horizon-rust/horizon";
+/// A separate Windows 7 build. Enabling the feature on a host used for unit tests does not
+/// turn Linux/macOS artifacts into Windows executables.
+pub const LEGACY_WINDOWS: bool = cfg!(all(feature = "win7", target_os = "windows"));
+
+/// Release hosting can be changed only when building the separate legacy executable. Product
+/// links and every modern platform continue using the original repository and trusted keys.
+pub fn release_repo() -> &'static str {
+    if LEGACY_WINDOWS {
+        option_env!("HORIZON_WIN7_RELEASE_REPO")
+            .map(str::trim)
+            .filter(|repository| !repository.is_empty())
+            .unwrap_or(REPO)
+    } else {
+        REPO
+    }
+}
+
+pub fn release_keys() -> Result<Vec<horizon_release_sign::PublicKey>, String> {
+    release_keys_for(
+        LEGACY_WINDOWS,
+        option_env!("HORIZON_WIN7_RELEASE_REPO"),
+        option_env!("HORIZON_WIN7_RELEASE_PUBLIC_KEYS"),
+    )
+}
+
+fn release_keys_for(
+    legacy: bool,
+    repository: Option<&str>,
+    keys: Option<&str>,
+) -> Result<Vec<horizon_release_sign::PublicKey>, String> {
+    if !legacy {
+        return Ok(horizon_release_sign::trusted_keys());
+    }
+    let repository = repository.map(str::trim).filter(|repo| !repo.is_empty());
+    let repository = repository.unwrap_or(REPO);
+    let keys = keys.map(str::trim).filter(|keys| !keys.is_empty());
+    let components = repository.split('/').collect::<Vec<_>>();
+    if components.len() != 2
+        || components.iter().any(|part| {
+            part.is_empty()
+                || matches!(*part, "." | "..")
+                || !part
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+        })
+    {
+        return Err(crate::i18n::tr(
+            "Invalid Win7 release repository. Rebuild with HORIZON_WIN7_RELEASE_REPO=owner/repository.",
+        ).to_owned());
+    }
+    if repository == REPO && keys.is_none() {
+        return Ok(horizon_release_sign::trusted_keys());
+    }
+    let keys = keys.ok_or_else(|| crate::i18n::tr(
+        "This Win7 fork has no release public key. Rebuild with HORIZON_WIN7_RELEASE_PUBLIC_KEYS; unsigned releases cannot be installed.",
+    ).to_owned())?;
+    let keys = horizon_release_sign::parse_keys(keys).map_err(|_| crate::i18n::tr(
+        "The Win7 release public keys are invalid. Use base64 Ed25519 public keys, one per line, when building the launcher.",
+    ).to_owned())?;
+    if keys.is_empty() {
+        return Err(crate::i18n::tr(
+            "This Win7 fork has no release public key. Rebuild with HORIZON_WIN7_RELEASE_PUBLIC_KEYS; unsigned releases cannot be installed.",
+        ).to_owned());
+    }
+    Ok(keys)
+}
+
+/// Legacy artifacts have their own signed identities; a modern Windows archive is never a
+/// fallback. x86 remains optional and is deliberately unsupported until it has its own build.
+const fn legacy_assets(os: &str, arch: &str) -> Option<(&'static str, &'static str)> {
+    if same(os, "windows") && same(arch, "x86_64") {
+        Some(("horizon-win7-x64.zip", "horizon-launcher-win7-x64.zip"))
+    } else {
+        None
+    }
+}
+
+const fn profile_assets(
+    os: &str,
+    arch: &str,
+    legacy: bool,
+) -> Option<(&'static str, &'static str)> {
+    if legacy {
+        legacy_assets(os, arch)
+    } else {
+        platform_assets(os, arch)
+    }
+}
 pub const README_URL: &str = "https://github.com/horizon-rust/horizon/blob/main/launcher/README.md";
 /// The players' page on connecting an AI agent (the website's docs/agents.md).
 pub const AGENT_DOCS_URL: &str = "https://playhorizon.dev/docs/agents";
@@ -119,7 +207,7 @@ const fn platform_assets(os: &str, arch: &str) -> Option<(&'static str, &'static
 /// whose emulated setup works is never moved to an ARM64 build by an update. The ARM64 launcher is
 /// what `horizon-launcher-setup-arm64.exe` installs.
 const OWN_ASSETS: Option<(&str, &str)> =
-    platform_assets(std::env::consts::OS, std::env::consts::ARCH);
+    profile_assets(std::env::consts::OS, std::env::consts::ARCH, LEGACY_WINDOWS);
 /// The game build this launcher installs, None where Horizon has none.
 pub const ASSET: Option<&str> = match OWN_ASSETS {
     Some((game, _)) => Some(game),
@@ -133,7 +221,11 @@ pub const LAUNCHER_ASSET: Option<&str> = match OWN_ASSETS {
 /// The game build the ARM64 Windows launcher installs from a release that has no ARM64 one (every
 /// release before it, or a Nightly whose ARM64 job failed): the x64 build, which Windows runs under
 /// emulation.
-const GAME_FALLBACK: Option<&str> = game_fallback_for(std::env::consts::OS, std::env::consts::ARCH);
+const GAME_FALLBACK: Option<&str> = if LEGACY_WINDOWS {
+    None
+} else {
+    game_fallback_for(std::env::consts::OS, std::env::consts::ARCH)
+};
 
 /// The game architecture selected in Settings. Auto preserves the launcher's existing behavior:
 /// it follows the process architecture, even when an x64 launcher runs on Windows ARM.
@@ -185,7 +277,7 @@ fn architecture_for_platform(architecture: &str) -> Option<GameArchitecture> {
 
 fn architecture_for_asset(asset: &str) -> Option<GameArchitecture> {
     match asset.rsplit('/').next()? {
-        "horizon-windows-x64.zip" => Some(GameArchitecture::X64),
+        "horizon-windows-x64.zip" | "horizon-win7-x64.zip" => Some(GameArchitecture::X64),
         "horizon-windows-arm64.zip" => Some(GameArchitecture::Arm64),
         _ => None,
     }
@@ -314,7 +406,20 @@ fn selected_game_architecture(settings: &Settings) -> Option<GameArchitecture> {
 
 /// True for both native ARM64 launchers and x64 launchers under ARM64 emulation.
 pub fn can_choose_game_architecture() -> bool {
-    supports_game_architecture_choice("windows", native_windows_architecture())
+    !LEGACY_WINDOWS && supports_game_architecture_choice("windows", native_windows_architecture())
+}
+
+fn current_game_assets(settings: &Settings) -> Option<(&'static str, Option<&'static str>)> {
+    if LEGACY_WINDOWS {
+        legacy_assets(std::env::consts::OS, std::env::consts::ARCH).map(|(game, _)| (game, None))
+    } else {
+        game_assets_for(
+            std::env::consts::OS,
+            native_windows_architecture(),
+            std::env::consts::ARCH,
+            settings.game_architecture,
+        )
+    }
 }
 
 /// A downloaded version records its requested and actual architectures. Old installs and imports
@@ -390,6 +495,9 @@ fn game_architecture_install_needed(
 /// Whether an installed version needs the selected architecture downloaded. This also refreshes
 /// old installs with a same-version install when needed to record an ARM64 fallback choice.
 pub fn needs_game_architecture_install(tag: &str, release: &Release) -> bool {
+    if LEGACY_WINDOWS {
+        return release.asset.is_some() && !legacy_installation_matches(&version_dir(tag), ASSET);
+    }
     if !can_choose_game_architecture() {
         return false;
     }
@@ -419,6 +527,11 @@ fn native_mod_architecture_message(
 }
 
 pub(crate) fn native_mod_architecture_error() -> Option<String> {
+    if LEGACY_WINDOWS {
+        return Some(crate::i18n::tr(
+            "Native mod builds are not yet supported on Windows 7: they currently rebuild the client with a modern Windows toolchain. A Win7 target, runtime audit and separate cache are required.",
+        ).to_string());
+    }
     if !can_choose_game_architecture() {
         return None;
     }
@@ -430,6 +543,11 @@ pub(crate) fn native_mod_architecture_error() -> Option<String> {
 
 /// Refuse to launch an explicit game architecture until this version has been installed for it.
 pub fn game_architecture_launch_error(tag: &str) -> Option<String> {
+    if LEGACY_WINDOWS && !legacy_installation_matches(&version_dir(tag), ASSET) {
+        return Some(crate::i18n::tr(
+            "This version is not a verified Win7 client. Install its separately signed horizon-win7-x64.zip build from Versions. Modern Windows builds and unverified imported/native builds cannot be launched as Win7-compatible clients.",
+        ).to_string());
+    }
     if !can_choose_game_architecture() {
         return None;
     }
@@ -479,7 +597,9 @@ pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = Some("horizon-launcher-linux-x
 #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
 pub const LAUNCHER_APPIMAGE_ASSET: Option<&str> = None;
 
-const LAUNCHER_BINARY: &str = if cfg!(windows) {
+const LAUNCHER_BINARY: &str = if LEGACY_WINDOWS {
+    "horizon-launcher-win7.exe"
+} else if cfg!(windows) {
     "horizon-launcher.exe"
 } else {
     "horizon-launcher"
@@ -496,6 +616,7 @@ pub(crate) const CLIENT: &str = if cfg!(windows) {
 pub(crate) fn agent(url: &str) -> ureq::Agent {
     crate::proxy::agent(
         ureq::AgentBuilder::new()
+            .https_only(LEGACY_WINDOWS && url.starts_with("https://"))
             .user_agent(&format!("horizon-launcher/{VERSION}"))
             // A connection that goes quiet fails instead of waiting for ever.
             .timeout_connect(std::time::Duration::from_secs(15))
@@ -669,8 +790,10 @@ pub fn compare_versions(a: &str, b: &str) -> std::cmp::Ordering {
 /// Every published release of the repository, both kinds, as GitHub's JSON (kept on disk with its
 /// ETag, and read through Kira's mirror past GitHub's rate limit: [`crate::github`]).
 fn release_list() -> Result<serde_json::Value, String> {
+    release_keys()?;
+    let repository = release_repo();
     crate::github::json(&format!(
-        "https://api.github.com/repos/{REPO}/releases?per_page=100"
+        "https://api.github.com/repos/{repository}/releases?per_page=100"
     ))
 }
 
@@ -733,12 +856,7 @@ pub fn releases() -> Result<Vec<Release>, String> {
 /// ([`crate::nightly::version_of`]); only the current one (`nightly`) is an update.
 pub(crate) fn game_releases(list: &serde_json::Value) -> Vec<Release> {
     let settings = Settings::load();
-    let assets = game_assets_for(
-        std::env::consts::OS,
-        native_windows_architecture(),
-        std::env::consts::ARCH,
-        settings.game_architecture,
-    );
+    let assets = current_game_assets(&settings);
     let (asset, fallback) = assets.map_or((ASSET, GAME_FALLBACK), |(asset, fallback)| {
         (Some(asset), fallback)
     });
@@ -791,7 +909,7 @@ fn launcher_releases_in_with(
     if found.iter().any(|r| r.asset.is_some()) {
         return found;
     }
-    let api = format!("https://api.github.com/repos/{REPO}");
+    let api = format!("https://api.github.com/repos/{}", release_repo());
     let mut tags = Vec::new();
     for prefix in [LAUNCHER_TAG_PREFIX, OLD_LAUNCHER_TAG_PREFIX] {
         // Every `launcher@` tag is newer than every `launcher-v` one: those only when there is none.
@@ -1079,6 +1197,7 @@ fn installed_in(versions: &Path) -> Vec<String> {
         .into_iter()
         .flatten()
         .flatten()
+        .filter(|e| !e.file_name().to_string_lossy().ends_with(".win7-rollback"))
         .filter(|e| e.path().join(COMPLETE).exists())
         .filter_map(|e| e.file_name().into_string().ok())
         .collect();
@@ -1104,12 +1223,7 @@ pub(crate) fn fetch_small(url: &str) -> Result<Option<Vec<u8>>, String> {
 
 /// The SHA-256 the release's signed checksums give for `asset`, or why it must not be installed.
 fn signed_digest(tag: &str, asset: &str) -> Result<String, String> {
-    crate::signed::digest(
-        tag,
-        asset,
-        &horizon_release_sign::trusted_keys(),
-        fetch_small,
-    )
+    crate::signed::digest(tag, asset, &release_keys()?, fetch_small)
 }
 
 /// Downloads `url` into `to`; the file is kept only if its SHA-256 is `sha256`, the signed (or
@@ -1121,6 +1235,7 @@ pub(crate) fn download(
     to: &Path,
     progress: &impl Fn(f32),
 ) -> Result<(), String> {
+    check_cancelled()?;
     let response = get(url)?;
     let size = match size {
         0 => response
@@ -1166,6 +1281,7 @@ fn write_checked(
     let mut hash = horizon_release_sign::Sha256::default();
     let (mut done, mut buf) = (0u64, vec![0u8; 1 << 16]);
     loop {
+        check_cancelled()?;
         let n = reader
             .read(&mut buf)
             .map_err(|e| format!("Download interrupted: {e}"))?;
@@ -1180,7 +1296,7 @@ fn write_checked(
     horizon_release_sign::check(name, sha256, &hash.hex())
 }
 
-fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
+pub(crate) fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
     let file = fs::File::open(archive).map_err(|e| e.to_string())?;
     if url.ends_with(".tar.gz") {
         tar::Archive::new(flate2::read::GzDecoder::new(file))
@@ -1193,17 +1309,63 @@ fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
     }
 }
 
+const LEGACY_INSTALL_RECORD: &str = ".horizon-win7.json";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct LegacyInstallRecord {
+    asset: String,
+    archive_sha256: String,
+    client_sha256: String,
+}
+
+// This record is written only after the existing signed archive check. Binding it to the
+// executable also prevents an imported build copied over a legacy base from inheriting the
+// base's compatibility identity.
+fn record_legacy_install(dir: &Path, asset: &str, archive_sha256: &str) -> Result<(), String> {
+    let record = LegacyInstallRecord {
+        asset: asset.to_string(),
+        archive_sha256: archive_sha256.to_string(),
+        client_sha256: file_sha256(&dir.join(CLIENT))?,
+    };
+    fs::write(
+        dir.join(LEGACY_INSTALL_RECORD),
+        serde_json::to_vec(&record).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
+}
+
+fn legacy_installation_matches(dir: &Path, asset: Option<&str>) -> bool {
+    let Some(asset) = asset else { return false };
+    let Some(record) = fs::read(dir.join(LEGACY_INSTALL_RECORD))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<LegacyInstallRecord>(&bytes).ok())
+    else {
+        return false;
+    };
+    record.asset == asset
+        && record.archive_sha256.len() == 64
+        && record.archive_sha256.bytes().all(|b| b.is_ascii_hexdigit())
+        && file_sha256(&dir.join(CLIENT)).is_ok_and(|actual| actual == record.client_sha256)
+}
+
+/// Native workers request cancellation with a private file. Transfers check between chunks,
+/// and installs check before committing their staged directory. No downloaded partial is used.
+pub fn check_cancelled() -> Result<(), String> {
+    if cfg!(feature = "win7")
+        && std::env::var_os("HORIZON_LAUNCHER_CANCEL_FILE").is_some_and(|p| Path::new(&p).exists())
+    {
+        Err(crate::i18n::tr("Operation cancelled.").to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// Downloads one release, checks it against its signed checksums and unpacks it; `progress` gets
 /// the fraction done.
 pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> {
     let tag = release.tag.as_str();
     let settings = Settings::load();
-    let assets = game_assets_for(
-        std::env::consts::OS,
-        native_windows_architecture(),
-        std::env::consts::ARCH,
-        settings.game_architecture,
-    );
+    let assets = current_game_assets(&settings);
     let (asset, fallback) = assets.map_or((ASSET, GAME_FALLBACK), |(asset, fallback)| {
         (Some(asset), fallback)
     });
@@ -1232,7 +1394,7 @@ pub fn install(release: &Release, progress: impl Fn(f32)) -> Result<(), String> 
                 github_tag,
                 &version,
                 asset,
-                &horizon_release_sign::trusted_keys(),
+                &release_keys()?,
                 fetch_small,
             )?
         }
@@ -1282,11 +1444,19 @@ pub(crate) fn install_as(
         .clone()
         .ok_or_else(|| format!("{tag} has no build for this platform."))?;
     let root = versions_dir();
+    // Serialize legacy transfers and recovery before touching their shared partial/rollback
+    // directories. A second window must not mistake an active commit for a crashed worker.
+    let _legacy_lease = if LEGACY_WINDOWS {
+        Some(legacy_install_lease(&root)?)
+    } else {
+        None
+    };
     let partial = root.join(format!(".{tag}.partial"));
     let _ = fs::remove_dir_all(&partial);
     fs::create_dir_all(&partial).map_err(|e| e.to_string())?;
     let archive = partial.join("download");
     download(&url, size, sha256, &archive, &progress)?;
+    check_cancelled()?;
     let unpacked = partial.join("unpacked");
     unpack(&archive, &url, &unpacked)?;
     progress(0.97);
@@ -1317,12 +1487,109 @@ pub(crate) fn install_as(
         .map_err(|e| e.to_string())?;
     }
     let target = version_dir(tag);
-    let _ = fs::remove_dir_all(&target);
-    fs::rename(&top, &target).map_err(|e| e.to_string())?;
-    fs::write(target.join(COMPLETE), "").map_err(|e| e.to_string())?;
+    if LEGACY_WINDOWS {
+        if pe_architecture_file(&top.join(CLIENT)) != Some(GameArchitecture::X64) {
+            return Err(
+                crate::i18n::tr("The signed Win7 archive does not contain an x64 client.")
+                    .to_string(),
+            );
+        }
+        record_legacy_install(&top, ASSET.unwrap(), sha256)?;
+        fs::write(top.join(COMPLETE), "").map_err(|e| e.to_string())?;
+        check_cancelled()?;
+        replace_legacy_version(&top, &target)?;
+    } else {
+        let _ = fs::remove_dir_all(&target);
+        fs::rename(&top, &target).map_err(|e| e.to_string())?;
+        fs::write(target.join(COMPLETE), "").map_err(|e| e.to_string())?;
+    }
     let _ = fs::remove_dir_all(&partial);
     reuse_prepared_for(tag);
     progress(1.0);
+    Ok(())
+}
+
+/// Restore a valid previous installation left by a worker interrupted during its commit.
+/// The native entrypoint calls this before offering versions; modern startup remains unchanged.
+pub fn recover_legacy_installs() -> Result<Vec<String>, String> {
+    if LEGACY_WINDOWS {
+        recover_legacy_installs_in(&versions_dir())
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn recover_legacy_installs_in(versions: &Path) -> Result<Vec<String>, String> {
+    let _lease = legacy_install_lease(versions)?;
+    let entries = match fs::read_dir(versions) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut restored = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let name = entry.file_name();
+        let Some(tag) = name
+            .to_str()
+            .and_then(|name| name.strip_suffix(".win7-rollback"))
+        else {
+            continue;
+        };
+        let target = versions.join(tag);
+        if !tag.is_empty() && !target.exists() && entry.path().join(COMPLETE).is_file() {
+            fs::rename(entry.path(), target).map_err(|error| error.to_string())?;
+            restored.push(tag.to_owned());
+        }
+    }
+    Ok(restored)
+}
+
+fn legacy_install_lease(versions: &Path) -> Result<fs::File, String> {
+    fs::create_dir_all(versions).map_err(|error| error.to_string())?;
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(versions.join(".win7-install.lock"))
+        .map_err(|error| error.to_string())?;
+    lock.try_lock().map_err(|error| {
+        crate::i18n::trf(
+            "Another launcher is installing or recovering a Win7 version. Wait for it to finish and retry: {error}",
+            &[("error", &error.to_string())],
+        )
+    })?;
+    Ok(lock)
+}
+
+fn replace_legacy_version(staged: &Path, target: &Path) -> Result<(), String> {
+    let mut rollback = target.as_os_str().to_owned();
+    rollback.push(".win7-rollback");
+    let rollback = PathBuf::from(rollback);
+    // Recover the old copy if a prior worker stopped between its two renames.
+    if rollback.exists() && !target.exists() {
+        fs::rename(&rollback, target).map_err(|e| e.to_string())?;
+    }
+    if rollback.exists() {
+        fs::remove_dir_all(&rollback).map_err(|e| e.to_string())?;
+    }
+    let had_target = target.exists();
+    if had_target {
+        fs::rename(target, &rollback).map_err(|e| e.to_string())?;
+    }
+    if let Err(error) = fs::rename(staged, target) {
+        if had_target {
+            fs::rename(&rollback, target).map_err(|restore| {
+                format!(
+                    "{error}; rollback: {restore}; previous installation: {}",
+                    rollback.display()
+                )
+            })?;
+        }
+        return Err(error.to_string());
+    }
+    let _ = fs::remove_dir_all(rollback);
     Ok(())
 }
 
@@ -2881,18 +3148,40 @@ fn strip_launcher_render_env(cmd: &mut Command) {
     }
 }
 
+fn apply_legacy_graphics(cmd: &mut Command, legacy: bool, explicitly_selected: bool) {
+    if legacy && !explicitly_selected {
+        cmd.env("HORIZON_GRAPHICS_API", "legacy-d3d9");
+    }
+}
+
 pub fn client_command(tag: &str) -> Command {
-    let home = game_home();
-    let _ = fs::create_dir_all(&home);
-    let mut cmd = Command::new(client_program(tag));
+    let cmd = client_command_for(&client_program(tag), &game_home(), &resources(tag));
     #[cfg(windows)]
-    crate::windows_runtime::mark(&mut cmd, &version_dir(tag));
+    let cmd = {
+        let mut cmd = cmd;
+        crate::windows_runtime::mark(&mut cmd, &version_dir(tag));
+        cmd
+    };
+    cmd
+}
+
+/// The shared low-level launch contract, also used by the isolated mock smoke test. This
+/// constructs a command only: normal Play must still use `client_as` for ownership, resources
+/// and compatibility checks. No session or authorization is fabricated here.
+pub fn client_command_for(program: &Path, home: &Path, resources: &Path) -> Command {
+    let _ = fs::create_dir_all(home);
+    let mut cmd = Command::new(program);
     strip_launcher_render_env(&mut cmd);
-    cmd.current_dir(&home)
-        .env("HORIZON_HOME", &home)
+    apply_legacy_graphics(
+        &mut cmd,
+        LEGACY_WINDOWS,
+        std::env::var_os("HORIZON_GRAPHICS_API").is_some(),
+    );
+    cmd.current_dir(home)
+        .env("HORIZON_HOME", home)
         .env_remove("HORIZON_ACCOUNT_SESSIONS")
         .arg("--resources")
-        .arg(resources(tag));
+        .arg(resources);
     // How the game asks for a renewed session (`account session`) while it runs.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("HORIZON_LAUNCHER_EXE", exe);
@@ -3345,19 +3634,39 @@ fn releases_and_updates_with(
 /// If the selected installed game has the wrong architecture, offer the same release again so
 /// the preference also applies when there is no newer game version.
 fn architecture_update(releases: &[Release], installed: &[String]) -> Option<Release> {
-    if !can_choose_game_architecture() {
+    let architecture_choice = can_choose_game_architecture();
+    if !LEGACY_WINDOWS && !architecture_choice {
         return None;
     }
-    let settings = Settings::load();
-    let tag = settings
-        .selected
+    architecture_update_for(
+        releases,
+        installed,
+        Settings::load().selected,
+        LEGACY_WINDOWS,
+        architecture_choice,
+        needs_game_architecture_install,
+    )
+}
+
+fn architecture_update_for(
+    releases: &[Release],
+    installed: &[String],
+    selected: Option<String>,
+    legacy: bool,
+    architecture_choice: bool,
+    needs_install: impl FnOnce(&str, &Release) -> bool,
+) -> Option<Release> {
+    if !legacy && !architecture_choice {
+        return None;
+    }
+    let tag = selected
         .filter(|tag| installed.contains(tag))
         .or_else(|| installed.iter().find(|tag| is_game_tag(tag)).cloned())?;
     if !is_game_tag(&tag) {
         return None;
     }
     let release = releases.iter().find(|release| release.tag == tag)?;
-    needs_game_architecture_install(&tag, release).then(|| release.clone())
+    needs_install(&tag, release).then(|| release.clone())
 }
 
 /// A fresh release-list request for both kinds of update (plus older-launcher fallback if needed).
@@ -4973,7 +5282,8 @@ pub fn {f}("
         assert_eq!(platform_assets("macos", "x86"), None);
         assert_eq!(
             ASSET,
-            platform_assets(std::env::consts::OS, std::env::consts::ARCH).map(|(game, _)| game)
+            profile_assets(std::env::consts::OS, std::env::consts::ARCH, LEGACY_WINDOWS)
+                .map(|(game, _)| game)
         );
         assert_eq!(
             game_fallback_for("windows", "aarch64"),
@@ -7107,3 +7417,7 @@ pub fn {f}("
         );
     }
 }
+
+#[cfg(test)]
+#[path = "backend/win7_tests.rs"]
+mod win7_tests;

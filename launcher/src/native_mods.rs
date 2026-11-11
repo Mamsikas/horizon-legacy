@@ -2732,6 +2732,9 @@ pub fn build_server(
     profile: Profile,
     progress: impl Fn(Step),
 ) -> Result<PathBuf, String> {
+    if backend::LEGACY_WINDOWS {
+        return Err(backend::native_mod_architecture_error().unwrap());
+    }
     logged(|| {
         if output.symlink_metadata().is_ok() {
             return Err(trf(

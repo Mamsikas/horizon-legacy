@@ -4,12 +4,15 @@
 //! with the SHA-256 pinned for it in legacy-releases.txt (a rollback). Anything else is refused
 //! with a message saying why.
 
-use crate::backend::REPO;
+use crate::backend;
 use horizon_release_sign::{PublicKey, SIGNATURE, SIGNATURE_V2, SUMS};
 
 /// Where a release's attached file downloads from (GitHub's fixed address for it).
 pub fn asset_url(tag: &str, name: &str) -> String {
-    format!("https://github.com/{REPO}/releases/download/{tag}/{name}")
+    format!(
+        "https://github.com/{}/releases/download/{tag}/{name}",
+        backend::release_repo()
+    )
 }
 
 /// The signed SHA-256 of `asset` in release `tag`, fetching its SHA256SUMS and SHA256SUMS.sig
@@ -21,8 +24,11 @@ pub fn digest(
     keys: &[PublicKey],
     fetch: impl Fn(&str) -> Result<Option<Vec<u8>>, String>,
 ) -> Result<String, String> {
-    if let Some(hex) = horizon_release_sign::legacy_digest(tag, asset) {
-        return Ok(hex.to_owned());
+    // Historical checksums belong to the upstream release source, never an unrelated fork.
+    if backend::release_repo() == backend::REPO {
+        if let Some(hex) = horizon_release_sign::legacy_digest(tag, asset) {
+            return Ok(hex.to_owned());
+        }
     }
     let sums = fetch(&asset_url(tag, SUMS))?;
     let signature = fetch(&asset_url(tag, SIGNATURE))?
@@ -76,10 +82,15 @@ mod tests {
         let pinned =
             horizon_release_sign::legacy_digest("v2026.10.12", "horizon-linux-x86_64.tar.gz")
                 .expect("v2026.10.12 is from before signing");
-        assert_eq!(
-            digest("v2026.10.12", "horizon-linux-x86_64.tar.gz", &[], tampered),
-            Ok(pinned.to_owned())
-        );
+        let answer = digest("v2026.10.12", "horizon-linux-x86_64.tar.gz", &[], tampered);
+        if backend::release_repo() == backend::REPO {
+            assert_eq!(answer, Ok(pinned.to_owned()));
+        } else {
+            assert!(
+                answer.is_err(),
+                "upstream pins must not authorize a fork's release"
+            );
+        }
     }
 
     #[test]
@@ -89,7 +100,10 @@ mod tests {
         let signature = key.sign("v2099.01.01", sums.as_bytes());
         // GitHub as it answers for a signed release (any tag: the files are what a replay would serve).
         let signed = |url: &str| -> Result<Option<Vec<u8>>, String> {
-            assert!(url.starts_with("https://github.com/horizon-rust/horizon/releases/download/"));
+            assert!(url.starts_with(&format!(
+                "https://github.com/{}/releases/download/",
+                backend::release_repo()
+            )));
             Ok(Some(
                 if url.ends_with(".sig") {
                     signature.clone()
