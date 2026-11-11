@@ -58,6 +58,8 @@ pub mod uninstall_aside;
 pub mod update_handoff;
 pub mod update_recovery;
 pub mod wardrobe;
+#[cfg(all(windows, not(feature = "gui")))]
+mod win7_shell;
 #[cfg(windows)]
 mod windows_runtime;
 pub mod worlds;

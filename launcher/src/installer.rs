@@ -597,6 +597,7 @@ mod tests {
     }
 
     /// What the shell itself reads as the shortcut's target: the field Explorer starts from.
+    #[cfg(feature = "gui")]
     fn target_of(link: &Path) -> String {
         use windows::core::{Interface, HSTRING};
         use windows::Win32::System::Com::{
@@ -617,6 +618,14 @@ mod tests {
             let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
             String::from_utf16_lossy(&buf[..end])
         }
+    }
+
+    #[cfg(not(feature = "gui"))]
+    fn target_of(link: &Path) -> String {
+        crate::win7_shell::target(link)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
     }
 
     #[test]

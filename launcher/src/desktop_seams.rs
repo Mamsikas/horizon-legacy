@@ -37,6 +37,7 @@ pub fn to_folder(path: &Path, dir: &Path) -> Result<(), String> {
     std::fs::rename(path, &target).map_err(|e| e.to_string())
 }
 
+#[cfg(any(not(windows), feature = "gui"))]
 fn system_trash(path: &Path) -> Result<(), String> {
     // On Windows the crate starts COM on the calling thread and panics when that thread already
     // runs it in the other mode (RPC_E_CHANGED_MODE). A worker of GPUI's thread pool can, and a
@@ -53,6 +54,11 @@ fn system_trash(path: &Path) -> Result<(), String> {
         );
         trash.delete(path).map_err(|e| e.to_string())
     })
+}
+
+#[cfg(all(windows, not(feature = "gui")))]
+fn system_trash(path: &Path) -> Result<(), String> {
+    on_own_thread(|| crate::win7_shell::recycle(path))
 }
 
 /// Runs `f` on a new thread and waits for it; a panic there comes back as an error.

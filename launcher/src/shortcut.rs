@@ -251,7 +251,7 @@ pub fn lnk(exe: &str, args: &str, comment: &str) -> Vec<u8> {
 /// anywhere, but it has no target ID list, and the shell reads the target from that list: Explorer
 /// shows an empty target and starts nothing. So on Windows this writes the shortcuts that are used.
 /// The icon is the program's own, which is also how an uninstall finds shortcuts made for it.
-#[cfg(windows)]
+#[cfg(all(windows, feature = "gui"))]
 pub fn write_windows_link(
     path: &Path,
     exe: &Path,
@@ -289,6 +289,16 @@ pub fn write_windows_link(
         }
         made.map_err(|e| format!("{}: {e}", path.display()))
     }
+}
+
+#[cfg(all(windows, not(feature = "gui")))]
+pub fn write_windows_link(
+    path: &Path,
+    exe: &Path,
+    args: &str,
+    comment: &str,
+) -> Result<(), String> {
+    crate::win7_shell::write(path, exe, args, comment)
 }
 
 /// Whether the shortcut at `path` plays the instance `id`.
