@@ -204,8 +204,8 @@ impl Renderer {
             }
         }
         let decoded_bytes = vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
-        let vertices = Arc::new(dx::MeshData::new(&vertices));
-        let bytes = vertices.bytes();
+        let shadow = Arc::new(dx::MeshData::new(&vertices));
+        let bytes = shadow.bytes();
         self.release_gpu_section(key);
         if let Some(old) = self.sections.remove(&key) {
             self.mesh_bytes -= old.bytes;
@@ -217,7 +217,7 @@ impl Renderer {
             Section {
                 solid,
                 translucent,
-                vertices,
+                vertices: shadow,
                 gpu: Vec::new(),
                 retry_after: 0,
                 sides,
@@ -234,7 +234,63 @@ impl Renderer {
         } else {
             self.spatial.remove(key);
         }
+        self.prefetch_ready_section(key, &vertices);
         Ok(())
+    }
+    fn prefetch_ready_section(&mut self, key: SectionKey, vertices: &[dx::Vertex]) {
+        let bytes = std::mem::size_of_val(vertices) as u64;
+        if vertices.is_empty()
+            || self.device.lost()
+            || self.occlusion.reach().is_none()
+            || !self.occlusion.contains(key)
+            || self.gpu_mesh_bytes + bytes > self.mesh_budget
+        {
+            return;
+        }
+        // The expanded vertices already exist at a section update. Upload now,
+        // including behind the camera, instead of decompressing them on first view.
+        let mut pages = Vec::new();
+        for (i, part) in vertices.chunks(self.device.max_vertices()).enumerate() {
+            match self.device.mesh(part) {
+                Ok(mesh) => {
+                    self.pending_mesh_uploads += mesh.bytes();
+                    let first = (i * self.device.max_vertices()) as u32;
+                    pages.push((mesh, first..first + part.len() as u32));
+                }
+                Err(error) => {
+                    if dx::is_device_lost(error.as_ref()) {
+                        self.device.mark_lost();
+                    } else if !self.cache_warning {
+                        log::warn!(
+                            "D3D9 eager upload: {error}; keeping CPU shadow for demand loading"
+                        );
+                        self.cache_warning = true;
+                    }
+                    return;
+                }
+            }
+        }
+        for (mesh, source) in pages {
+            self.next_arena += 1;
+            let id = self.next_arena;
+            self.gpu_mesh_bytes += mesh.bytes();
+            self.arenas.insert(
+                id,
+                Arena {
+                    mesh,
+                    region: region_key(key),
+                    live: source.end - source.start,
+                    last_used: self.frames,
+                    sections: vec![key],
+                },
+            );
+            self.sections.get_mut(&key).unwrap().gpu.push(GpuSlice {
+                arena: id,
+                first: 0,
+                source,
+            });
+        }
+        self.eager_sections += 1;
     }
     pub(super) fn release_gpu_section(&mut self, key: SectionKey) {
         let Some(section) = self.sections.get_mut(&key) else {

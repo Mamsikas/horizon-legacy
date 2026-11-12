@@ -138,6 +138,17 @@ Texture loading now reuses the normal mip generator, retaining solidified hidden
 RGB for fast leaves. Sky and terrain fog use their distinct existing Frame inputs.
 Hardware speed/RAM gains and shader/resize screenshots still require a fresh owner run.
 
+Changed sections upload from their already-expanded CPU vertices when the portal
+graph and cache budget allow, including behind the camera. The same bounded worker
+preloads older reachable shadows before compaction, avoiding first-view decode work
+where possible. Source revisions, current residency and the current budget are
+rechecked before applying a result. A cold cache can still require demand loading.
+The log counts eager section uploads as well as compactions. A host-only synthetic
+2,097,024-byte vertex sample shrank from 767,126 bytes with raw LZ4 to 168,815 bytes
+with the new shadow codec; warm decode averaged 1.105 vs 1.977 ms. This explains
+the eager/background loading work: the memory saving has a decode cost. Those
+numbers are not a Minecraft scene, RTX3050 or Atom benchmark.
+
 The log/F3 report CPU timings, not GPU timestamps. `horizon-ctl.exe` provides the
 existing opt-in `bench 20`, `memory` and `trace render-trace.json 10` commands; see
 TESTING.txt. New log fields count successful compactions. `memory` lists retained

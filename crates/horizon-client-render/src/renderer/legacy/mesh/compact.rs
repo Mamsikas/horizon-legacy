@@ -6,11 +6,13 @@ type Snapshot = (SectionKey, u64, Arc<dx::MeshData>);
 struct Job {
     region: RegionKey,
     sections: Vec<Snapshot>,
+    resident: bool,
 }
 struct Prepared {
     region: RegionKey,
     sections: Vec<(SectionKey, u64, Range<u32>)>,
     vertices: Vec<dx::Vertex>,
+    resident: bool,
 }
 pub(in super::super) struct Compactor {
     jobs: SyncSender<Job>,
@@ -30,6 +32,7 @@ impl Compactor {
                             region: job.region,
                             sections: Vec::new(),
                             vertices: Vec::new(),
+                            resident: job.resident,
                         };
                         let mut decoded = Vec::new();
                         for (key, revision, data) in job.sections {
@@ -76,8 +79,18 @@ impl Renderer {
         if prepared.sections.iter().any(|(key, revision, _)| {
             self.sections
                 .get(key)
-                .is_none_or(|s| s.revision != *revision || s.gpu.is_empty())
+                .is_none_or(|s| s.revision != *revision || s.gpu.is_empty() == prepared.resident)
         }) {
+            return Ok(());
+        }
+        if !prepared.resident
+            && (self.gpu_mesh_bytes + std::mem::size_of_val(prepared.vertices.as_slice()) as u64
+                > self.mesh_budget
+                || prepared
+                    .sections
+                    .iter()
+                    .any(|(key, _, _)| !self.occlusion.contains(*key)))
+        {
             return Ok(());
         }
         // Allocate first: a failed optimization must keep the old scene drawable.
@@ -86,7 +99,8 @@ impl Renderer {
             Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
             Err(error) => {
                 self.compact_scan = self.frames + 120;
-                log::warn!("D3D9 compaction allocation: {error}; keeping old buffers");
+                self.prefetch_scan = self.frames + 120;
+                log::warn!("D3D9 background upload: {error}; keeping old buffers/shadows");
                 return Ok(());
             }
         };
@@ -113,11 +127,21 @@ impl Renderer {
                 sections: keys,
             },
         );
-        self.compactions += 1;
+        if prepared.resident {
+            self.compactions += 1;
+        } else {
+            self.eager_sections += self.arenas[&id].sections.len() as u64;
+        }
         Ok(())
     }
     pub(in super::super) fn schedule_compaction(&mut self) {
-        if self.frames < self.compact_scan + 8 || self.compactor.as_ref().is_none_or(|w| w.busy) {
+        if self.compactor.as_ref().is_none_or(|w| w.busy) {
+            return;
+        }
+        if self.schedule_prefetch() {
+            return;
+        }
+        if self.frames < self.compact_scan + 8 {
             return;
         }
         self.compact_scan = self.frames;
@@ -175,6 +199,61 @@ impl Renderer {
             })
             .collect();
         let worker = self.compactor.as_mut().unwrap();
-        worker.busy = worker.jobs.try_send(Job { region, sections }).is_ok();
+        worker.busy = worker
+            .jobs
+            .try_send(Job {
+                region,
+                sections,
+                resident: true,
+            })
+            .is_ok();
+    }
+    fn schedule_prefetch(&mut self) -> bool {
+        if self.frames < self.prefetch_scan || self.occlusion.reach().is_none() {
+            return false;
+        }
+        self.prefetch_scan = self.frames + 32;
+        let limit = self.device.max_vertices().min(
+            (self.mesh_budget.saturating_sub(self.gpu_mesh_bytes) / size_of::<dx::Vertex>() as u64)
+                as usize,
+        );
+        let ready = |key: SectionKey, s: &Section| {
+            s.gpu.is_empty()
+                && !s.vertices.is_empty()
+                && s.vertices.len() <= limit
+                && self.frames >= s.retry_after
+                && self.occlusion.contains(key)
+        };
+        let Some((&key, _)) = self.sections.iter().find(|(k, s)| ready(**k, s)) else {
+            return false;
+        };
+        let region = region_key(key);
+        let mut count = 0;
+        let sections = self
+            .sections
+            .iter()
+            .filter_map(|(&key, section)| {
+                if region_key(key) == region
+                    && ready(key, section)
+                    && count + section.vertices.len() <= limit
+                {
+                    count += section.vertices.len();
+                    Some((key, section.revision, section.vertices.clone()))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let worker = self.compactor.as_mut().unwrap();
+        worker.busy = worker
+            .jobs
+            .try_send(Job {
+                region,
+                sections,
+                resident: false,
+            })
+            .is_ok();
+        self.prefetch_scan = self.frames + 1;
+        worker.busy
     }
 }

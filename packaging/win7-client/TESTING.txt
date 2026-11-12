@@ -51,7 +51,11 @@ CPU geometry uses lossless delta/byte-plane compression. Immutable regional DEFA
 vertices across sections. The existing CPU portal/column culling rejects hidden
 sections. Hardware vertex processing batches solid terrain by texture using retained
 visibility indices; unchanged ranges do not upload each frame. One bounded CPU
-worker compacts small VBs into larger pages, keeping old data until upload succeeds. Software vertex processing keeps narrow direct
+worker preloads reachable shadows and compacts small VBs into larger pages, keeping
+old data until upload succeeds. Changed meshes use the existing expanded vertices
+for eager GPU upload, including behind the camera when budget allows. The log's
+eager_sections and compactions are cumulative successful-operation counts.
+Software vertex processing keeps narrow direct
 draw ranges to avoid transforming sparse arena spans. Offscreen GPU buffers are
 evicted first. Automatic cache targets now scale beyond 128 MiB when the adapter
 and system RAM allow it. Dynamic vertex/index streams append with NOOVERWRITE and

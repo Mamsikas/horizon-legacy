@@ -170,6 +170,7 @@ impl Renderer {
         }
         self.timings
             .push(("begin/reset", started.elapsed().as_secs_f32() * 1000.0));
+        self.device.mesh_uploads += std::mem::take(&mut self.pending_mesh_uploads);
         if let Err(error) = self.draw_frame(frame) {
             self.device.cancel_frame();
             if dx::is_device_lost(error.as_ref()) {
@@ -209,7 +210,7 @@ impl Renderer {
         }
         if self.last_log.elapsed() >= Duration::from_secs(5) {
             log::info!(
-                "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_decoded_bytes={} mesh_gpu_bytes={} arenas={} texture_bytes={} compactions={}",
+                "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_decoded_bytes={} mesh_gpu_bytes={} arenas={} texture_bytes={} compactions={} eager_sections={}",
                 self.frames,
                 self.last_encode.as_secs_f64() * 1000.0,
                 self.last_wait.as_secs_f64() * 1000.0,
@@ -223,7 +224,8 @@ impl Renderer {
                 self.gpu_mesh_bytes,
                 self.arenas.len(),
                 self.texture_bytes(),
-                self.compactions
+                self.compactions,
+                self.eager_sections
             );
             log::info!(
                 "D3D9 stages_ms={:?} section_conversion_ms={:.3} process_memory_bytes={:?}",
