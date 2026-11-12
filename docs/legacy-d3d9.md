@@ -144,7 +144,8 @@ F5 exposed a separate depth error: OIT_ENTITY marks optional modern OIT routing,
 not a request to disable ordinary entity depth writes. Legacy now follows the
 classic entity pipeline's depth-write classification, including translucent skin
 layers and held items. GUI models also use normal LessEqual depth with clear=1,
-independently of the world's reverse Z. F3+A still uses the existing common mesh
+independently of the world's reverse Z. Depth clears disable any preceding scissor,
+including the previous frame's item clip. F3+A still uses the existing common mesh
 workers and rebuild semantics; legacy conversion reuses dense bucket/page groups,
 expanded-vertex storage and shadow-encoder scratch across section uploads.
 

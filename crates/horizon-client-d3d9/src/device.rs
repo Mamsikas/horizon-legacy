@@ -744,6 +744,10 @@ impl Device {
                 .SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER.0 as u32)?;
             self.inner.device.SetRenderState(D3DRS_ALPHAREF, 25)?;
             self.inner.device.SetRenderState(D3DRS_DITHERENABLE, 1)?;
+            // Clear obeys the previous frame's scissor too, including GUI item clips.
+            self.inner
+                .device
+                .SetRenderState(D3DRS_SCISSORTESTENABLE, 0)?;
             self.inner.device.Clear(
                 0,
                 ptr::null(),
@@ -757,13 +761,17 @@ impl Device {
         self.scene = true;
         Ok(true)
     }
-    pub fn clear_depth(&self) -> Result<()> {
+    pub fn clear_depth(&mut self) -> Result<()> {
         self.clear_z(0.0)
     }
-    pub fn clear_gui_depth(&self) -> Result<()> {
+    pub fn clear_gui_depth(&mut self) -> Result<()> {
         self.clear_z(1.0)
     }
-    fn clear_z(&self, far: f32) -> Result<()> {
+    fn clear_z(&mut self, far: f32) -> Result<()> {
+        // Match a depth attachment clear, independently of the preceding draw's clip.
+        self.state_cache
+            .render(&self.inner.device, D3DRS_SCISSORTESTENABLE, 0)?;
+        self.cached_state = None;
         // SAFETY: live depth surface; clear to the caller's depth convention's far value.
         unsafe {
             self.inner
