@@ -81,8 +81,11 @@ arena allocations, live GPU vertices and decode/index scratch are reported separ
 Sprite pages group native resolutions, undoing only array upscaling (a 16 px sprite
 in a 64 px CPU array keeps its original detail). Animated sprites have separate
 pages at most 256 px, except when the sprite itself needs more space. Static pages
-are at most 1024 px, subject to caps. GUI uses sparse pages at most 512 px. This
-bounds the area a driver can dirty/copy for small animation/glyph updates. Per-sprite
+are at most 1024 px, subject to caps. GUI keeps the existing virtual atlas and packs used 128 px tiles, with neighbouring
+texel gutters, into physical pages of 1024 or 2048 px, subject to caps and the
+texture target. Access order keeps active fonts/fills/icons together. Unused tiles
+allocate no GPU storage; immutable CPU tiles compress and patched tiles stay raw.
+Glyph/map/skin patches update tile seams before resident cells are uploaded. Per-sprite
 extruded mip chains remain. Panorama uses the same dedicated camera matrix as the
 ordinary renderer and releases storage on entering a world. Advisory memory targets
 derive from the driver's available-memory hint. Exceeding the texture target warns;
@@ -121,22 +124,38 @@ A/B testing remain performance follow-ups requiring hardware evidence.
 
 ## RTX3050 investigation
 
-Owner-reported progression: about 12 FPS initially, 50 at 16 chunks after the first
-fix, and about 100 at 16 in `de0ecaeb`. These are prior-build observations, not
-measurements of the code in this update. The latest valid 20-second control report
-contains 88.61 average FPS, frame p99 16.66 ms and maximum 19.63 ms; that capture does
-not include the resize stall. The DX9 log separately records a 203.85 ms CPU peak,
-up to 114,669,760 transient vertex bytes in a frame after Reset, and roughly
-8-10 MiB of index uploads even when warm. The memory snapshot reports 1,585.6 MiB
-resident, 539.7 MiB of requested terrain VBs, 146.9 MiB of compressed shadows and
-37.0 MiB of index/decode scratch. Requested GPU storage is not measured physical VRAM.
+The owner now reports about 400 FPS at 16 chunks on RTX3050/i5-10400, 700+ with
+HUD hidden, no camera-turn stalls, and RAM around twice the Vulkan build. The
+attached 20-second capture contains 358.31 average FPS, frame p50/p95/p99
+2.62/4.68/6.36 ms and maximum 11.77 ms. CPU-frame average is 2.54 ms; a separate
+stage snapshot attributes 0.802 ms to GUI. The memory snapshot reports 1260.2 MiB
+resident, 294.7 MiB of requested terrain arenas (253.4 MiB live), 73.3 MiB retained
+CPU geometry and 0.7 MiB index/decode scratch. These describe the preceding build;
+requested GPU storage is not measured physical VRAM.
 
-This update removes resize-driven mesh invalidation and repeated cold streaming,
-reuses the existing CPU portal/column culling, retains visibility indices, compacts
-fragmented immutable VBs off-thread and improves lossless shadow compression.
-Texture loading now reuses the normal mip generator, retaining solidified hidden
-RGB for fast leaves. Sky and terrain fog use their distinct existing Frame inputs.
-Hardware speed/RAM gains and shader/resize screenshots still require a fresh owner run.
+This iteration replaces the sparse GUI GPU layout with demand-packed tiles, retains
+batch allocations, and stages the entire ordinary HUD in one vertex-buffer lock,
+then draws ordered texture/blend/depth/scissor ranges. Very large HUDs use bounded
+streaming without dropping content. Painter barriers merge adjacent same-page bounds
+without forcing a flush every 128 triangles. CPU tile backing and reusable buffers
+are included in the memory census; GUI draws/binds/vertex bytes/locks are logged.
+
+F5 exposed a separate depth error: OIT_ENTITY marks optional modern OIT routing,
+not a request to disable ordinary entity depth writes. Legacy now follows the
+classic entity pipeline's depth-write classification, including translucent skin
+layers and held items. GUI models also use normal LessEqual depth with clear=1,
+independently of the world's reverse Z. F3+A still uses the existing common mesh
+workers and rebuild semantics; legacy conversion reuses dense bucket/page groups,
+expanded-vertex storage and shadow-encoder scratch across section uploads.
+
+The owner's log shows the hand-assembled fog shader was rejected with
+D3DERR_INVALIDCALL; the old CPU arithmetic test did not validate driver acceptance.
+The replacement is compiled from tools/d3d9/fog.hlsl by Windows SDK FXC
+10.0.26100.7705, ps_2_0, 22 instruction slots (2 texture, 20 arithmetic). CI recompiles
+it, compares executable tokens with the embedded Rust program, and publishes the
+ASM/profile. Players require no shader compiler DLL. Environmental and distance
+fog still use the existing Frame parameters. The new shader and F5 visuals require
+an owner hardware retest. Common resource preparation/startup is outside this change.
 
 Changed sections upload from their already-expanded CPU vertices when the portal
 graph and cache budget allow, including behind the camera. The same bounded worker
@@ -171,22 +190,23 @@ tools/bootstrap_win7_cross.sh "$PWD/work/win7-client/cross"
 tools/build_win7_client.sh
 ```
 
-The archive contains `horizon-client.exe`, `d3d9-smoke.exe`, `horizon-ctl.exe`, `TESTING.txt` and exact
+The archive contains `horizon-client.exe`, `horizon-ctl.exe`, `TESTING.txt` and exact
 build information. Select the client exe in the existing Win7 launcher's native-client
 setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
 Resources and saves are never distributed in this archive.
 
-This iteration has ten CPU tests (including shader-token arithmetic and exact shadow
-bits) and eleven PE policy/parser tests. The Win7 renderer and smoke are cross-checked;
-the packaging workflow builds the complete client/control/smoke ZIP and audits static/delay imports,
+This iteration has twelve CPU tests (including tile seams/placement, shader arithmetic
+and exact shadow bits) and eleven PE policy/parser tests. The packaging workflow builds
+the client/control ZIP and audits static/delay imports,
 architecture and subsystem version. Compiler warnings inherited from the current
 nightly/native dependencies are separate from a successful check. Full parity harnesses
 and a resource/world/launcher gameplay run were not performed in this environment.
 
 Changed presentation files: `horizon-client-d3d9/device.rs` owns swapchains, depth,
-cached IBs and PS2 state; `fog.rs` contains the embedded fog program; `geometry.rs`
-compresses CPU shadows; `atlas.rs` preserves transparent RGB; `examples/smoke.rs`
-exercises the new cached draw/fog/resize paths. In `horizon-client-render`, only
+cached IBs, staged GUI buffers and PS2 state; `fog.rs`/`fog_program.rs` contain the
+SDK-generated fog program; `geometry.rs` compresses CPU shadows; `tiles.rs` stores
+virtual atlas tiles; `atlas.rs` preserves transparent RGB. The optional development
+smoke example remains in source but is no longer built/shipped by the client package. In `horizon-client-render`, only
 `gfx.rs` helper visibility changes for normal builds. The legacy renderer and its
 `atlas`, `compat`, `frame`, `mesh` and `mesh/compact` modules own culling, cached
 plans, shared mips, sky and bounded compaction. Cargo only adds the already-used
@@ -194,12 +214,12 @@ glam dependency to the DX9 crate. CI and TESTING.txt carry reproducible checks.
 
 | Physical result | GMA3150 / N455 / Win7 x64 | HD4570 / Win7 x64 |
 | --- | --- | --- |
-| Actual driver caps and HAL rasterization | Pending user log | Pending user log |
+| Actual driver caps and HAL rasterization | Owner reports smoke passed; caps log pending | Pending user log |
 | Title/menu/world/input/save, resize/Alt+Tab/fullscreen | Not tested | Not tested |
 | Screenshots and visual comparison | Not captured | Not captured |
 | Median/1% low, CPU stages, draw/bind/upload/memory comparison | Not measured | Not measured |
 
-See `TESTING.txt` in the archive for the short device/game test and diagnostic variables.
+See `TESTING.txt` in the archive for the short game test and diagnostic variables.
 The log prints adapter/vendor/device, PS/VS versions, DevCaps, texture limits, stages,
 vertex mode and formats, plus periodic CPU/Present/draw/bind/upload/residency counters.
 A physical successful game run is still required for acceptance; neither CI, Wine nor

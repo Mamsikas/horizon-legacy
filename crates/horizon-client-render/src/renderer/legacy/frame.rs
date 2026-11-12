@@ -6,20 +6,42 @@ struct Batch {
     state: DrawState,
     vertices: Vec<dx::Vertex>,
 }
-struct GuiBatches {
+pub(super) enum GuiCommand {
+    ClearDepth,
+    Draw {
+        page: usize,
+        state: DrawState,
+        picture: Option<u64>,
+        range: Range<u32>,
+    },
+}
+pub(super) struct GuiBatches {
     state: DrawState,
     order: dx::PaintWindow,
     ready: Vec<Batch>,
     open: Vec<Batch>,
+    pool: Vec<Vec<dx::Vertex>>,
 }
 impl GuiBatches {
-    fn new(state: DrawState) -> Self {
+    pub(super) fn new(state: DrawState) -> Self {
         Self {
             state,
             order: dx::PaintWindow::default(),
             ready: Vec::new(),
             open: Vec::new(),
+            pool: Vec::new(),
         }
+    }
+    fn begin(&mut self, state: DrawState) {
+        self.state = state;
+        self.order.clear();
+    }
+    pub(super) fn bytes(&self) -> usize {
+        self.pool
+            .iter()
+            .map(|v| v.capacity() * size_of::<dx::Vertex>())
+            .sum::<usize>()
+            + (self.ready.capacity() + self.open.capacity()) * size_of::<Batch>()
     }
     fn flush(&mut self) {
         self.ready.append(&mut self.open);
@@ -44,15 +66,31 @@ impl GuiBatches {
             self.open.push(Batch {
                 page,
                 state: self.state,
-                vertices: Vec::new(),
+                vertices: self.pool.pop().unwrap_or_default(),
             });
             self.open.len() - 1
         };
         atlas::triangles(poly, &mut self.open[at].vertices);
     }
-    fn finish(mut self) -> Vec<Batch> {
+    fn finish(
+        &mut self,
+        vertices: &mut Vec<dx::Vertex>,
+        commands: &mut Vec<GuiCommand>,
+        picture: Option<u64>,
+    ) {
         self.flush();
-        self.ready
+        for mut batch in self.ready.drain(..) {
+            let first = vertices.len() as u32;
+            vertices.extend_from_slice(&batch.vertices);
+            commands.push(GuiCommand::Draw {
+                page: batch.page,
+                state: batch.state,
+                picture,
+                range: first..vertices.len() as u32,
+            });
+            batch.vertices.clear();
+            self.pool.push(batch.vertices);
+        }
     }
 }
 fn batch(
@@ -87,8 +125,10 @@ fn draw_pixels(
     batches: &[Batch],
     triangles: bool,
 ) -> Result<()> {
+    pixels.prepare(device)?;
+    let textures = pixels.textures();
     for b in batches {
-        let Some(texture) = &pixels.pages[b.page] else {
+        let Some(texture) = &textures[b.page] else {
             continue;
         };
         device.state(b.state, texture, Some(lightmap))?;
@@ -232,6 +272,13 @@ impl Renderer {
                 self.timings,
                 self.upload_cpu.as_secs_f64() * 1000.0,
                 horizon_threads::process_memory::usage()
+            );
+            log::info!(
+                "D3D9 GUI draws={} texture_binds={} vertex_uploads={} buffer_locks={}",
+                self.gui_stats[0],
+                self.gui_stats[1],
+                self.gui_stats[2],
+                self.gui_stats[3]
             );
             log::info!(
                 "D3D9 window_frames={} cpu_avg_ms={:.3} cpu_peak_ms={:.3} peak_stages_ms={:?} mesh_uploads={} stream_uploads={} index_uploads={}",
@@ -774,7 +821,12 @@ impl Renderer {
         draw_pixels(&mut self.device, panorama, &self.lightmap, &batches, false)
     }
     fn draw_gui(&mut self, frame: &Frame) -> Result<()> {
-        self.device.clear_depth()?;
+        let before = [
+            self.device.draws,
+            self.device.binds,
+            self.device.stream_uploads,
+            self.device.stream_locks,
+        ];
         let identity = Mat4::IDENTITY.to_cols_array();
         self.device.transform(identity, identity, identity)?;
         let mut overlays = Vec::new();
@@ -850,13 +902,15 @@ impl Renderer {
         ]);
         self.device
             .transform(identity, identity, projection.to_cols_array())?;
+        self.gui_vertices.clear();
+        self.gui_commands.clear();
         for (range, blend) in h.runs() {
             let (scissor, depth) = match blend {
                 crate::hud::Blend::Depth(r) | crate::hud::Blend::DepthGlint(r) => (Some(r), true),
                 _ => (None, false),
             };
             if depth && !matches!(blend, crate::hud::Blend::DepthGlint(_)) {
-                self.device.clear_depth()?;
+                self.gui_commands.push(GuiCommand::ClearDepth);
             }
             let state = DrawState {
                 blend: match blend {
@@ -871,13 +925,14 @@ impl Renderer {
                 cull: false,
                 depth_test: depth,
                 depth_write: depth && !matches!(blend, crate::hud::Blend::DepthGlint(_)),
+                reverse_z: false,
                 alpha_test: depth,
                 alpha_ref: 25,
                 mipmaps: false,
                 scissor,
                 ..Default::default()
             };
-            let mut batches = GuiBatches::new(state);
+            self.gui_batches.begin(state);
             let input = &h.vertices[range.start as usize..range.end as usize];
             let pixels = if let crate::hud::Blend::Picture(id) = blend {
                 self.pictures.get(&id).unwrap_or(&self.hud.atlas)
@@ -898,16 +953,62 @@ impl Renderer {
                         light: [0.0; 2],
                     }
                 });
-                pixels.polygon(&vertices, |page, p| batches.push(page, p));
+                pixels.polygon(&vertices, |page, p| self.gui_batches.push(page, p));
             }
-            draw_pixels(
-                &mut self.device,
-                pixels,
-                &self.lightmap,
-                &batches.finish(),
-                true,
-            )?;
+            self.gui_batches.finish(
+                &mut self.gui_vertices,
+                &mut self.gui_commands,
+                if let crate::hud::Blend::Picture(id) = blend {
+                    Some(id)
+                } else {
+                    None
+                },
+            );
         }
+        self.hud.atlas.prepare(&mut self.device)?;
+        for picture in self.pictures.values() {
+            picture.prepare(&mut self.device)?;
+        }
+        let staged = if !self.gui_vertices.is_empty()
+            && self.gui_vertices.len() <= self.device.max_vertices()
+        {
+            Some(self.device.stage_triangles(&self.gui_vertices)?)
+        } else {
+            None
+        };
+        for command in &self.gui_commands {
+            let GuiCommand::Draw {
+                page,
+                state,
+                picture,
+                range,
+            } = command
+            else {
+                self.device.clear_gui_depth()?;
+                continue;
+            };
+            let pixels = picture
+                .and_then(|id| self.pictures.get(&id))
+                .unwrap_or(&self.hud.atlas);
+            let textures = pixels.textures();
+            let Some(texture) = &textures[*page] else {
+                continue;
+            };
+            self.device.state(*state, texture, Some(&self.lightmap))?;
+            if let Some(staged) = &staged {
+                self.device.draw_staged_triangles(staged, range.clone())?;
+            } else {
+                self.device
+                    .draw_triangles(&self.gui_vertices[range.start as usize..range.end as usize])?;
+            }
+        }
+        let after = [
+            self.device.draws,
+            self.device.binds,
+            self.device.stream_uploads,
+            self.device.stream_locks,
+        ];
+        self.gui_stats = std::array::from_fn(|i| after[i] - before[i]);
         Ok(())
     }
     fn save_screenshot(&mut self) {

@@ -16,17 +16,22 @@ pub struct MeshData {
 }
 impl MeshData {
     pub fn new(vertices: &[Vertex]) -> Self {
+        Self::with_scratch(vertices, &mut Vec::new())
+    }
+    /// Reuse the encoder's temporary storage across a burst of section updates.
+    pub fn with_scratch(vertices: &[Vertex], shuffled: &mut Vec<u8>) -> Self {
         let raw: &[u8] = bytemuck::cast_slice(vertices);
         // Vertex deltas have repeated colours/light and short position/UV
         // changes. Byte planes let LZ4 see those runs without losing one bit
         // (including signed zero/NaN payloads). Small blocks bound decode scratch.
-        let mut shuffled = raw.to_vec();
+        shuffled.clear();
+        shuffled.extend_from_slice(raw);
         let stride = size_of::<Vertex>();
         for i in (stride..shuffled.len()).rev() {
             shuffled[i] ^= shuffled[i - stride];
         }
-        shuffle(&mut shuffled, false);
-        let compressed = lz4_flex::block::compress(&shuffled);
+        shuffle(shuffled, false);
+        let compressed = lz4_flex::block::compress(shuffled);
         let use_compressed = compressed.len() < raw.len();
         Self {
             bytes: if use_compressed {
@@ -179,7 +184,8 @@ mod tests {
                 light: [0.03125, 0.96875],
             })
             .collect();
-        let data = MeshData::new(&vertices);
+        let mut encoder = Vec::new();
+        let data = MeshData::with_scratch(&vertices, &mut encoder);
         assert!(data.bytes() < vertices.len() as u64 * 8);
         let mut decoded = Vec::new();
         data.decode(&mut decoded).unwrap();
@@ -196,11 +202,17 @@ mod tests {
             uv: [-1.5, 2.0],
             light: [0.0, 1.0],
         };
-        MeshData::new(&[bits]).decode(&mut decoded).unwrap();
+        let encoder_capacity = encoder.capacity();
+        MeshData::with_scratch(&[bits], &mut encoder)
+            .decode(&mut decoded)
+            .unwrap();
+        assert_eq!(encoder.capacity(), encoder_capacity);
         assert_eq!(bytemuck::bytes_of(&decoded[0]), bytemuck::bytes_of(&bits));
         for length in [15, 16, 17, 31, 33] {
             let partial = vec![bits; length];
-            MeshData::new(&partial).decode(&mut decoded).unwrap();
+            MeshData::with_scratch(&partial, &mut encoder)
+                .decode(&mut decoded)
+                .unwrap();
             assert_eq!(
                 bytemuck::cast_slice::<_, u8>(&decoded),
                 bytemuck::cast_slice::<_, u8>(&partial)
@@ -256,6 +268,9 @@ pub struct PaintWindow {
     bounds: Vec<(usize, [f32; 4])>,
 }
 impl PaintWindow {
+    pub fn clear(&mut self) {
+        self.bounds.clear();
+    }
     pub fn barrier(&mut self, page: usize, rect: [f32; 4]) -> bool {
         let flush = self.bounds.len() >= 128
             || self.bounds.iter().any(|(p, r)| {
@@ -264,7 +279,16 @@ impl PaintWindow {
         if flush {
             self.bounds.clear();
         }
-        self.bounds.push((page, rect));
+        if let Some((last_page, last)) = self.bounds.last_mut()
+            && *last_page == page
+        {
+            last[0] = last[0].min(rect[0]);
+            last[1] = last[1].min(rect[1]);
+            last[2] = last[2].max(rect[2]);
+            last[3] = last[3].max(rect[3]);
+        } else {
+            self.bounds.push((page, rect));
+        }
         flush
     }
 }
@@ -281,6 +305,12 @@ mod paint_tests {
         assert!(window.barrier(1, [0.0, 0.0, 1.0, 1.0]));
         assert!(!window.barrier(1, [0.0, 0.0, 1.0, 1.0]));
         assert!(window.barrier(2, [0.0, 0.0, 1.0, 1.0]));
+        window.clear();
+        for x in 0..10_000 {
+            assert!(!window.barrier(1, [x as f32, 0.0, x as f32 + 1.0, 1.0]));
+        }
+        assert_eq!(window.bounds.len(), 1);
+        assert!(window.barrier(2, [1.0, 0.0, 2.0, 1.0]));
     }
     #[test]
     fn reordered_alpha_rectangles_match_the_original_image() {

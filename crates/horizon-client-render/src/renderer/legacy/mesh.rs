@@ -124,8 +124,13 @@ impl Renderer {
         self.upload_cpu += started.elapsed();
     }
     fn upload_section(&mut self, key: SectionKey, mesh: &SectionMesh) -> Result<()> {
-        let mut groups: BTreeMap<(usize, usize, bool), (Range<u32>, Vec<dx::Vertex>)> =
-            BTreeMap::new();
+        // Bucket/page/alpha indices are dense and fixed by this resource set.
+        // Reuse their vectors instead of allocating tree nodes and buffers per section.
+        let pages = self.sprites.pages.len();
+        self.upload_groups.resize_with(7 * pages * 2, Vec::new);
+        for group in &mut self.upload_groups {
+            group.clear();
+        }
         let sides = if mesh.sides.quads() == mesh.solid.len() as u32 / 4 {
             mesh.sides
         } else {
@@ -138,39 +143,44 @@ impl Renderer {
                     .position(|&end| (quad as u32) < end)
                     .unwrap_or(6)
             });
-            let range = thresholds.map_or(0..mesh.solid.len() as u32 / 4, |ends| {
+            self.sprites.quad(
+                u32::from(input[0].layer & !crate::mesher::OPAQUE_LAYER),
+                &terrain_quad(input),
+                |page, poly| {
+                    let opaque = input[0].layer & crate::mesher::OPAQUE_LAYER != 0;
+                    let group =
+                        &mut self.upload_groups[(bucket * pages + page) * 2 + usize::from(opaque)];
+                    atlas::quads(poly, group);
+                },
+            )?;
+        }
+        let mut vertices = std::mem::take(&mut self.upload_vertices);
+        vertices.clear();
+        vertices.reserve(mesh.solid.len() + mesh.translucent.len());
+        let mut solid = Vec::new();
+        for (i, part) in self
+            .upload_groups
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| !v.is_empty())
+        {
+            let page = i / 2 % pages;
+            let bucket = i / (2 * pages);
+            let source = thresholds.map_or(0..mesh.solid.len() as u32 / 4, |ends| {
                 if bucket == 0 {
                     0..ends[0]
                 } else {
                     ends[bucket - 1]..ends[bucket]
                 }
             });
-            self.sprites.quad(
-                u32::from(input[0].layer & !crate::mesher::OPAQUE_LAYER),
-                &terrain_quad(input),
-                |page, poly| {
-                    let group = groups
-                        .entry((
-                            bucket,
-                            page,
-                            input[0].layer & crate::mesher::OPAQUE_LAYER != 0,
-                        ))
-                        .or_insert_with(|| (range.clone(), Vec::new()));
-                    atlas::quads(poly, &mut group.1);
-                },
-            )?;
-        }
-        let mut vertices = Vec::with_capacity(mesh.solid.len() + mesh.translucent.len());
-        let mut solid = Vec::new();
-        for ((_, page, opaque), (source, part)) in groups {
             solid.push(Packet {
                 page,
-                opaque,
+                opaque: i % 2 != 0,
                 first: vertices.len() as u32,
                 count: part.len() as u32,
                 source,
             });
-            vertices.extend(part);
+            vertices.extend_from_slice(part);
         }
         let mut translucent = Vec::<Packet>::new();
         for input in mesh.translucent.chunks_exact(4) {
@@ -204,7 +214,10 @@ impl Renderer {
             }
         }
         let decoded_bytes = vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
-        let shadow = Arc::new(dx::MeshData::new(&vertices));
+        let shadow = Arc::new(dx::MeshData::with_scratch(
+            &vertices,
+            &mut self.shadow_scratch,
+        ));
         let bytes = shadow.bytes();
         self.release_gpu_section(key);
         if let Some(old) = self.sections.remove(&key) {
@@ -235,6 +248,7 @@ impl Renderer {
             self.spatial.remove(key);
         }
         self.prefetch_ready_section(key, &vertices);
+        self.upload_vertices = vertices;
         Ok(())
     }
     fn prefetch_ready_section(&mut self, key: SectionKey, vertices: &[dx::Vertex]) {

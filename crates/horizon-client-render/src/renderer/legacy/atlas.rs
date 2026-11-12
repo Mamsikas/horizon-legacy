@@ -206,15 +206,21 @@ fn sprite_mips(pixels: &[u8], settings: crate::mipmap::Settings) -> Vec<crate::m
     )
 }
 
-/// The existing GUI atlas may exceed the device's dimensions. Keep its coordinates
-/// and clip polygons at page boundaries; allocate entirely transparent pages lazily.
+/// Virtual shared-atlas coordinates stay unchanged. Used 128px tiles are packed
+/// into managed physical pages in access order, keeping HUD fonts/fills together.
 pub(super) struct Pixels {
     pub width: u32,
     pub height: u32,
-    pub page_width: u32,
-    pub page_height: u32,
-    pub columns: u32,
-    pub pages: Vec<Option<dx::Texture>>,
+    side: u32,
+    state: std::cell::RefCell<PixelCache>,
+}
+struct PixelCache {
+    image: dx::TileImage,
+    locations: Vec<Option<(usize, u32, u32)>>,
+    pages: Vec<Option<dx::Texture>>,
+    slots: u32,
+    pending: Vec<usize>,
+    dirty: Vec<bool>,
 }
 impl Pixels {
     pub fn new(
@@ -224,84 +230,109 @@ impl Pixels {
         height: u32,
         page_budget: u64,
     ) -> Result<Self> {
-        if width == 0 || height == 0 || pixels.len() != width as usize * height as usize * 4 {
-            return Err("D3D9 GUI image dimensions mismatch".into());
+        let tile = width.max(height).min(128).next_power_of_two();
+        let image = dx::TileImage::new(pixels, width, height, tile, 1)?;
+        let mut side =
+            device
+                .caps
+                .max_texture
+                .min(if page_budget >= 64 << 20 { 2048 } else { 1024 });
+        while u64::from(side).pow(2) * 4 > page_budget {
+            side /= 2;
         }
-        let mut cap = device.caps.max_texture.min(512);
-        while u64::from(cap).pow(2) * 4 > page_budget {
-            cap /= 2;
+        side = 1u32 << side.max(1).ilog2();
+        // Standalone small pictures must not reserve an entire HUD-sized page.
+        while side / 2 >= image.cell()
+            && u64::from(side / 2 / image.cell()).pow(2) >= image.len() as u64
+        {
+            side /= 2;
         }
-        let cap = 1u32 << cap.max(1).ilog2();
-        let page_width = width.next_power_of_two().min(cap);
-        let page_height = height.next_power_of_two().min(cap);
-        let columns = width.div_ceil(page_width);
-        let rows = height.div_ceil(page_height);
-        let mut result = Self {
+        if side < image.cell() {
+            return Err("D3D9 caps/budget cannot hold a GUI tile".into());
+        }
+        let len = image.len();
+        Ok(Self {
             width,
             height,
-            page_width,
-            page_height,
-            columns,
-            pages: (0..columns * rows).map(|_| None).collect(),
-        };
-        result.patch(device, 0, 0, width, height, pixels)?;
-        Ok(result)
+            side,
+            state: std::cell::RefCell::new(PixelCache {
+                image,
+                locations: vec![None; len],
+                pages: Vec::new(),
+                slots: 0,
+                pending: Vec::new(),
+                dirty: vec![false; len],
+            }),
+        })
     }
     pub fn bytes(&self) -> u64 {
-        self.pages.iter().flatten().map(|p| p.bytes).sum()
+        self.state
+            .borrow()
+            .pages
+            .iter()
+            .flatten()
+            .map(|p| p.bytes)
+            .sum()
+    }
+    pub fn cpu_bytes(&self) -> usize {
+        let s = self.state.borrow();
+        s.image.bytes()
+            + s.locations.capacity() * size_of::<Option<(usize, u32, u32)>>()
+            + s.pending.capacity() * size_of::<usize>()
+            + s.dirty.capacity()
+    }
+    pub fn textures(&self) -> std::cell::Ref<'_, [Option<dx::Texture>]> {
+        std::cell::Ref::map(self.state.borrow(), |s| s.pages.as_slice())
+    }
+    pub fn prepare(&self, device: &mut dx::Device) -> Result<()> {
+        let mut s = self.state.borrow_mut();
+        if s.pending.is_empty() {
+            return Ok(());
+        }
+        let mut scratch = Vec::new();
+        // Remove only after all writes succeed; device-loss recovery may retry.
+        for i in 0..s.pending.len() {
+            let id = s.pending[i];
+            let (page, x, y) = s.locations[id].unwrap();
+            if s.pages[page].is_none() {
+                s.pages[page] = Some(device.texture(
+                    self.side,
+                    self.side,
+                    1,
+                    &vec![0; (self.side * self.side * 4) as usize],
+                )?);
+            }
+            s.image.decode(id, &mut scratch)?;
+            let cell = s.image.cell();
+            device.patch(
+                s.pages[page].as_ref().unwrap(),
+                0,
+                x,
+                y,
+                cell,
+                cell,
+                &scratch,
+            )?;
+        }
+        while let Some(id) = s.pending.pop() {
+            s.dirty[id] = false;
+        }
+        Ok(())
     }
     pub fn patch(
         &mut self,
-        device: &mut dx::Device,
+        _device: &mut dx::Device,
         x: u32,
         y: u32,
         width: u32,
         height: u32,
         rgba: &[u8],
     ) -> Result<()> {
-        if width == 0 || height == 0 {
-            return Ok(());
-        }
-        if x.checked_add(width).is_none_or(|v| v > self.width)
-            || y.checked_add(height).is_none_or(|v| v > self.height)
-            || rgba.len() != width as usize * height as usize * 4
-        {
-            return Err("D3D9 GUI patch outside atlas".into());
-        }
-        for py in y / self.page_height..=(y + height - 1) / self.page_height {
-            for px in x / self.page_width..=(x + width - 1) / self.page_width {
-                let ox = px * self.page_width;
-                let oy = py * self.page_height;
-                let x0 = x.max(ox);
-                let y0 = y.max(oy);
-                let x1 = (x + width).min(ox + self.page_width);
-                let y1 = (y + height).min(oy + self.page_height);
-                let mut bytes = Vec::with_capacity((x1 - x0) as usize * (y1 - y0) as usize * 4);
-                for row in y0..y1 {
-                    let start = ((row - y) * width + x0 - x) as usize * 4;
-                    bytes.extend_from_slice(&rgba[start..start + (x1 - x0) as usize * 4]);
-                }
-                let page = &mut self.pages[(py * self.columns + px) as usize];
-                if page.is_none() {
-                    if !bytes.chunks_exact(4).any(|p| p[3] != 0) {
-                        continue;
-                    }
-                    *page = Some(device.texture(
-                        self.page_width,
-                        self.page_height,
-                        1,
-                        &vec![0; self.page_width as usize * self.page_height as usize * 4],
-                    )?);
-                }
-                device.patch(
-                    page.as_ref().ok_or("D3D9 GUI page missing")?,
-                    0,
-                    x0 - ox,
-                    y0 - oy,
-                    x1 - x0,
-                    y1 - y0,
-                    &bytes,
-                )?;
+        let s = self.state.get_mut();
+        for id in s.image.patch(x, y, width, height, rgba)? {
+            if s.locations[id].is_some() && !s.dirty[id] {
+                s.dirty[id] = true;
+                s.pending.push(id);
             }
         }
         Ok(())
@@ -310,6 +341,8 @@ impl Pixels {
         if input.is_empty() {
             return;
         }
+        let mut s = self.state.borrow_mut();
+        let tile = s.image.tile;
         let min = std::array::from_fn::<_, 2, _>(|k| {
             input
                 .iter()
@@ -325,57 +358,63 @@ impl Pixels {
                 .clamp(0.0, 1.0)
         });
         let axis = [self.width, self.height];
-        let tile = [self.page_width, self.page_height];
         let start = std::array::from_fn::<_, 2, _>(|k| {
-            ((min[k] * axis[k] as f32) as u32 / tile[k]).min(axis[k].div_ceil(tile[k]) - 1)
+            ((min[k] * axis[k] as f32) as u32 / tile).min(axis[k].div_ceil(tile) - 1)
         });
         let end = std::array::from_fn::<_, 2, _>(|k| {
-            (((max[k] * axis[k] as f32).ceil().max(1.0) as u32 - 1) / tile[k])
-                .min(axis[k].div_ceil(tile[k]) - 1)
+            (((max[k] * axis[k] as f32).ceil().max(1.0) as u32 - 1) / tile)
+                .min(axis[k].div_ceil(tile) - 1)
                 .max(start[k])
         });
-        if start == end && input.len() <= 8 {
-            let page = (start[1] * self.columns + start[0]) as usize;
-            if self.pages[page].is_some() {
-                let mut polygon = smallvec::SmallVec::<[dx::Vertex; 8]>::from_slice(input);
-                for v in &mut polygon {
-                    v.uv = [
-                        (v.uv[0] * self.width as f32 - start[0] as f32 * self.page_width as f32)
-                            / self.page_width as f32,
-                        (v.uv[1] * self.height as f32 - start[1] as f32 * self.page_height as f32)
-                            / self.page_height as f32,
-                    ];
-                }
-                emit(page, &polygon);
-            }
-            return;
-        }
         for y in start[1]..=end[1] {
             for x in start[0]..=end[0] {
-                let page = (y * self.columns + x) as usize;
-                if self.pages[page].is_none() {
+                let id = (y * s.image.columns + x) as usize;
+                if !s.image.present(id) {
                     continue;
                 }
-                let rect = [
-                    x as f32 * self.page_width as f32 / self.width as f32,
-                    y as f32 * self.page_height as f32 / self.height as f32,
-                    ((x + 1) * self.page_width) as f32 / self.width as f32,
-                    ((y + 1) * self.page_height) as f32 / self.height as f32,
-                ];
-                let mut polygon = if start == end {
-                    input.to_vec()
+                let (page, ox, oy) = match s.locations[id] {
+                    Some(location) => location,
+                    None => {
+                        let slot = s.slots;
+                        s.slots += 1;
+                        let location = s.image.placement(slot, self.side).unwrap();
+                        if location.0 == s.pages.len() {
+                            s.pages.push(None);
+                        }
+                        s.locations[id] = Some(location);
+                        s.pending.push(id);
+                        s.dirty[id] = true;
+                        location
+                    }
+                };
+                let mut polygon: smallvec::SmallVec<[dx::Vertex; 8]> = if start == end {
+                    smallvec::SmallVec::from_slice(input)
                 } else {
-                    clip_rect(input.to_vec(), rect)
+                    clip_rect(
+                        input.to_vec(),
+                        [
+                            x as f32 * tile as f32 / self.width as f32,
+                            y as f32 * tile as f32 / self.height as f32,
+                            ((x + 1) * tile) as f32 / self.width as f32,
+                            ((y + 1) * tile) as f32 / self.height as f32,
+                        ],
+                    )
+                    .into_iter()
+                    .collect()
                 };
                 if polygon.len() < 3 {
                     continue;
                 }
                 for v in &mut polygon {
                     v.uv = [
-                        (v.uv[0] * self.width as f32 - x as f32 * self.page_width as f32)
-                            / self.page_width as f32,
-                        (v.uv[1] * self.height as f32 - y as f32 * self.page_height as f32)
-                            / self.page_height as f32,
+                        (v.uv[0] * self.width as f32 - x as f32 * tile as f32
+                            + ox as f32
+                            + s.image.padding as f32)
+                            / self.side as f32,
+                        (v.uv[1] * self.height as f32 - y as f32 * tile as f32
+                            + oy as f32
+                            + s.image.padding as f32)
+                            / self.side as f32,
                     ];
                 }
                 emit(page, &polygon);

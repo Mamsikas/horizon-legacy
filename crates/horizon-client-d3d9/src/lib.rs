@@ -15,3 +15,5 @@ mod geometry;
 pub use geometry::{IndexBatch, MeshData, PaintWindow, Ring, Vertex, fog_interval};
 mod fog;
 pub use fog::Fog;
+mod tiles;
+pub use tiles::TileImage;

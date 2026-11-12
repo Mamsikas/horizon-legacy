@@ -59,14 +59,27 @@ impl Renderer {
                         .sum::<usize>(),
             ),
             (
-                "D3D9 GUI animation metadata",
+                "D3D9 GUI CPU cache/scratch",
                 self.hud.sprite_animations.capacity()
-                    * size_of::<(Rect, SpriteAnimation, (usize, usize, u32))>(),
+                    * size_of::<(Rect, SpriteAnimation, (usize, usize, u32))>()
+                    + self.hud.atlas.cpu_bytes()
+                    + self.panorama.as_ref().map_or(0, Pixels::cpu_bytes)
+                    + self.pictures.values().map(Pixels::cpu_bytes).sum::<usize>()
+                    + self.gui_batches.bytes()
+                    + self.gui_vertices.capacity() * size_of::<dx::Vertex>()
+                    + self.gui_commands.capacity() * size_of::<frame::GuiCommand>(),
             ),
             ("D3D9 retained CPU geometry", self.mesh_bytes as usize),
             (
-                "D3D9 index/decode scratch",
+                "D3D9 index/mesh scratch",
                 self.decode_scratch.capacity() * size_of::<dx::Vertex>()
+                    + self.upload_vertices.capacity() * size_of::<dx::Vertex>()
+                    + self
+                        .upload_groups
+                        .iter()
+                        .map(|v| v.capacity() * size_of::<dx::Vertex>())
+                        .sum::<usize>()
+                    + self.shadow_scratch.capacity()
                     + self
                         .solid_batches
                         .values()

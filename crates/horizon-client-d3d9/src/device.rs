@@ -1,7 +1,7 @@
 //! All COM and locked-memory operations stay here. Resources keep their device and
 //! window alive and are deliberately !Send/!Sync: D3D9 Reset belongs to its creator.
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ffi::c_void,
     ptr,
     rc::{Rc, Weak},
@@ -41,6 +41,8 @@ pub struct DrawState {
     pub blend: Blend,
     pub depth_test: bool,
     pub depth_write: bool,
+    /// World uses reverse Z; GUI model depth uses the normal 0-near/1-far convention.
+    pub reverse_z: bool,
     pub alpha_test: bool,
     pub alpha_ref: u8,
     pub cull: bool,
@@ -57,6 +59,7 @@ impl Default for DrawState {
             blend: Blend::Opaque,
             depth_test: true,
             depth_write: true,
+            reverse_z: true,
             alpha_test: true,
             alpha_ref: 127,
             cull: true,
@@ -82,6 +85,7 @@ pub struct Caps {
 }
 type MeshHandle = RefCell<Option<IDirect3DVertexBuffer9>>;
 struct Inner {
+    stream_sequence: Cell<u64>,
     default_meshes: RefCell<Vec<Weak<MeshHandle>>>,
     presentation: RefCell<Option<Presentation>>,
     device: IDirect3DDevice9,
@@ -201,6 +205,14 @@ impl StateCache {
         Ok(())
     }
 }
+/// One frame's transient vertices. It owns no DEFAULT resource, so retaining this
+/// token cannot obstruct Reset. A later upload/begin invalidates it explicitly.
+pub struct StagedTriangles {
+    owner: Rc<Inner>,
+    serial: u64,
+    first: u32,
+    count: u32,
+}
 pub struct Device {
     inner: Rc<Inner>,
     pub caps: Caps,
@@ -209,6 +221,7 @@ pub struct Device {
     transient: Option<IDirect3DVertexBuffer9>,
     transient_capacity: usize,
     transient_ring: Ring,
+    transient_serial: u64,
     dynamic_indices: Option<IDirect3DIndexBuffer9>,
     index_ring: Ring,
     using_dynamic_indices: bool,
@@ -228,6 +241,7 @@ pub struct Device {
     pub resets: u64,
     pub mesh_uploads: u64,
     pub stream_uploads: u64,
+    pub stream_locks: u64,
     pub index_uploads: u64,
 }
 impl Device {
@@ -409,6 +423,7 @@ impl Device {
         );
         let mut result = Self {
             inner: Rc::new(Inner {
+                stream_sequence: Cell::new(0),
                 default_meshes: RefCell::new(Vec::new()),
                 presentation: RefCell::new(None),
                 device,
@@ -421,6 +436,7 @@ impl Device {
             transient: None,
             transient_capacity: 0,
             transient_ring: Ring::default(),
+            transient_serial: 0,
             dynamic_indices: None,
             index_ring: Ring::default(),
             using_dynamic_indices: false,
@@ -440,6 +456,7 @@ impl Device {
             resets: 0,
             mesh_uploads: 0,
             stream_uploads: 0,
+            stream_locks: 0,
             index_uploads: 0,
         };
         result.create_indices()?;
@@ -483,6 +500,7 @@ impl Device {
             transient: None,
             transient_capacity: 0,
             transient_ring: Ring::default(),
+            transient_serial: 0,
             dynamic_indices: None,
             index_ring: Ring::default(),
             using_dynamic_indices: false,
@@ -502,6 +520,7 @@ impl Device {
             resets: self.resets,
             mesh_uploads: 0,
             stream_uploads: 0,
+            stream_locks: 0,
             index_uploads: 0,
         }
     }
@@ -651,6 +670,7 @@ impl Device {
             self.transient = None;
             self.transient_capacity = 0;
             self.transient_ring.reset();
+            self.transient_serial = 0;
             self.dynamic_indices = None;
             self.index_ring.reset();
             // SAFETY: no outstanding lock, scene, stateblock or backbuffer reference exists.
@@ -699,6 +719,8 @@ impl Device {
         self.using_dynamic_indices = false;
         self.mesh_uploads = 0;
         self.stream_uploads = 0;
+        self.stream_locks = 0;
+        self.transient_serial = 0;
         self.index_uploads = 0;
         self.draws = 0;
         self.binds = 0;
@@ -736,11 +758,17 @@ impl Device {
         Ok(true)
     }
     pub fn clear_depth(&self) -> Result<()> {
-        // SAFETY: live auto depth surface; reverse-Z clears to far (0).
+        self.clear_z(0.0)
+    }
+    pub fn clear_gui_depth(&self) -> Result<()> {
+        self.clear_z(1.0)
+    }
+    fn clear_z(&self, far: f32) -> Result<()> {
+        // SAFETY: live depth surface; clear to the caller's depth convention's far value.
         unsafe {
             self.inner
                 .device
-                .Clear(0, ptr::null(), D3DCLEAR_ZBUFFER as u32, 0, 0.0, 0)?;
+                .Clear(0, ptr::null(), D3DCLEAR_ZBUFFER as u32, 0, far, 0)?;
         }
         Ok(())
     }
@@ -1211,6 +1239,16 @@ impl Device {
             cache.render(d, D3DRS_DESTBLEND, dst.0 as u32)?;
             cache.render(d, D3DRS_ZENABLE, u32::from(state.depth_test))?;
             cache.render(d, D3DRS_ZWRITEENABLE, u32::from(state.depth_write))?;
+            cache.render(
+                d,
+                D3DRS_ZFUNC,
+                if state.reverse_z {
+                    D3DCMP_GREATEREQUAL
+                } else {
+                    D3DCMP_LESSEQUAL
+                }
+                .0 as u32,
+            )?;
             cache.render(d, D3DRS_ALPHATESTENABLE, u32::from(state.alpha_test))?;
             cache.render(d, D3DRS_ALPHAREF, u32::from(state.alpha_ref))?;
             cache.render(
@@ -1377,61 +1415,16 @@ impl Device {
             if chunk.is_empty() {
                 continue;
             }
-            let bytes = bytemuck::cast_slice::<_, u8>(chunk);
-            if self.transient.is_none() {
-                self.transient = None;
-                let mut buffer = None;
-                self.transient_capacity = self.max_vertices() * size_of::<Vertex>();
-                self.transient_ring.reset();
-                // SAFETY: capacity is bounded by max_vertices; DEFAULT is released before Reset.
-                unsafe {
-                    self.inner.device.CreateVertexBuffer(
-                        self.transient_capacity as u32,
-                        (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32
-                            | if self.caps.software_vertices {
-                                D3DUSAGE_SOFTWAREPROCESSING as u32
-                            } else {
-                                0
-                            },
-                        FVF,
-                        D3DPOOL_DEFAULT,
-                        &mut buffer,
-                        ptr::null_mut(),
-                    )?;
-                }
-                self.transient = buffer;
-            }
             if kind == 0 {
                 self.shared_indices()?;
             }
-            let (offset, discard) = self
-                .transient_ring
-                .reserve(bytes.len(), self.transient_capacity)
-                .ok_or("D3D9 transient ring overflow")?;
-            let base = (offset / size_of::<Vertex>()) as u32;
+            let base = self.stage_vertices(chunk)?;
             let buffer = self
                 .transient
                 .as_ref()
                 .ok_or("D3D9 dynamic vertex buffer missing")?;
-            // SAFETY: matching lock size/copy length. DISCARD allows the driver to rename in-flight storage.
+            // SAFETY: the staged range fits the live buffer and is a complete primitive.
             unsafe {
-                let mut memory = ptr::null_mut();
-                buffer.Lock(
-                    offset as u32,
-                    bytes.len() as u32,
-                    &mut memory,
-                    if discard {
-                        D3DLOCK_DISCARD
-                    } else {
-                        D3DLOCK_NOOVERWRITE
-                    } as u32,
-                )?;
-                if memory.is_null() {
-                    buffer.Unlock()?;
-                    return Err("D3D9 empty transient lock".into());
-                }
-                ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
-                buffer.Unlock()?;
                 self.inner
                     .device
                     .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)?;
@@ -1459,10 +1452,126 @@ impl Device {
                 }
             }
             self.draws += 1;
-            self.uploads += bytes.len() as u64;
-            self.stream_uploads += bytes.len() as u64;
         }
         Ok(())
+    }
+    /// Upload a complete HUD once, then draw its ordered state/texture ranges.
+    /// Larger batches can use draw_triangles, which splits without dropping content.
+    pub fn stage_triangles(&mut self, vertices: &[Vertex]) -> Result<StagedTriangles> {
+        if vertices.len() % 3 != 0 {
+            return Err("D3D9 incomplete triangle".into());
+        }
+        let first = self.stage_vertices(vertices)?;
+        Ok(StagedTriangles {
+            owner: self.inner.clone(),
+            serial: self.transient_serial,
+            first,
+            count: vertices.len() as u32,
+        })
+    }
+    pub fn draw_staged_triangles(
+        &mut self,
+        vertices: &StagedTriangles,
+        range: std::ops::Range<u32>,
+    ) -> Result<()> {
+        if !Rc::ptr_eq(&vertices.owner, &self.inner)
+            || vertices.serial != self.transient_serial
+            || range.start > range.end
+            || range.end > vertices.count
+            || range.start % 3 != 0
+            || range.end % 3 != 0
+        {
+            return Err("D3D9 stale or invalid staged triangle range".into());
+        }
+        if range.is_empty() {
+            return Ok(());
+        }
+        let buffer = self
+            .transient
+            .as_ref()
+            .ok_or("D3D9 missing staged buffer")?;
+        // SAFETY: owner, upload generation and bounds were checked; no raw resources escape.
+        unsafe {
+            self.inner
+                .device
+                .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)?;
+            self.inner.device.DrawPrimitive(
+                D3DPT_TRIANGLELIST,
+                vertices.first + range.start,
+                range.len() as u32 / 3,
+            )?;
+        }
+        self.draws += 1;
+        Ok(())
+    }
+    fn stage_vertices(&mut self, vertices: &[Vertex]) -> Result<u32> {
+        if vertices.is_empty() || vertices.len() > self.max_vertices() {
+            return Err("D3D9 transient upload outside buffer capacity".into());
+        }
+        if self.transient.is_none() {
+            let mut buffer = None;
+            self.transient_capacity = self.max_vertices() * size_of::<Vertex>();
+            self.transient_ring.reset();
+            // SAFETY: bounded capacity, creator thread; released before Reset.
+            unsafe {
+                self.inner.device.CreateVertexBuffer(
+                    self.transient_capacity as u32,
+                    (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32
+                        | if self.caps.software_vertices {
+                            D3DUSAGE_SOFTWAREPROCESSING as u32
+                        } else {
+                            0
+                        },
+                    FVF,
+                    D3DPOOL_DEFAULT,
+                    &mut buffer,
+                    ptr::null_mut(),
+                )?;
+            }
+            self.transient = buffer;
+        }
+        let serial = self
+            .inner
+            .stream_sequence
+            .get()
+            .checked_add(1)
+            .ok_or("D3D9 upload sequence exhausted")?;
+        self.inner.stream_sequence.set(serial);
+        self.transient_serial = serial;
+        let bytes = bytemuck::cast_slice::<_, u8>(vertices);
+        let (offset, discard) = self
+            .transient_ring
+            .reserve(bytes.len(), self.transient_capacity)
+            .ok_or("D3D9 transient ring overflow")?;
+        let buffer = self
+            .transient
+            .as_ref()
+            .ok_or("D3D9 dynamic vertex buffer missing")?;
+        // SAFETY: lock size matches the copy. NOOVERWRITE appends to untouched storage;
+        // DISCARD lets the driver rename it when the bounded ring wraps.
+        unsafe {
+            let mut memory = ptr::null_mut();
+            buffer.Lock(
+                offset as u32,
+                bytes.len() as u32,
+                &mut memory,
+                if discard {
+                    D3DLOCK_DISCARD
+                } else {
+                    D3DLOCK_NOOVERWRITE
+                } as u32,
+            )?;
+            if memory.is_null() {
+                buffer.Unlock()?;
+                return Err("D3D9 empty transient lock".into());
+            }
+            ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
+            buffer.Unlock()?;
+        }
+        self.uploads += bytes.len() as u64;
+        self.stream_uploads += bytes.len() as u64;
+        self.stream_locks += 1;
+        Ok((offset / size_of::<Vertex>()) as u32)
     }
     /// Capture only on request. Readback is deliberately absent from the normal frame path.
     pub fn screenshot(&self) -> Result<(u32, u32, Vec<u8>)> {

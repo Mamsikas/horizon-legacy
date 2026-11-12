@@ -4,24 +4,23 @@ This preview requires the GPU manufacturer's Windows 7 driver, prepared legal
 Horizon resources matching Minecraft 26.3, and an Atom N455-compatible x64 CPU
 (SSE3/SSSE3). The owner reports the HAL smoke test works on GMA3150. Gameplay on that GPU and
 on Radeon HD4570 is not verified. The owner reports the preceding RTX3050 build
-reached about 100 FPS at 16 chunks, with first-view/resize cache stalls.
+reached about 400 FPS at 16 chunks (700+ with F1); camera stalls disappeared.
 This update needs another RTX3050 retest before moving back to target hardware.
 No Java, Vulkan, OpenGL, D3D11/D3D12 or shader compiler is used by the DX9 renderer.
 
-1. Extract the entire ZIP. Run d3d9-smoke.exe first. It must show overlapping
-   textured quads, a green/blue fog band and a translucent strip. Resize, minimize, restore and Alt+Tab.
-   Send d3d9-smoke.log if it fails. This program is a device test, not the game.
-2. In the existing legacy launcher select horizon-client.exe as the native client.
+1. Extract the entire ZIP. In the existing legacy launcher select horizon-client.exe as the native client.
    Use your existing prepared resources. DX9 is the default for this executable.
    Direct launch, if needed:
    horizon-client.exe --control --resources "C:\path\to\26.3" --game-dir "C:\path\to\test-game"
    Test in a COPY of a save. Render distance, FPS, resolution and vanilla graphics
    options stay under your control; no low preset is installed.
-3. Open a world, move around, open inventory/chat, type/copy/paste Unicode text, save/reopen the world,
+2. Open a world, move around, open inventory/chat, type/copy/paste Unicode text, save/reopen the world,
    resize, Alt+Tab and toggle fullscreen. F2 saves a screenshot. Send the client log
    and crash report (if any), GPU driver version and the build-info.txt from this ZIP.
    The log includes adapter caps, HAL/vertex mode, memory budgets, frame CPU/Present,
    draw calls, texture states and upload bytes. Counters are not a hardware benchmark.
+   Compare the same view at 16 chunks with HUD on/off (F1), player view (F5),
+   inventory item depth and environmental fog. Try F3+A and let the rebuild settle.
 
 Performance diagnosis (no profiler installation needed):
 The normal log and F3 now separate lightmap, sprite animation, GUI patches,
@@ -30,6 +29,9 @@ These are CPU elapsed times (including driver waits), not GPU timestamp queries.
 The five-second log reports compressed CPU geometry and its decoded size, static
 DEFAULT GPU arenas, stream/index/mesh upload bytes, interval average/peak CPU time
 and stages of the worst frame, texture bytes and process memory [private resident estimate, resident, total RAM].
+The GUI log separates its draw calls, texture binds, vertex upload bytes and buffer
+locks. Used virtual atlas tiles share physical pages; an ordinary HUD uploads
+once and draws through ordered ranges. Oversized batches still draw in pieces.
 Remove the old HORIZON_D3D9_MESH_MIB / HORIZON_D3D9_TEXTURE_MIB overrides to test
 automatic targets. For the RTX3050 retest use the same world/settings as before. Let chunks and compaction settle,
 then send latest.log, a screenshot of F3, and these optional local reports from a
