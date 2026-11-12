@@ -1501,6 +1501,7 @@ name = "horizon-client-d3d9"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "glam",
  "log",
  "lz4_flex",
  "windows 0.58.0",

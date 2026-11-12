@@ -87,11 +87,13 @@ impl AtlasLayout {
                 let x1 = ((x + 1) * source_size / size).max(x0 + 1).min(source_size);
                 let y1 = ((y + 1) * source_size / size).max(y0 + 1).min(source_size);
                 let mut sum = [0u64; 4];
+                let mut hidden = [0u64; 3];
                 for sy in y0..y1 {
                     for sx in x0..x1 {
                         let pixel = &source[(sy * source_size + sx) * 4..][..4];
                         for c in 0..3 {
                             sum[c] += u64::from(pixel[c]) * u64::from(pixel[3]);
+                            hidden[c] += u64::from(pixel[c]);
                         }
                         sum[3] += u64::from(pixel[3]);
                     }
@@ -100,6 +102,10 @@ impl AtlasLayout {
                 if sum[3] != 0 {
                     for c in 0..3 {
                         out[c] = (sum[c] / sum[3]) as u8;
+                    }
+                } else {
+                    for c in 0..3 {
+                        out[c] = (hidden[c] / ((x1 - x0) * (y1 - y0)) as u64) as u8;
                     }
                 }
                 out[3] = (sum[3] / ((x1 - x0) * (y1 - y0)) as u64) as u8;
@@ -211,7 +217,7 @@ mod tests {
         let pixels = [255, 0, 0, 255, 0, 0, 255, 0, 0, 255, 0, 255, 0, 0, 255, 0];
         let base = a.tile(0, &pixels).unwrap();
         assert_eq!(&base[..4], &[255, 0, 0, 255]);
-        assert_eq!(&base[12..16], &[0, 0, 0, 0]);
+        assert_eq!(&base[12..16], &[0, 0, 255, 0]);
         let mip = a.tile(1, &pixels).unwrap();
         for p in mip.chunks_exact(4) {
             assert_eq!(p, [127, 127, 0, 127]);

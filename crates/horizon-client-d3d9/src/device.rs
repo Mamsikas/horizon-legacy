@@ -26,7 +26,7 @@ const D3DERR_DEVICENOTRESET: HRESULT = HRESULT(0x88760869u32 as i32);
 const D3DTS_WORLD: D3DTRANSFORMSTATETYPE = D3DTRANSFORMSTATETYPE(256);
 const FVF: u32 = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2;
 const MAX_QUADS: u32 = 16_383;
-use crate::{IndexBatch, Ring, Vertex};
+use crate::{Fog, IndexBatch, Ring, Vertex};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blend {
     Opaque,
@@ -45,7 +45,7 @@ pub struct DrawState {
     pub alpha_ref: u8,
     pub cull: bool,
     pub lightmap: bool,
-    pub fog: Option<([f32; 3], f32, f32)>,
+    pub fog: Option<Fog>,
     pub scissor: Option<[u32; 4]>,
     pub linear: bool,
     pub mipmaps: bool,
@@ -83,9 +83,17 @@ pub struct Caps {
 type MeshHandle = RefCell<Option<IDirect3DVertexBuffer9>>;
 struct Inner {
     default_meshes: RefCell<Vec<Weak<MeshHandle>>>,
+    presentation: RefCell<Option<Presentation>>,
     device: IDirect3DDevice9,
     _d3d: IDirect3D9,
     _window: Arc<Window>,
+}
+struct Presentation {
+    chain: IDirect3DSwapChain9,
+    _depth: IDirect3DSurface9,
+    width: u32,
+    height: u32,
+    interval: u32,
 }
 pub struct Texture {
     raw: IDirect3DTexture9,
@@ -102,6 +110,20 @@ pub struct Mesh {
     pub vertices: u32,
     filled: u32,
 }
+/// Immutable visibility indices. Managed storage survives a real device Reset;
+/// the runtime owns the small CPU copy instead of a second application Vec.
+pub struct Indices {
+    raw: IDirect3DIndexBuffer9,
+    owner: Rc<Inner>,
+    start: u32,
+    end: u32,
+    count: u32,
+}
+impl Indices {
+    pub fn bytes(&self) -> u64 {
+        u64::from(self.count) * 2
+    }
+}
 impl Mesh {
     /// Reset invalidates DEFAULT buffers; their owner can lazily upload its CPU data again.
     pub fn resident(&self) -> bool {
@@ -113,7 +135,7 @@ impl Mesh {
 }
 struct StateCache {
     render: [Option<u32>; 256],
-    stage: [[Option<u32>; 33]; 2],
+    stage: [[Option<u32>; 33]; 3],
     sampler: [[Option<u32>; 14]; 2],
     textures: [usize; 2],
 }
@@ -121,7 +143,7 @@ impl Default for StateCache {
     fn default() -> Self {
         Self {
             render: [None; 256],
-            stage: [[None; 33]; 2],
+            stage: [[None; 33]; 3],
             sampler: [[None; 14]; 2],
             textures: [usize::MAX; 2],
         }
@@ -191,11 +213,15 @@ pub struct Device {
     index_ring: Ring,
     using_dynamic_indices: bool,
     reset_pending: bool,
+    surface_pending: bool,
     lost: bool,
     scene: bool,
     cached_state: Option<(DrawState, usize, usize)>,
     state_cache: StateCache,
     cached_transform: Option<[[f32; 16]; 3]>,
+    fog_shader: Option<IDirect3DPixelShader9>,
+    shader_active: bool,
+    fog_constants: Option<Fog>,
     pub draws: u64,
     pub binds: u64,
     pub uploads: u64,
@@ -306,7 +332,7 @@ impl Device {
             _ => return Err("HORIZON_D3D9_VERTEX_PROCESSING must be hardware or software".into()),
         };
         let size = window.inner_size();
-        let mut present = D3DPRESENT_PARAMETERS {
+        let present = D3DPRESENT_PARAMETERS {
             BackBufferWidth: size.width.max(1),
             BackBufferHeight: size.height.max(1),
             BackBufferFormat: backbuffer,
@@ -315,7 +341,7 @@ impl Device {
             SwapEffect: D3DSWAPEFFECT_DISCARD,
             hDeviceWindow: hwnd,
             Windowed: BOOL(1),
-            EnableAutoDepthStencil: BOOL(1),
+            EnableAutoDepthStencil: BOOL(0),
             AutoDepthStencilFormat: depth,
             PresentationInterval: if vsync {
                 D3DPRESENT_INTERVAL_ONE as u32
@@ -324,6 +350,12 @@ impl Device {
             },
             ..Default::default()
         };
+        // The implicit swapchain is only a reset anchor. Window resize replaces
+        // an additional swapchain and depth surface, preserving all terrain VBs.
+        let mut primary = present;
+        primary.BackBufferWidth = 1;
+        primary.BackBufferHeight = 1;
+        primary.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE as u32;
         let vp = if software_vertices {
             D3DCREATE_SOFTWARE_VERTEXPROCESSING
         } else {
@@ -337,7 +369,7 @@ impl Device {
                 D3DDEVTYPE_HAL,
                 hwnd,
                 vp as u32 | D3DCREATE_FPU_PRESERVE as u32,
-                &mut present,
+                &mut primary,
                 &mut device,
             )?;
         }
@@ -378,6 +410,7 @@ impl Device {
         let mut result = Self {
             inner: Rc::new(Inner {
                 default_meshes: RefCell::new(Vec::new()),
+                presentation: RefCell::new(None),
                 device,
                 _d3d: d3d,
                 _window: window,
@@ -392,11 +425,15 @@ impl Device {
             index_ring: Ring::default(),
             using_dynamic_indices: false,
             reset_pending: false,
+            surface_pending: true,
             lost: false,
             scene: false,
             cached_state: None,
             state_cache: StateCache::default(),
             cached_transform: None,
+            fog_shader: None,
+            shader_active: false,
+            fog_constants: None,
             draws: 0,
             binds: 0,
             uploads: 0,
@@ -406,6 +443,31 @@ impl Device {
             index_uploads: 0,
         };
         result.create_indices()?;
+        if raw.PixelShaderVersion >= 0xffff_0200
+            && raw.MaxTextureBlendStages >= 3
+            && (software_vertices || raw.VertexProcessingCaps & D3DVTXPCAPS_TEXGEN as u32 != 0)
+        {
+            // SAFETY: the embedded program is terminated ps_2_0 bytecode; D3D
+            // validates it before handing it to the hardware driver.
+            match unsafe {
+                result
+                    .inner
+                    .device
+                    .CreatePixelShader(crate::fog::bytecode().as_ptr())
+            } {
+                Ok(shader) => {
+                    result.fog_shader = Some(shader);
+                    log::info!(
+                        "D3D9 fog: ps_2_0 sphere/cylinder curves; fixed-function vertex processing"
+                    );
+                }
+                Err(error) => log::warn!(
+                    "D3D9 dual fog unavailable ({error}); fixed-function fog approximation"
+                ),
+            }
+        } else {
+            log::warn!("D3D9 dual fog unavailable in caps; fixed-function fog approximation");
+        }
         // Test a real texture, VB and lightmap allocation before accepting the adapter.
         let _texture = result.texture(16, 16, 1, &[255; 1024])?;
         let _vertices = result.mesh(&[Vertex::zero(); 4])?;
@@ -425,11 +487,15 @@ impl Device {
             index_ring: Ring::default(),
             using_dynamic_indices: false,
             reset_pending: false,
+            surface_pending: true,
             lost: self.lost,
             scene: false,
             cached_state: None,
             state_cache: StateCache::default(),
             cached_transform: None,
+            fog_shader: self.fog_shader.clone(),
+            shader_active: false,
+            fog_constants: None,
             draws: 0,
             binds: 0,
             uploads: 0,
@@ -483,9 +549,12 @@ impl Device {
             * 4) as usize
     }
     pub fn resize(&mut self, width: u32, height: u32) {
+        if self.present.BackBufferWidth == width && self.present.BackBufferHeight == height {
+            return;
+        }
         self.present.BackBufferWidth = width;
         self.present.BackBufferHeight = height;
-        self.reset_pending = true;
+        self.surface_pending = true;
     }
     pub fn vsync(&mut self, on: bool) {
         let interval = if on {
@@ -495,8 +564,65 @@ impl Device {
         };
         if self.present.PresentationInterval != interval {
             self.present.PresentationInterval = interval;
-            self.reset_pending = true;
+            self.surface_pending = true;
         }
+    }
+    fn detach_presentation(&self) {
+        // SAFETY: outside BeginScene; restore the implicit target before dropping
+        // the additional target. The best-effort path also runs on a lost device.
+        unsafe {
+            let _ = self.inner.device.SetDepthStencilSurface(None);
+            if let Ok(primary) = self
+                .inner
+                .device
+                .GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO)
+            {
+                let _ = self.inner.device.SetRenderTarget(0, &primary);
+            }
+        }
+        self.inner.presentation.borrow_mut().take();
+    }
+    fn create_presentation(&mut self) -> Result<()> {
+        self.detach_presentation();
+        let mut params = self.present;
+        // SAFETY: all surfaces belong to this device, have matching dimensions,
+        // formats and sample count, and are released together before a real Reset.
+        unsafe {
+            let mut chain = None;
+            self.inner
+                .device
+                .CreateAdditionalSwapChain(&mut params, &mut chain)?;
+            let chain = chain.ok_or("D3D9 additional swapchain missing")?;
+            let mut depth = None;
+            self.inner.device.CreateDepthStencilSurface(
+                params.BackBufferWidth,
+                params.BackBufferHeight,
+                params.AutoDepthStencilFormat,
+                D3DMULTISAMPLE_NONE,
+                0,
+                true,
+                &mut depth,
+                ptr::null_mut(),
+            )?;
+            let depth = depth.ok_or("D3D9 window depth surface missing")?;
+            let target = chain.GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO)?;
+            self.inner.device.SetRenderTarget(0, &target)?;
+            self.inner.device.SetDepthStencilSurface(&depth)?;
+            *self.inner.presentation.borrow_mut() = Some(Presentation {
+                chain,
+                _depth: depth,
+                width: params.BackBufferWidth,
+                height: params.BackBufferHeight,
+                interval: params.PresentationInterval,
+            });
+        }
+        self.surface_pending = false;
+        log::info!(
+            "D3D9 presentation {}x{} recreated; terrain buffers preserved",
+            params.BackBufferWidth,
+            params.BackBufferHeight
+        );
+        Ok(())
     }
     pub fn begin(&mut self, color: [f32; 3]) -> Result<bool> {
         if self.present.BackBufferWidth == 0 || self.present.BackBufferHeight == 0 {
@@ -514,6 +640,7 @@ impl Device {
             Ok(()) => {}
         }
         if self.reset_pending {
+            self.detach_presentation();
             // Textures/indices are MANAGED. Terrain buffers have a CPU cache in the
             // caller; invalidate all DEFAULT handles, including reused-device owners.
             for handle in self.inner.default_meshes.borrow_mut().drain(..) {
@@ -532,7 +659,11 @@ impl Device {
                 self.inner.device.SetIndices(None)?;
                 self.inner.device.SetTexture(0, None)?;
                 self.inner.device.SetTexture(1, None)?;
-                match self.inner.device.Reset(&mut self.present) {
+                let mut primary = self.present;
+                primary.BackBufferWidth = 1;
+                primary.BackBufferHeight = 1;
+                primary.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE as u32;
+                match self.inner.device.Reset(&mut primary) {
                     Err(e) if e.code() == D3DERR_DEVICELOST => {
                         self.lost = true;
                         return Ok(false);
@@ -549,6 +680,21 @@ impl Device {
             self.reset_pending = false;
             self.lost = false;
             self.resets += 1;
+            self.surface_pending = true;
+        }
+        let matches = self.inner.presentation.borrow().as_ref().is_some_and(|p| {
+            p.width == self.present.BackBufferWidth
+                && p.height == self.present.BackBufferHeight
+                && p.interval == self.present.PresentationInterval
+        });
+        if self.surface_pending || !matches {
+            if let Err(error) = self.create_presentation() {
+                if is_device_lost(error.as_ref()) {
+                    self.lost = true;
+                    return Ok(false);
+                }
+                return Err(error);
+            }
         }
         self.using_dynamic_indices = false;
         self.mesh_uploads = 0;
@@ -559,6 +705,8 @@ impl Device {
         self.cached_state = None;
         self.state_cache = StateCache::default();
         self.cached_transform = None;
+        self.shader_active = false;
+        self.fog_constants = None;
         // SAFETY: state values are D3D9 constants; begin/finish pair on this thread.
         unsafe {
             self.inner.device.SetVertexShader(None)?;
@@ -613,8 +761,12 @@ impl Device {
         // SAFETY: null rectangles present the complete windowed swapchain.
         match unsafe {
             self.inner
-                .device
-                .Present(ptr::null(), ptr::null(), HWND::default(), ptr::null())
+                .presentation
+                .borrow()
+                .as_ref()
+                .ok_or("D3D9 presentation surface missing")?
+                .chain
+                .Present(ptr::null(), ptr::null(), HWND::default(), ptr::null(), 0)
         } {
             Err(e) if e.code() == D3DERR_DEVICELOST || e.code() == D3DERR_DEVICENOTRESET => {
                 self.lost = true;
@@ -666,6 +818,13 @@ impl Device {
                     D3DTS_VIEW,
                     &std::mem::transmute::<[f32; 16], Matrix4x4>(view),
                 )?;
+                if self.fog_shader.is_some() {
+                    let inverse = glam::Mat4::from_cols_array(&view).inverse().to_cols_array();
+                    self.inner.device.SetTransform(
+                        D3DTS_TEXTURE2,
+                        &std::mem::transmute::<[f32; 16], Matrix4x4>(inverse),
+                    )?;
+                }
             }
             if previous.is_none_or(|p| p[2] != projection) {
                 self.inner.device.SetTransform(
@@ -896,10 +1055,8 @@ impl Device {
             }
             ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
             indices.Unlock()?;
-            if !self.using_dynamic_indices {
-                self.inner.device.SetIndices(indices)?;
-                self.using_dynamic_indices = true;
-            }
+            self.inner.device.SetIndices(indices)?;
+            self.using_dynamic_indices = true;
             self.inner
                 .device
                 .SetStreamSource(0, raw, 0, size_of::<Vertex>() as u32)?;
@@ -914,6 +1071,68 @@ impl Device {
         }
         self.uploads += bytes.len() as u64;
         self.index_uploads += bytes.len() as u64;
+        self.draws += 1;
+        Ok(())
+    }
+    pub fn cache_indices(&mut self, batch: &IndexBatch) -> Result<Indices> {
+        if batch.indices().is_empty()
+            || batch.indices().len() / 3 > self.caps.max_primitive_count as usize
+        {
+            return Err("D3D9 cached index batch exceeds caps".into());
+        }
+        let bytes = bytemuck::cast_slice::<_, u8>(batch.indices());
+        let mut raw = None;
+        // SAFETY: complete validated quad indices and exact lock/copy sizes.
+        unsafe {
+            self.inner.device.CreateIndexBuffer(
+                bytes.len() as u32,
+                D3DUSAGE_WRITEONLY as u32,
+                D3DFMT_INDEX16,
+                D3DPOOL_MANAGED,
+                &mut raw,
+                ptr::null_mut(),
+            )?;
+            let raw = raw.ok_or("D3D9 cached index buffer missing")?;
+            let mut memory = ptr::null_mut();
+            raw.Lock(0, bytes.len() as u32, &mut memory, 0)?;
+            ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
+            raw.Unlock()?;
+            self.uploads += bytes.len() as u64;
+            self.index_uploads += bytes.len() as u64;
+            Ok(Indices {
+                raw,
+                owner: self.inner.clone(),
+                start: batch.start_vertex(),
+                end: batch.end_vertex(),
+                count: batch.indices().len() as u32,
+            })
+        }
+    }
+    pub fn draw_cached(&mut self, mesh: &Mesh, indices: &Indices) -> Result<()> {
+        if !Rc::ptr_eq(&mesh.owner, &self.inner)
+            || !Rc::ptr_eq(&indices.owner, &self.inner)
+            || indices.end > mesh.filled
+        {
+            return Err("D3D9 cached draw bounds/device mismatch".into());
+        }
+        let raw = mesh.raw.borrow();
+        let raw = raw.as_ref().ok_or("D3D9 arena requires re-upload")?;
+        // SAFETY: index/vertex ranges were validated against this device and mesh.
+        unsafe {
+            self.inner.device.SetIndices(&indices.raw)?;
+            self.inner
+                .device
+                .SetStreamSource(0, raw, 0, size_of::<Vertex>() as u32)?;
+            self.inner.device.DrawIndexedPrimitive(
+                D3DPT_TRIANGLELIST,
+                0,
+                indices.start,
+                indices.end - indices.start,
+                0,
+                indices.count / 3,
+            )?;
+        }
+        self.using_dynamic_indices = true;
         self.draws += 1;
         Ok(())
     }
@@ -1016,8 +1235,45 @@ impl Device {
                     bottom: (y + h) as i32,
                 })?;
             }
-            cache.render(d, D3DRS_FOGENABLE, u32::from(state.fog.is_some()))?;
-            if let Some((color, start, end)) = state.fog {
+            let shader_fog = state.fog.is_some() && state.lightmap && self.fog_shader.is_some();
+            if shader_fog != self.shader_active {
+                d.SetPixelShader(if shader_fog {
+                    self.fog_shader.as_ref()
+                } else {
+                    None
+                })?;
+                self.shader_active = shader_fog;
+            }
+            if shader_fog {
+                cache.stage(
+                    d,
+                    2,
+                    D3DTSS_TEXCOORDINDEX,
+                    D3DTSS_TCI_CAMERASPACEPOSITION | 2,
+                )?;
+                cache.stage(d, 2, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT3.0 as u32)?;
+                if self.fog_constants != state.fog {
+                    let constants = state.fog.unwrap().constants();
+                    d.SetPixelShaderConstantF(0, constants.as_ptr().cast(), 3)?;
+                    self.fog_constants = state.fog;
+                }
+            } else if self.fog_shader.is_some() {
+                cache.stage(d, 2, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE.0 as u32)?;
+                cache.stage(d, 2, D3DTSS_TEXCOORDINDEX, 2)?;
+            }
+            cache.render(
+                d,
+                D3DRS_FOGENABLE,
+                u32::from(state.fog.is_some() && !shader_fog),
+            )?;
+            if let Some(fog) = state.fog
+                && !shader_fog
+            {
+                let color = fog.color;
+                let (start, end) = crate::fog_interval(
+                    (fog.environment[0], fog.environment[1]),
+                    (fog.distance[0], fog.distance[1]),
+                );
                 cache.render(d, D3DRS_FOGCOLOR, argb([color[0], color[1], color[2], 1.0]))?;
                 cache.render(d, D3DRS_FOGTABLEMODE, D3DFOG_NONE.0 as u32)?;
                 cache.render(d, D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR.0 as u32)?;
@@ -1042,7 +1298,14 @@ impl Device {
                     sampler,
                     D3DSAMP_MIPFILTER,
                     if state.mipmaps && sampler == 0 {
-                        D3DTEXF_POINT.0
+                        if state.linear
+                            && self.caps.raw.TextureFilterCaps & D3DPTFILTERCAPS_MIPFLINEAR as u32
+                                != 0
+                        {
+                            D3DTEXF_LINEAR.0
+                        } else {
+                            D3DTEXF_POINT.0
+                        }
                     } else {
                         D3DTEXF_NONE.0
                     } as u32,
@@ -1205,10 +1468,7 @@ impl Device {
     pub fn screenshot(&self) -> Result<(u32, u32, Vec<u8>)> {
         // SAFETY: temporary backbuffer and SYSTEMMEM surfaces are released before returning/Reset.
         unsafe {
-            let source = self
-                .inner
-                .device
-                .GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO)?;
+            let source = self.inner.device.GetRenderTarget(0)?;
             let mut desc = D3DSURFACE_DESC::default();
             source.GetDesc(&mut desc)?;
             if desc.Format != D3DFMT_X8R8G8B8 && desc.Format != D3DFMT_A8R8G8B8 {

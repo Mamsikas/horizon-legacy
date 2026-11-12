@@ -3,13 +3,13 @@ Horizon Direct3D9 preview - Windows 7 SP1 x64
 This preview requires the GPU manufacturer's Windows 7 driver, prepared legal
 Horizon resources matching Minecraft 26.3, and an Atom N455-compatible x64 CPU
 (SSE3/SSSE3). The owner reports the HAL smoke test works on GMA3150. Gameplay on that GPU and
-on Radeon HD4570 is not verified. The owner reports the second RTX3050 build
-reached 200+ FPS at 8 chunks, about 50 at 16, with severe resize/cache stalls.
+on Radeon HD4570 is not verified. The owner reports the preceding RTX3050 build
+reached about 100 FPS at 16 chunks, with first-view/resize cache stalls.
 This update needs another RTX3050 retest before moving back to target hardware.
 No Java, Vulkan, OpenGL, D3D11/D3D12 or shader compiler is used by the DX9 renderer.
 
 1. Extract the entire ZIP. Run d3d9-smoke.exe first. It must show overlapping
-   textured quads and a translucent strip. Resize, minimize, restore and Alt+Tab.
+   textured quads, a green/blue fog band and a translucent strip. Resize, minimize, restore and Alt+Tab.
    Send d3d9-smoke.log if it fails. This program is a device test, not the game.
 2. In the existing legacy launcher select horizon-client.exe as the native client.
    Use your existing prepared resources. DX9 is the default for this executable.
@@ -31,10 +31,11 @@ The five-second log reports compressed CPU geometry and its decoded size, static
 DEFAULT GPU arenas, stream/index/mesh upload bytes, interval average/peak CPU time
 and stages of the worst frame, texture bytes and process memory [private resident estimate, resident, total RAM].
 Remove the old HORIZON_D3D9_MESH_MIB / HORIZON_D3D9_TEXTURE_MIB overrides to test
-automatic targets. For the RTX3050 retest use the same world/settings as before. Let chunks settle,
+automatic targets. For the RTX3050 retest use the same world/settings as before. Let chunks and compaction settle,
 then send latest.log, a screenshot of F3, and these optional local reports from a
 second terminal while the world runs. IMPORTANT: start the game with --control
-(add it to the launcher's extra game arguments, or use the direct command above).
+(pass it to horizon-client.exe, as in the direct command above). If your launcher
+exposes game arguments, append --control there; the minimal Win7 launcher may not.
 Without --control the tool only returns a connection error, not a memory/FPS report.
 The local control endpoint is not silently enabled by this build:
 
@@ -46,15 +47,23 @@ If the launcher uses a custom HORIZON_HOME, set that same home in this terminal.
 
 Memory targets now manage caching, rather than aborting at 128 MiB. Native-sized
 sprite pages and small isolated animation/GUI pages avoid the old giant atlas.
-CPU geometry is losslessly compressed. Immutable regional DEFAULT arenas share
-vertices across sections, and hardware vertex processing batches solid terrain by
-texture using visible quad indices. Software vertex processing keeps narrow direct
+CPU geometry uses lossless delta/byte-plane compression. Immutable regional DEFAULT arenas share
+vertices across sections. The existing CPU portal/column culling rejects hidden
+sections. Hardware vertex processing batches solid terrain by texture using retained
+visibility indices; unchanged ranges do not upload each frame. One bounded CPU
+worker compacts small VBs into larger pages, keeping old data until upload succeeds. Software vertex processing keeps narrow direct
 draw ranges to avoid transforming sparse arena spans. Offscreen GPU buffers are
 evicted first. Automatic cache targets now scale beyond 128 MiB when the adapter
 and system RAM allow it. Dynamic vertex/index streams append with NOOVERWRITE and
 DISCARD only at wrap; uncached geometry remains drawable. GUI batching only reorders
-screen bounds that cannot overlap. Fog keeps its atmospheric/distance intervals
-intact; the stricter complete interval is used by the basic fixed-function path. User
+screen bounds that cannot overlap. Resize now replaces only the presentation/depth
+surfaces; look for "terrain buffers preserved", without a mesh-cache collapse. A
+real lost-device Reset still rebuilds DEFAULT data. Embedded ps_2_0 fog combines the
+spherical environmental and cylindrical distance curves, with no vertex shader or
+compiler requirement. The log names any fixed-function approximation fallback.
+The sky has a horizon gradient. Shared mip generation preserves fast-leaf colours.
+Texture Filtering=None keeps nearest mip transitions; the existing nonzero filtering
+choices use linear/trilinear filtering when supported (RGSS/anisotropy are approximated). User
 render distance and texture quality are not rewritten. The Video Settings API
 row explicitly shows Direct3D 9; this Win7 executable offers DX9 only.
 
@@ -66,6 +75,6 @@ HORIZON_D3D9_TEXTURE_MIB=128             (advisory texture-residency target)
 
 The preview draws CPU-meshed terrain/models, lightmap, transparency, entities,
 hand/items, HUD/fonts/chat/inventory, weather, border and screen overlays.
-Limitations: SDR, basic sky/fog/End portal, no fancy clouds/star field, enchantment
+Limitations: SDR, simplified End portal, no fancy clouds/star field, enchantment
 foil, shader packs, PBR, post effects, LOD, GPU occlusion/skinning, frame generation
 or split-screen compositor. Modern client builds retain their original renderer.

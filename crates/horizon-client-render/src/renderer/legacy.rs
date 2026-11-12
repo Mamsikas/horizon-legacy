@@ -1,9 +1,10 @@
-//! Fixed-function DX9 consumes the same Frame/SectionMesh/HudBatch as gfx.
+//! DX9 fixed-function vertices consume the same Frame/SectionMesh/HudBatch as gfx.
 //! wgpu types below are CPU metadata only; this module never creates a wgpu device.
 use crate::{
     Result,
     block_entity_render::{StaticCacheFrameStats, StaticSectionRevision},
     chunk::ColumnLayout,
+    fast_hash::{FxHashMap as HashMap, FxHashSet},
     gfx::{self, *},
     hud::Rect,
     mesher::{SectionMesh, TerrainVertex, Vertex},
@@ -12,7 +13,7 @@ use crate::{
 use glam::{DVec3, Mat4, Vec3};
 use horizon_client_d3d9 as dx;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::BTreeMap,
     ops::Range,
     sync::Arc,
     time::{Duration, Instant},
@@ -66,6 +67,9 @@ pub struct Renderer {
     pub capture: Option<capture::Request>,
     pub capture_result: Option<std::result::Result<serde_json::Value, String>>,
     sections: HashMap<SectionKey, Section>,
+    spatial: gfx::resident::Resident<()>,
+    occlusion: gfx::occlusion::Occlusion,
+    visible: Vec<gfx::resident::Visible>,
     layout: ColumnLayout,
     revision: u64,
     mesh_bytes: u64,
@@ -76,9 +80,13 @@ pub struct Renderer {
     decoded_mesh_bytes: u64,
     arenas: HashMap<u64, Arena>,
     next_arena: u64,
+    compactor: Option<mesh::Compactor>,
+    compact_scan: u64,
+    compactions: u64,
     seen_resets: u64,
     decode_scratch: Vec<dx::Vertex>,
-    solid_batches: BTreeMap<(usize, bool, u64), dx::IndexBatch>,
+    solid_batches: BTreeMap<(usize, bool, u64), mesh::DrawBatch>,
+    index_scratch: dx::IndexBatch,
     upload_cpu: Duration,
     timings: Vec<(&'static str, f32)>,
     texture_target_warned: bool,
@@ -164,7 +172,7 @@ impl Renderer {
         crate::mesher::packed::pack_quads(false);
         crate::mesher::group_parts(false);
         log::info!(
-            "Direct3D9 legacy: fixed-function HAL; no shader compiler, hardware VS requirement, wgpu device or GPU compute. mesh_budget={} texture_budget={}",
+            "Direct3D9 legacy: fixed-function HAL vertices, optional ps_2_0 fog; no shader compiler, hardware VS requirement, wgpu device or GPU compute. mesh_budget={} texture_budget={}",
             mesh_budget,
             texture_budget
         );
@@ -193,8 +201,8 @@ impl Renderer {
             lightmap,
             panorama: None,
             panorama_faces,
-            pictures: HashMap::new(),
-            lightning_cache: HashMap::new(),
+            pictures: HashMap::default(),
+            lightning_cache: HashMap::default(),
             white,
             forcefield,
             hud: Hud {
@@ -236,7 +244,13 @@ impl Renderer {
             animated_textures: true,
             capture: None,
             capture_result: None,
-            sections: HashMap::new(),
+            sections: HashMap::default(),
+            spatial: gfx::resident::Resident::default(),
+            occlusion: gfx::occlusion::Occlusion::new(
+                ColumnLayout::default().min_y(),
+                ColumnLayout::default().sections() as i32,
+            ),
+            visible: Vec::new(),
             layout: ColumnLayout::default(),
             revision: 0,
             mesh_bytes: 0,
@@ -245,11 +259,15 @@ impl Renderer {
             pending_error: None,
             gpu_mesh_bytes: 0,
             decoded_mesh_bytes: 0,
-            arenas: HashMap::new(),
+            arenas: HashMap::default(),
             next_arena: 0,
+            compactor: mesh::Compactor::new(),
+            compact_scan: 0,
+            compactions: 0,
             seen_resets: 0,
             decode_scratch: Vec::new(),
             solid_batches: BTreeMap::new(),
+            index_scratch: dx::IndexBatch::default(),
             upload_cpu: Duration::ZERO,
             timings: Vec::new(),
             texture_target_warned: false,

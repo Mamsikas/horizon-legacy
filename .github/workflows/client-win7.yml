@@ -42,6 +42,10 @@ jobs:
           CARGO_HOME: /home/runner/.cargo
           RUSTUP_HOME: /home/runner/.rustup
         run: tools/build_win7_client.sh
+      - name: Check CPU resource plans and embedded SM2 fog
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/work/win7-client/target
+        run: cargo +nightly-2026-11-11 test --locked -p horizon-client-d3d9 --lib
       - uses: actions/upload-artifact@v4
         with:
           name: horizon-client-win7-x64

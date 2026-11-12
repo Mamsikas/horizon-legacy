@@ -26,6 +26,13 @@ impl Renderer {
     pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
         vec![
             ("D3D9 terrain arenas (DEFAULT cache)", self.gpu_mesh_bytes),
+            (
+                "D3D9 cached visibility indices (managed)",
+                self.solid_batches
+                    .values()
+                    .map(mesh::DrawBatch::gpu_bytes)
+                    .sum(),
+            ),
             ("D3D9 sprite pages (managed)", self.sprites.layout.bytes()),
             ("D3D9 GUI pages (managed)", self.hud.atlas.bytes()),
         ]
@@ -38,12 +45,15 @@ impl Renderer {
             (
                 "D3D9 section metadata",
                 self.sections.capacity() * size_of::<Section>()
+                    + self.spatial.heap_bytes()
                     + self
                         .sections
                         .values()
                         .map(|s| {
-                            (s.solid.capacity() + s.translucent.capacity())
-                                * size_of::<mesh::Packet>()
+                            size_of::<dx::MeshData>()
+                                + 2 * size_of::<usize>()
+                                + (s.solid.capacity() + s.translucent.capacity())
+                                    * size_of::<mesh::Packet>()
                                 + s.gpu.capacity() * size_of::<mesh::GpuSlice>()
                         })
                         .sum::<usize>(),
@@ -60,8 +70,9 @@ impl Renderer {
                     + self
                         .solid_batches
                         .values()
-                        .map(dx::IndexBatch::bytes)
-                        .sum::<usize>(),
+                        .map(mesh::DrawBatch::bytes)
+                        .sum::<usize>()
+                    + self.index_scratch.bytes(),
             ),
         ]
     }
@@ -159,13 +170,15 @@ impl Renderer {
     pub fn pack_entity_shadows(&self) -> bool {
         true
     }
-    pub fn start_occlusion(&mut self, camera: DVec3, distance: f32) {}
+    pub fn start_occlusion(&mut self, camera: DVec3, distance: f32) {
+        self.occlusion.update(camera, (distance / 16.0) as i32 + 2);
+    }
     pub fn section_occlusion_visible(
         &self,
         key: SectionKey,
         camera_section: SectionKey,
     ) -> Option<bool> {
-        None
+        self.occlusion.visible_for_camera(key, camera_section)
     }
     pub fn hold_world(&mut self, ask: &WorldHold) {
         self.hold = ask.clone();

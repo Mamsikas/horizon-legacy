@@ -2,7 +2,7 @@
 #[cfg(windows)]
 mod windows_smoke {
     use horizon_client_d3d9::{
-        Blend, Device, DrawState, IndexBatch, Mesh, Result, Texture, Vertex,
+        Blend, Device, DrawState, Fog, IndexBatch, Indices, Mesh, Result, Texture, Vertex,
     };
     use std::{
         fs::File,
@@ -37,7 +37,9 @@ mod windows_smoke {
         window: Option<Arc<Window>>,
         device: Option<Device>,
         texture: Option<Texture>,
+        white: Option<Texture>,
         mesh: Option<Mesh>,
+        indices: Option<Indices>,
     }
     impl App {
         fn draw(&mut self) -> Result<()> {
@@ -84,9 +86,31 @@ mod windows_smoke {
                 let mesh = device.mesh(&vertices)?;
                 self.mesh = Some(mesh);
             }
-            let mut indices = IndexBatch::default();
-            indices.append(0, 8)?;
-            device.draw_batch(self.mesh.as_ref().unwrap(), &indices)?;
+            if self.indices.is_none() {
+                let mut indices = IndexBatch::default();
+                indices.append(0, 8)?;
+                self.indices = Some(device.cache_indices(&indices)?);
+            }
+            device.draw_cached(self.mesh.as_ref().unwrap(), self.indices.as_ref().unwrap())?;
+            let white = self.white.as_ref().unwrap();
+            device.state(
+                DrawState {
+                    fog: Some(Fog {
+                        color: [0.2, 0.4, 0.9, 1.0],
+                        environment: [0.2, 2.0],
+                        distance: [0.6, 1.2],
+                    }),
+                    cull: false,
+                    depth_test: false,
+                    depth_write: false,
+                    alpha_test: false,
+                    mipmaps: false,
+                    ..Default::default()
+                },
+                white,
+                Some(white),
+            )?;
+            device.draw_transient(&quad(-0.95, -0.2, 0.95, -0.45, 0.8, 0xff40ff40))?;
             device.state(
                 DrawState {
                     blend: Blend::Alpha,
@@ -126,6 +150,7 @@ mod windows_smoke {
                     ],
                 )?;
                 self.window = Some(window);
+                self.white = Some(device.texture(1, 1, 1, &[255; 4])?);
                 self.device = Some(device);
                 self.texture = Some(texture);
                 Ok(())

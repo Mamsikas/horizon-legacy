@@ -1,0 +1,180 @@
+//! Consolidate small immutable VBs without decoding them on the render thread.
+//! One bounded CPU job/result, no GPU objects or gameplay state cross the thread.
+use super::*;
+use std::sync::mpsc::{self, Receiver, SyncSender};
+type Snapshot = (SectionKey, u64, Arc<dx::MeshData>);
+struct Job {
+    region: RegionKey,
+    sections: Vec<Snapshot>,
+}
+struct Prepared {
+    region: RegionKey,
+    sections: Vec<(SectionKey, u64, Range<u32>)>,
+    vertices: Vec<dx::Vertex>,
+}
+pub(in super::super) struct Compactor {
+    jobs: SyncSender<Job>,
+    done: Receiver<std::result::Result<Prepared, String>>,
+    busy: bool,
+}
+impl Compactor {
+    pub(in super::super) fn new() -> Option<Self> {
+        let (jobs, input) = mpsc::sync_channel::<Job>(1);
+        let (output, done) = mpsc::sync_channel(1);
+        std::thread::Builder::new()
+            .name("d3d9 compaction".into())
+            .spawn(move || {
+                while let Ok(job) = input.recv() {
+                    let prepare = || -> std::result::Result<Prepared, String> {
+                        let mut prepared = Prepared {
+                            region: job.region,
+                            sections: Vec::new(),
+                            vertices: Vec::new(),
+                        };
+                        let mut decoded = Vec::new();
+                        for (key, revision, data) in job.sections {
+                            data.decode(&mut decoded)?;
+                            let first = prepared.vertices.len() as u32;
+                            prepared.vertices.extend_from_slice(&decoded);
+                            prepared.sections.push((
+                                key,
+                                revision,
+                                first..prepared.vertices.len() as u32,
+                            ));
+                        }
+                        Ok(prepared)
+                    };
+                    if output.send(prepare()).is_err() {
+                        break;
+                    }
+                }
+            })
+            .ok()?;
+        Some(Self {
+            jobs,
+            done,
+            busy: false,
+        })
+    }
+}
+impl Renderer {
+    pub(in super::super) fn collect_compaction(&mut self) -> Result<()> {
+        let Some(worker) = &mut self.compactor else {
+            return Ok(());
+        };
+        let Ok(result) = worker.done.try_recv() else {
+            return Ok(());
+        };
+        worker.busy = false;
+        let prepared = match result {
+            Ok(value) => value,
+            Err(error) => {
+                log::warn!("D3D9 compaction decode: {error}");
+                return Ok(());
+            }
+        };
+        if prepared.sections.iter().any(|(key, revision, _)| {
+            self.sections
+                .get(key)
+                .is_none_or(|s| s.revision != *revision || s.gpu.is_empty())
+        }) {
+            return Ok(());
+        }
+        // Allocate first: a failed optimization must keep the old scene drawable.
+        let mesh = match self.device.mesh(&prepared.vertices) {
+            Ok(mesh) => mesh,
+            Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
+            Err(error) => {
+                self.compact_scan = self.frames + 120;
+                log::warn!("D3D9 compaction allocation: {error}; keeping old buffers");
+                return Ok(());
+            }
+        };
+        self.next_arena += 1;
+        let id = self.next_arena;
+        let mut keys = Vec::new();
+        for (key, _, source) in prepared.sections {
+            self.release_gpu_section(key);
+            self.sections.get_mut(&key).unwrap().gpu.push(GpuSlice {
+                arena: id,
+                first: source.start,
+                source: 0..source.end - source.start,
+            });
+            keys.push(key);
+        }
+        self.gpu_mesh_bytes += mesh.bytes();
+        self.arenas.insert(
+            id,
+            Arena {
+                mesh,
+                region: prepared.region,
+                live: prepared.vertices.len() as u32,
+                last_used: self.frames + 1,
+                sections: keys,
+            },
+        );
+        self.compactions += 1;
+        Ok(())
+    }
+    pub(in super::super) fn schedule_compaction(&mut self) {
+        if self.frames < self.compact_scan + 8 || self.compactor.as_ref().is_none_or(|w| w.busy) {
+            return;
+        }
+        self.compact_scan = self.frames;
+        let limit = self.device.max_vertices(); // at most 2 MiB of prepared vertices
+        let mut regions = HashMap::<RegionKey, (usize, usize)>::default();
+        for arena in self.arenas.values() {
+            let entry = regions.entry(arena.region).or_default();
+            entry.0 += 1;
+            entry.1 += arena.live as usize;
+        }
+        let Some((region, _)) = regions
+            .into_iter()
+            .filter(|(_, (pages, live))| *pages > live.div_ceil(limit) * 2 + 1)
+            .max_by_key(|(_, (pages, live))| pages - live.div_ceil(limit))
+        else {
+            return;
+        };
+        let mut pages: Vec<_> = self
+            .arenas
+            .iter()
+            .filter(|(_, a)| a.region == region)
+            .collect();
+        pages.sort_unstable_by_key(|(_, a)| a.live);
+        let mut chosen = FxHashSet::default();
+        let mut vertices = 0;
+        let mut covered = 0;
+        for (&id, arena) in pages {
+            let extra: Vec<_> = arena
+                .sections
+                .iter()
+                .copied()
+                .filter(|key| {
+                    !chosen.contains(key)
+                        && self
+                            .sections
+                            .get(key)
+                            .is_some_and(|s| s.gpu.iter().any(|g| g.arena == id))
+                })
+                .collect();
+            let count: usize = extra.iter().map(|k| self.sections[k].vertices.len()).sum();
+            if vertices + count <= limit {
+                vertices += count;
+                chosen.extend(extra);
+                covered += 1;
+            }
+        }
+        if covered < 3 || vertices == 0 {
+            return;
+        }
+        let sections = chosen
+            .into_iter()
+            .map(|key| {
+                let section = &self.sections[&key];
+                (key, section.revision, section.vertices.clone())
+            })
+            .collect();
+        let worker = self.compactor.as_mut().unwrap();
+        worker.busy = worker.jobs.try_send(Job { region, sections }).is_ok();
+    }
+}

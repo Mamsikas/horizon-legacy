@@ -4,6 +4,7 @@ pub(super) struct Sprites {
     pub layout: dx::AtlasSet,
     pub pages: Vec<dx::Texture>,
     pub animations: Vec<(SpriteAnimation, usize)>,
+    mips: Vec<crate::mipmap::Settings>,
 }
 impl Sprites {
     pub fn new(
@@ -38,17 +39,27 @@ impl Sprites {
                 }
             }
             let per_page = plan.columns * plan.columns;
+            // Use the same native-size, linear-light, alpha-coverage mip chains
+            // as the main renderer, including solidified RGB behind cutout alpha.
+            let chains: Vec<_> = sources
+                .iter()
+                .map(|&layer| {
+                    let start = layer * size as usize * size as usize * 4;
+                    sprite_mips(
+                        &pixels[start..start + size as usize * size as usize * 4],
+                        settings.get(layer).copied().unwrap_or_default(),
+                    )
+                })
+                .collect();
             for page in 0..plan.pages {
                 let mut texture = None;
                 for level in 0..plan.levels {
                     let side = (plan.side >> level).max(1);
                     let mut out = vec![0; side as usize * side as usize * 4];
                     for local in page * per_page..((page + 1) * per_page).min(plan.layers) {
-                        let start = sources[local as usize] * size as usize * size as usize * 4;
-                        let tile = plan.tile(
-                            level,
-                            &pixels[start..start + size as usize * size as usize * 4],
-                        )?;
+                        let chain = &chains[local as usize];
+                        let mip = &chain[chain.len() - plan.levels as usize + level as usize];
+                        let tile = plan.tile(level, bytemuck::cast_slice(&mip.pixels))?;
                         let (_, x, y) = plan.placement(local)?;
                         let cell = (plan.cell >> level).max(1);
                         blit(&mut out, side, x >> level, y >> level, cell, cell, &tile);
@@ -79,6 +90,7 @@ impl Sprites {
         Ok(Self {
             layout,
             pages,
+            mips: settings.to_vec(),
             animations: animations
                 .iter()
                 .cloned()
@@ -96,9 +108,17 @@ impl Sprites {
             let plan = &self.layout.layouts[group];
             let (page, x, y) = plan.placement(local)?;
             let page = self.layout.offsets[group] + page;
+            let chain = sprite_mips(
+                animation.pixels(frame),
+                self.mips
+                    .get(animation.layer as usize)
+                    .copied()
+                    .unwrap_or_default(),
+            );
             for level in 0..plan.levels {
                 let cell = (plan.cell >> level).max(1);
-                let pixels = plan.tile(level, animation.pixels(frame))?;
+                let mip = &chain[chain.len() - plan.levels as usize + level as usize];
+                let pixels = plan.tile(level, bytemuck::cast_slice(&mip.pixels))?;
                 device.patch(
                     &self.pages[page],
                     level,
@@ -169,6 +189,21 @@ impl Sprites {
         }
         Ok(())
     }
+}
+fn sprite_mips(pixels: &[u8], settings: crate::mipmap::Settings) -> Vec<crate::mipmap::Image> {
+    let size = (pixels.len() / 4).isqrt() as u32;
+    crate::mipmap::generate(
+        crate::mipmap::Image {
+            width: size,
+            height: size,
+            pixels: pixels
+                .chunks_exact(4)
+                .map(|p| [p[0], p[1], p[2], p[3]])
+                .collect(),
+        },
+        size.ilog2(),
+        settings,
+    )
 }
 
 /// The existing GUI atlas may exceed the device's dimensions. Keep its coordinates

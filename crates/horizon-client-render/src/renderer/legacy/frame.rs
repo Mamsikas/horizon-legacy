@@ -150,8 +150,6 @@ impl Renderer {
         self.timings.clear();
         let clear = if frame.end_sky {
             [0.0; 3]
-        } else if frame.skybox && !frame.sky_blocked {
-            frame.sky.sky_color
         } else {
             frame.fog.map_or(frame.sky.fog_color, |f| {
                 [f.color[0], f.color[1], f.color[2]]
@@ -211,7 +209,7 @@ impl Renderer {
         }
         if self.last_log.elapsed() >= Duration::from_secs(5) {
             log::info!(
-                "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_decoded_bytes={} mesh_gpu_bytes={} arenas={} texture_bytes={}",
+                "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_decoded_bytes={} mesh_gpu_bytes={} arenas={} texture_bytes={} compactions={}",
                 self.frames,
                 self.last_encode.as_secs_f64() * 1000.0,
                 self.last_wait.as_secs_f64() * 1000.0,
@@ -224,7 +222,8 @@ impl Renderer {
                 self.decoded_mesh_bytes,
                 self.gpu_mesh_bytes,
                 self.arenas.len(),
-                self.texture_bytes()
+                self.texture_bytes(),
+                self.compactions
             );
             log::info!(
                 "D3D9 stages_ms={:?} section_conversion_ms={:.3} process_memory_bytes={:?}",
@@ -317,66 +316,61 @@ impl Renderer {
             self.draw_panorama(frame)?;
         } else {
             self.panorama = None;
+            self.draw_sky(frame)?;
+            self.device.transform(
+                Mat4::IDENTITY.to_cols_array(),
+                view.view.to_cols_array(),
+                projection.to_cols_array(),
+            )?;
             self.draw_end_sky(frame)?;
             self.draw_entities(frame, frame.celestial, None, 2)?;
-            let fog = frame
-                .fog
-                .map(|f| {
-                    (
-                        [f.color[0], f.color[1], f.color[2]],
-                        dx::fog_interval(
-                            (f.environmental_start, f.environmental_end),
-                            (f.render_distance_start, f.render_distance_end),
-                        )
-                        .0,
-                        dx::fog_interval(
-                            (f.environmental_start, f.environmental_end),
-                            (f.render_distance_start, f.render_distance_end),
-                        )
-                        .1,
-                    )
-                })
-                .or_else(|| {
-                    frame
-                        .environment_fog
-                        .map(|(start, end)| (frame.sky.fog_color, start, end))
-                })
-                .or(Some((
-                    frame.sky.fog_color,
-                    frame.distance * 0.75,
-                    frame.distance,
-                )));
+            let fog = Some(
+                frame
+                    .fog
+                    .map(|f| dx::Fog {
+                        color: f.color,
+                        environment: [f.environmental_start, f.environmental_end],
+                        distance: [f.render_distance_start, f.render_distance_end],
+                    })
+                    .unwrap_or_else(|| {
+                        let (start, end) = frame.environment_fog.unwrap_or((0.0, 1.0e9));
+                        dx::Fog {
+                            color: [
+                                frame.sky.fog_color[0],
+                                frame.sky.fog_color[1],
+                                frame.sky.fog_color[2],
+                                1.0,
+                            ],
+                            environment: [start, end],
+                            distance: [frame.distance * 0.75, frame.distance],
+                        }
+                    }),
+            );
             self.stamp("sky", &mut clock);
-            let mut visible: Vec<(SectionKey, Vec3, f32)> = self
-                .sections
-                .iter()
-                .filter_map(|(&key, section)| {
-                    if section.vertices.is_empty() {
-                        return None;
-                    }
-                    let origin = (DVec3::new(
-                        f64::from(key.0) * 16.0,
-                        f64::from(self.layout.min_y()) + f64::from(key.1) * 16.0,
-                        f64::from(key.2) * 16.0,
-                    ) - frame.camera)
-                        .as_vec3();
-                    let bounds = section.bounds.unwrap_or([Vec3::ZERO, Vec3::splat(16.0)]);
-                    let min = origin + bounds[0];
-                    let max = origin + bounds[1];
-                    let delta = Vec3::ZERO.max(min).min(max);
-                    (frustum.intersects(min, max)
-                        && delta.x.abs().max(delta.z.abs()) <= frame.distance)
-                        .then_some((key, origin, (origin + Vec3::splat(8.0)).length_squared()))
-                })
-                .collect();
-            visible.sort_unstable_by(|a, b| a.2.total_cmp(&b.2));
+            let mut visible = std::mem::take(&mut self.visible);
+            visible.clear();
+            if frame.cave_culling {
+                self.start_occlusion(frame.camera, frame.detail_distance);
+                self.prune_hidden(frame.camera);
+            }
+            self.spatial.walk(
+                frame.camera,
+                (frame.distance / 16.0).ceil() as i32,
+                &frustum,
+                |key| !frame.cave_culling || self.occlusion.contains(key),
+                |_, _| false,
+                false,
+                &mut visible,
+            );
             self.stamp("visibility", &mut clock);
             self.prepare_sections(&visible)?;
             self.stamp("terrain cache", &mut clock);
             self.drawn_sections = visible.len();
             let mut decoded = std::mem::take(&mut self.decode_scratch);
             let before = self.device.draws;
-            for (key, origin, _) in &visible {
+            for v in &visible {
+                let key = &v.key;
+                let origin = Vec3::from_array(v.origin);
                 let section = &self.sections[key];
                 if section.solid.is_empty() {
                     continue;
@@ -399,11 +393,9 @@ impl Renderer {
                 }
                 let mut runs = smallvec::SmallVec::<[Range<u32>; 7]>::new();
                 if self.sides {
-                    section
-                        .sides
-                        .visible((-*origin).to_array(), |first, count| {
-                            runs.push(first..first + count)
-                        });
+                    section.sides.visible((-origin).to_array(), |first, count| {
+                        runs.push(first..first + count)
+                    });
                 } else {
                     runs.push(0..u32::MAX);
                 }
@@ -441,10 +433,7 @@ impl Renderer {
                                 self.solid_batches
                                     .entry((packet.page, !packet.opaque, slice.arena))
                                     .or_default()
-                                    .append(
-                                        slice.first + first - slice.source.start,
-                                        end - first,
-                                    )?;
+                                    .append(slice.first + first - slice.source.start, end - first);
                             }
                         }
                     }
@@ -452,8 +441,8 @@ impl Renderer {
             }
             self.decode_scratch = decoded;
             self.stamp("terrain indices/cold draws", &mut clock);
-            for (&(page, cutout, id), batch) in &self.solid_batches {
-                if batch.indices().is_empty() {
+            for (&(page, cutout, id), batch) in &mut self.solid_batches {
+                if batch.next.is_empty() {
                     continue;
                 }
                 let arena = &self.arenas[&id];
@@ -478,7 +467,7 @@ impl Renderer {
                     &self.sprites.pages[page],
                     Some(&self.lightmap),
                 )?;
-                self.device.draw_batch(&arena.mesh, batch)?;
+                batch.draw(&mut self.device, &arena.mesh, &mut self.index_scratch)?;
             }
             self.section_draws = (self.device.draws - before) as usize;
             self.device.transform(
@@ -507,7 +496,8 @@ impl Renderer {
             }
             self.stamp("entities", &mut clock);
             let before_translucent = self.device.draws;
-            for (key, _, _) in visible.iter().rev() {
+            for v in visible.iter().rev() {
+                let key = &v.key;
                 if self.sections[key].translucent.is_empty() {
                     continue;
                 }
@@ -545,6 +535,7 @@ impl Renderer {
                 }
                 self.decode_scratch = decoded;
             }
+            self.visible = visible;
             self.stamp("terrain translucent", &mut clock);
             self.section_draws += (self.device.draws - before_translucent) as usize;
             self.section_draw_calls = self.section_draws;
@@ -593,7 +584,7 @@ impl Renderer {
         &mut self,
         frame: &Frame,
         input: &[Vertex],
-        fog: Option<([f32; 3], f32, f32)>,
+        fog: Option<dx::Fog>,
         phase: u8,
     ) -> Result<()> {
         let mut batches = Vec::new();
@@ -1045,7 +1036,7 @@ impl Renderer {
     }
 }
 impl Renderer {
-    fn draw_weather(&mut self, frame: &Frame, fog: Option<([f32; 3], f32, f32)>) -> Result<()> {
+    fn draw_weather(&mut self, frame: &Frame, fog: Option<dx::Fog>) -> Result<()> {
         let mut batches = Vec::new();
         let time = frame.weather_time.values;
         for quad in frame.weather.chunks_exact(4) {
@@ -1182,6 +1173,80 @@ impl Renderer {
 }
 
 impl Renderer {
+    fn draw_sky(&mut self, frame: &Frame) -> Result<()> {
+        if !frame.skybox || frame.end_sky || frame.sky_blocked {
+            return Ok(());
+        }
+        let fog = frame.fog.map_or(
+            [
+                frame.sky.fog_color[0],
+                frame.sky.fog_color[1],
+                frame.sky.fog_color[2],
+                1.0,
+            ],
+            |f| f.color,
+        );
+        let end = frame
+            .fog
+            .map_or(frame.distance.min(512.0), |f| f.sky_end)
+            .max(0.001);
+        let rim = (512.0f32 * 512.0 + 16.0 * 16.0).sqrt();
+        let stop = ((end - 16.0) / (rim - 16.0)).clamp(0.0, 1.0);
+        let color = |distance: f32| {
+            let f = (distance / end).clamp(0.0, 1.0) * fog[3];
+            let rgb = Vec3::from_array(frame.sky.sky_color)
+                .lerp(Vec3::from_array([fog[0], fog[1], fog[2]]), f);
+            dx::argb([rgb.x, rgb.y, rgb.z, 1.0])
+        };
+        let vertex = |s: f32, sector: usize| {
+            let angle = sector as f32 * std::f32::consts::FRAC_PI_4;
+            let (sin, cos) = angle.sin_cos();
+            dx::Vertex {
+                pos: [cos * 512.0 * s, 16.0, sin * 512.0 * s],
+                color: color(16.0 + s * (rim - 16.0)),
+                uv: [0.0; 2],
+                light: [0.0; 2],
+            }
+        };
+        // The same octagonal sky disc and piecewise fog ramp as terrain.wgsl.
+        // A ring at saturation keeps interpolated vertex colour from spreading
+        // distant fog across the entire sky. Only 24 triangles, no sky shader.
+        let mut vertices = Vec::with_capacity(72);
+        for i in 0..8 {
+            let center = vertex(0.0, 0);
+            let a = vertex(stop, i);
+            let b = vertex(stop, i + 1);
+            let c = vertex(1.0, i);
+            let d = vertex(1.0, i + 1);
+            vertices.extend_from_slice(&[center, a, b, a, c, d, a, d, b]);
+        }
+        let sky = View::screen(
+            frame.yaw,
+            frame.pitch,
+            frame.fov_degrees,
+            self.config.width as f32 / self.config.height.max(1) as f32,
+            1.0e6,
+        );
+        self.device.transform(
+            Mat4::IDENTITY.to_cols_array(),
+            sky.view.to_cols_array(),
+            sky.projection.to_cols_array(),
+        )?;
+        self.device.state(
+            DrawState {
+                depth_test: false,
+                depth_write: false,
+                alpha_test: false,
+                cull: false,
+                lightmap: false,
+                mipmaps: false,
+                ..Default::default()
+            },
+            &self.white,
+            None,
+        )?;
+        self.device.draw_triangles(&vertices)
+    }
     fn draw_end_sky(&mut self, frame: &Frame) -> Result<()> {
         let Some(rect) = frame
             .end_sky_sprite

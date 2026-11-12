@@ -1,4 +1,6 @@
 use super::*;
+mod compact;
+pub(super) use compact::Compactor;
 pub(super) struct Packet {
     pub page: usize,
     pub opaque: bool,
@@ -9,11 +11,10 @@ pub(super) struct Packet {
 pub(super) struct Section {
     pub solid: Vec<Packet>,
     pub translucent: Vec<Packet>,
-    pub vertices: dx::MeshData,
+    pub vertices: Arc<dx::MeshData>,
     pub gpu: Vec<GpuSlice>,
     pub retry_after: u64,
     pub sides: crate::mesher::Sides,
-    pub bounds: Option<[Vec3; 2]>,
     pub blocks: Vec<([i32; 3], u32)>,
     pub revision: u64,
     pub bytes: u64,
@@ -50,6 +51,68 @@ struct PendingArena {
     region: RegionKey,
     vertices: Vec<dx::Vertex>,
     sections: Vec<SectionKey>,
+}
+#[derive(Default)]
+pub(super) struct DrawBatch {
+    pub next: Vec<(u32, u32)>,
+    ranges: Vec<(u32, u32)>,
+    indices: Option<dx::Indices>,
+}
+impl DrawBatch {
+    pub fn append(&mut self, first: u32, count: u32) {
+        if let Some(last) = self.next.last_mut()
+            && last.0 + last.1 == first
+        {
+            last.1 += count;
+        } else {
+            self.next.push((first, count));
+        }
+    }
+    pub fn bytes(&self) -> usize {
+        (self.next.capacity() + self.ranges.capacity()) * size_of::<(u32, u32)>()
+    }
+    pub fn gpu_bytes(&self) -> u64 {
+        self.indices.as_ref().map_or(0, dx::Indices::bytes)
+    }
+    pub fn draw(
+        &mut self,
+        device: &mut dx::Device,
+        mesh: &dx::Mesh,
+        scratch: &mut dx::IndexBatch,
+    ) -> Result<()> {
+        if self.next.is_empty() {
+            return Ok(());
+        }
+        // Visibility membership matters; near-first ordering of opaque sections
+        // does not. Canonical ranges keep camera motion from rewriting the IB.
+        self.next.sort_unstable();
+        let mut used = 0;
+        for i in 0..self.next.len() {
+            let (first, count) = self.next[i];
+            if used > 0 && self.next[used - 1].0 + self.next[used - 1].1 == first {
+                self.next[used - 1].1 += count;
+            } else {
+                self.next[used] = (first, count);
+                used += 1;
+            }
+        }
+        self.next.truncate(used);
+        if self.next.len() == 1 {
+            self.indices = None;
+            self.ranges.clear();
+            let (first, count) = self.next[0];
+            return device.draw(mesh, first, count);
+        }
+        if self.ranges != self.next || self.indices.is_none() {
+            scratch.clear();
+            for &(first, count) in &self.next {
+                scratch.append(first, count)?;
+            }
+            self.indices = Some(device.cache_indices(scratch)?);
+            self.ranges.clone_from(&self.next);
+        }
+        device.draw_cached(mesh, self.indices.as_ref().unwrap())
+    }
 }
 impl Renderer {
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
@@ -141,7 +204,7 @@ impl Renderer {
             }
         }
         let decoded_bytes = vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
-        let vertices = dx::MeshData::new(&vertices);
+        let vertices = Arc::new(dx::MeshData::new(&vertices));
         let bytes = vertices.bytes();
         self.release_gpu_section(key);
         if let Some(old) = self.sections.remove(&key) {
@@ -158,7 +221,6 @@ impl Renderer {
                 gpu: Vec::new(),
                 retry_after: 0,
                 sides,
-                bounds: mesh.bounds,
                 blocks: mesh.block_entities.clone(),
                 revision: self.revision,
                 bytes,
@@ -166,6 +228,12 @@ impl Renderer {
         );
         self.mesh_bytes += bytes;
         self.decoded_mesh_bytes += decoded_bytes;
+        self.occlusion.set(key, mesh.visibility);
+        if decoded_bytes != 0 {
+            self.spatial.insert_marked(key, (), mesh.bounds, false);
+        } else {
+            self.spatial.remove(key);
+        }
         Ok(())
     }
     pub(super) fn release_gpu_section(&mut self, key: SectionKey) {
@@ -186,6 +254,31 @@ impl Renderer {
             if let Some(arena) = self.arenas.remove(&id) {
                 self.gpu_mesh_bytes -= arena.mesh.bytes();
             }
+        }
+    }
+    pub(super) fn prune_hidden(&mut self, camera: DVec3) {
+        // A generous RTX cache must not retain caves merely uploaded while the
+        // asynchronous portal graph was still conservative during world loading.
+        // Throttle the census; unknown/new-camera graphs never discard anything.
+        if !self.frames.is_multiple_of(32) {
+            return;
+        }
+        let from = (
+            (camera.x.floor() as i32) >> 4,
+            (camera.y.floor() as i32 - self.layout.min_y()) >> 4,
+            (camera.z.floor() as i32) >> 4,
+        );
+        let hidden: Vec<_> = self
+            .sections
+            .iter()
+            .filter_map(|(&key, section)| {
+                (!section.gpu.is_empty()
+                    && self.occlusion.visible_for_camera(key, from) == Some(false))
+                .then_some(key)
+            })
+            .collect();
+        for key in hidden {
+            self.release_gpu_section(key);
         }
     }
     fn evict_arena(&mut self, id: u64) {
@@ -268,7 +361,7 @@ impl Renderer {
     }
     /// Compressed CPU shadows survive Reset. Shared GPU arenas are immutable:
     /// no in-flight data is overwritten, and indices alone change with visibility.
-    pub(super) fn prepare_sections(&mut self, visible: &[(SectionKey, Vec3, f32)]) -> Result<()> {
+    pub(super) fn prepare_sections(&mut self, visible: &[gfx::resident::Visible]) -> Result<()> {
         if self.seen_resets != self.device.resets
             || self.arenas.values().any(|a| !a.mesh.resident())
         {
@@ -280,7 +373,9 @@ impl Renderer {
                 section.retry_after = 0;
             }
         }
-        for (key, _, _) in visible {
+        self.collect_compaction()?;
+        for v in visible {
+            let key = &v.key;
             for slice in &self.sections[key].gpu {
                 self.arenas.get_mut(&slice.arena).unwrap().last_used = self.frames + 1;
             }
@@ -293,10 +388,10 @@ impl Renderer {
             .collect();
         stale.sort_unstable();
         let mut stale = stale.into_iter();
-        let started = Instant::now();
-        let mut pending = HashMap::<u64, PendingArena>::new();
+        let mut pending = HashMap::<u64, PendingArena>::default();
         let mut pending_bytes = 0;
-        for &(key, _, _) in visible {
+        for v in visible {
+            let key = v.key;
             let section = &self.sections[&key];
             if !section.gpu.is_empty()
                 || section.vertices.is_empty()
@@ -319,9 +414,6 @@ impl Renderer {
                     }
                     self.sections.get_mut(&key).unwrap().retry_after = self.frames + 120;
                 }
-            }
-            if started.elapsed() >= Duration::from_millis(2) {
-                break;
             }
         }
         // Upload each new region page once as immutable DEFAULT storage. Dynamic
@@ -382,12 +474,22 @@ impl Renderer {
         self.solid_batches
             .retain(|(_, _, id), _| self.arenas.contains_key(id));
         for batch in self.solid_batches.values_mut() {
-            batch.clear();
+            batch.next.clear();
         }
+        self.schedule_compaction();
         Ok(())
     }
     pub fn clear_sections(&mut self, layout: ColumnLayout) {
         self.sections.clear();
+        self.spatial.clear();
+        self.spatial.set_min_y(layout.min_y());
+        if self.layout != layout {
+            self.occlusion =
+                gfx::occlusion::Occlusion::new(layout.min_y(), layout.sections() as i32);
+        } else {
+            self.occlusion.clear();
+        }
+        self.visible.clear();
         self.arenas.clear();
         self.solid_batches.clear();
         self.decode_scratch.clear();
@@ -398,7 +500,8 @@ impl Renderer {
         self.revision = self.revision.wrapping_add(1);
     }
     pub fn remove_columns(&mut self, columns: impl IntoIterator<Item = (i32, i32)>) {
-        let columns: std::collections::HashSet<_> = columns.into_iter().collect();
+        let columns: FxHashSet<_> = columns.into_iter().collect();
+        self.occlusion.remove_columns(&columns);
         let keys: Vec<_> = self
             .sections
             .keys()
@@ -406,6 +509,7 @@ impl Renderer {
             .filter(|k| columns.contains(&(k.0, k.2)))
             .collect();
         for key in keys {
+            self.spatial.remove(key);
             self.release_gpu_section(key);
             if let Some(s) = self.sections.remove(&key) {
                 self.mesh_bytes -= s.bytes;

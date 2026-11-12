@@ -16,8 +16,17 @@ pub struct MeshData {
 }
 impl MeshData {
     pub fn new(vertices: &[Vertex]) -> Self {
-        let raw = bytemuck::cast_slice(vertices);
-        let compressed = lz4_flex::block::compress(raw);
+        let raw: &[u8] = bytemuck::cast_slice(vertices);
+        // Vertex deltas have repeated colours/light and short position/UV
+        // changes. Byte planes let LZ4 see those runs without losing one bit
+        // (including signed zero/NaN payloads). Small blocks bound decode scratch.
+        let mut shuffled = raw.to_vec();
+        let stride = size_of::<Vertex>();
+        for i in (stride..shuffled.len()).rev() {
+            shuffled[i] ^= shuffled[i - stride];
+        }
+        shuffle(&mut shuffled, false);
+        let compressed = lz4_flex::block::compress(&shuffled);
         let use_compressed = compressed.len() < raw.len();
         Self {
             bytes: if use_compressed {
@@ -47,10 +56,32 @@ impl MeshData {
             if n != dest.len() {
                 return Err("D3D9 mesh shadow length mismatch".into());
             }
+            shuffle(dest, true);
+            for i in size_of::<Vertex>()..dest.len() {
+                dest[i] ^= dest[i - size_of::<Vertex>()];
+            }
         } else {
             dest.copy_from_slice(&self.bytes);
         }
         Ok(())
+    }
+}
+fn shuffle(bytes: &mut [u8], inverse: bool) {
+    const STRIDE: usize = size_of::<Vertex>();
+    const BLOCK: usize = STRIDE * 16;
+    let mut scratch = [0u8; BLOCK];
+    for chunk in bytes.chunks_mut(BLOCK) {
+        scratch[..chunk.len()].copy_from_slice(chunk);
+        let n = chunk.len() / STRIDE;
+        for b in 0..STRIDE {
+            for v in 0..n {
+                if inverse {
+                    chunk[v * STRIDE + b] = scratch[b * n + v];
+                } else {
+                    chunk[b * n + v] = scratch[v * STRIDE + b];
+                }
+            }
+        }
     }
 }
 
@@ -167,6 +198,14 @@ mod tests {
         };
         MeshData::new(&[bits]).decode(&mut decoded).unwrap();
         assert_eq!(bytemuck::bytes_of(&decoded[0]), bytemuck::bytes_of(&bits));
+        for length in [15, 16, 17, 31, 33] {
+            let partial = vec![bits; length];
+            MeshData::new(&partial).decode(&mut decoded).unwrap();
+            assert_eq!(
+                bytemuck::cast_slice::<_, u8>(&decoded),
+                bytemuck::cast_slice::<_, u8>(&partial)
+            );
+        }
         MeshData::new(&[]).decode(&mut decoded).unwrap();
         assert!(decoded.is_empty());
     }
