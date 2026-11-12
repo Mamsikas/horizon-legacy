@@ -43,4 +43,5 @@ if (Test-Path $embedded) {
     $actual = $program | ForEach-Object { '0x{0:x8}' -f $_ }
     if (($expected -join ',') -cne ($actual -join ',')) { throw 'Embedded fog bytecode differs from FXC output' }
 }
+Write-Output $text
 Get-Content $assembly

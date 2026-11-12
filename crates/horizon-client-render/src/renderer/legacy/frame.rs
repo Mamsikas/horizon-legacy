@@ -596,12 +596,11 @@ impl Renderer {
             if overlay == 13 {
                 continue;
             }
-            let transparent = if matches!(overlay, 41..=44) {
-                overlay == 41
-            } else {
-                matches!(overlay, 14 | 15 | 32 | 33 | 34 | 45)
-                    || quad[0].layer & gfx::OIT_ENTITY != 0
-            };
+            // OIT_ENTITY only selects the modern optional OIT path. Classic
+            // entityTranslucent (including the player's skin) still writes Z.
+            // Translucent items/fluid also precede translucent terrain and write
+            // depth; only shadows/particles/energy are late, read-only overlays.
+            let transparent = matches!(overlay, 14 | 15 | 34 | 45);
             if (phase == 0 && transparent) || (phase == 1 && !transparent) {
                 continue;
             }
@@ -617,7 +616,7 @@ impl Renderer {
                 },
                 lightmap: !unlit,
                 depth_test: phase != 3,
-                depth_write: !transparent && !additive && phase != 3,
+                depth_write: !transparent && !matches!(overlay, 2 | 3 | 4 | 11 | 12) && phase != 3,
                 cull: quad[0].normal[3] == 1 || quad[0].normal[3] == crate::mesher::SHADED_CULL_W,
                 alpha_test: true,
                 alpha_ref: 25,
