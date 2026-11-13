@@ -1,5 +1,6 @@
 //! The gameplay-facing renderer. A legacy executable selects DX9 at build time;
 //! the ordinary client's backend, defaults and GPU implementation are unchanged.
+pub use crate::gfx::Frame;
 #[cfg(all(windows, feature = "legacy-d3d9"))]
 mod legacy;
 #[cfg(not(all(windows, feature = "legacy-d3d9")))]

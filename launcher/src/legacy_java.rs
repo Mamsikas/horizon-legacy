@@ -24,7 +24,7 @@ struct Package {
 }
 
 const JRE: Package = Package {
-    url: "https://github.com/bell-sw/Liberica/releases/download/25.0.5.0.3%2B5/bellsoft-jre25.0.5.0.3%2B5-windows-amd64.zip",
+    url: horizon_addresses::WIN7_JRE,
     sha256: "6e1167a12a91fb5461f2cd304a91a5f4c4545dfb9e87a761a498c81e082414ae",
     size: 78_025_864,
     directory: "jre-25.0.5.0.3",
@@ -32,7 +32,7 @@ const JRE: Package = Package {
 };
 
 const JDK: Package = Package {
-    url: "https://github.com/bell-sw/Liberica/releases/download/25.0.5.0.3%2B5/bellsoft-jdk25.0.5.0.3%2B5-windows-amd64.zip",
+    url: horizon_addresses::WIN7_JDK,
     sha256: "d7c90823ea2a24778d7499a82379b5e18c7ce3f4cc7a9d9c9af5b133abe148f0",
     size: 249_291_501,
     directory: "jdk-25.0.5.0.3",

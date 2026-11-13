@@ -24,6 +24,7 @@ impl VertexEncoding {
             Self::Compact => 20,
         }
     }
+    #[cfg(any(windows, test))]
     pub(crate) fn scales(self) -> [f32; 4] {
         match self {
             Self::Full => [1.0, 1.0, 1.0, 0.0],

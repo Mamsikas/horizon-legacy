@@ -99,9 +99,9 @@ impl AtlasLayout {
                     }
                 }
                 let mut out = [0; 4];
-                if sum[3] != 0 {
+                if let Some(alpha) = std::num::NonZeroU64::new(sum[3]) {
                     for c in 0..3 {
-                        out[c] = (sum[c] / sum[3]) as u8;
+                        out[c] = (sum[c] / alpha) as u8;
                     }
                 } else {
                     for c in 0..3 {
@@ -251,8 +251,8 @@ mod tests {
         assert_eq!(&base[..4], &[255, 0, 0, 255]);
         assert_eq!(&base[12..16], &[0, 0, 255, 0]);
         let mip = a.tile(1, &pixels).unwrap();
-        for p in mip.chunks_exact(4) {
-            assert_eq!(p, [127, 127, 0, 127]);
+        for p in mip.as_chunks::<4>().0 {
+            assert_eq!(*p, [127, 127, 0, 127]);
         }
     }
 }

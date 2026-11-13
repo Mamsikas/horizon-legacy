@@ -793,14 +793,14 @@ impl Device {
                 && p.height == self.present.BackBufferHeight
                 && p.interval == self.present.PresentationInterval
         });
-        if self.surface_pending || !matches {
-            if let Err(error) = self.create_presentation() {
-                if is_device_lost(error.as_ref()) {
-                    self.lost = true;
-                    return Ok(false);
-                }
-                return Err(error);
+        if (self.surface_pending || !matches)
+            && let Err(error) = self.create_presentation()
+        {
+            if is_device_lost(error.as_ref()) {
+                self.lost = true;
+                return Ok(false);
             }
+            return Err(error);
         }
         self.using_dynamic_indices = false;
         self.mesh_uploads = 0;
@@ -1061,7 +1061,12 @@ impl Device {
                     width as usize * 4,
                 );
                 let source = &rgba[row * width as usize * 4..(row + 1) * width as usize * 4];
-                for (d, s) in dest.chunks_exact_mut(4).zip(source.chunks_exact(4)) {
+                for (d, s) in dest
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(source.as_chunks::<4>().0)
+                {
                     d.copy_from_slice(&[s[2], s[1], s[0], s[3]]);
                 }
             }
@@ -1555,7 +1560,7 @@ impl Device {
             2 => 2,
             _ => 4,
         };
-        if vertices.len() % primitive != 0 {
+        if !vertices.len().is_multiple_of(primitive) {
             return Err("D3D9 incomplete primitive".into());
         }
         self.vertex_pipeline(VertexEncoding::Full)?;
@@ -1758,8 +1763,10 @@ impl Device {
                 );
                 for (out, bgra) in rgba
                     [y * desc.Width as usize * 4..(y + 1) * desc.Width as usize * 4]
-                    .chunks_exact_mut(4)
-                    .zip(row.chunks_exact(4))
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(row.as_chunks::<4>().0)
                 {
                     out.copy_from_slice(&[bgra[2], bgra[1], bgra[0], 255]);
                 }

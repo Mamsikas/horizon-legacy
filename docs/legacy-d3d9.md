@@ -179,8 +179,8 @@ The upstream .hzperf profiler is useful here: DX9 phases and section-worker span
 now feed its timeline. Windows supports frame/timeline/memory capture; the CPU
 stack/heap sampler currently exists only on Linux. DX9 GPU timestamps remain
 explicitly unavailable, rather than being populated with CPU milliseconds. Use
-`horizon-ctl profile client start --seconds 20 --timeline --no-samples`, then
-`horizon-ctl profile client status` or `stop` to obtain the capture path. Capture
+`horizon-ctl profile client start --seconds 20 --timeline --no-samples`, and use the capture path from the start reply/log. `status` describes an active
+capture; `stop` can end it before the automatic 20-second stop. Capture
 is opt-in and nothing is shared automatically. The old trace command now also
 writes .hzperf, not Chrome JSON. See TESTING.txt for complete launch commands.
 
@@ -228,7 +228,9 @@ smoke example remains in source but is no longer built/shipped by the client pac
 `atlas`, `compat`, `frame`, `resident`, `solid_cache`, `mesh` and its
 `compact`, `convert`, `upload` helpers own culling, cached plans, shared mips, sky
 and bounded CPU staging/compaction. Cargo only adds the already-used
-glam dependency to the DX9 crate. CI and TESTING.txt carry reproducible checks.
+glam dependency to the DX9 crate. CI and TESTING.txt carry reproducible checks. Small backend-selection, API-tooltip
+and checked-download helpers moved to sibling modules to satisfy the new upstream
+file-size guard without expanding already oversized files; their behavior is unchanged.
 
 | Physical result | GMA3150 / N455 / Win7 x64 | HD4570 / Win7 x64 |
 | --- | --- | --- |

@@ -36,7 +36,8 @@ New upstream profiler, useful for a 48-chunk capture and F3+A/camera movement:
   .\horizon-ctl.exe profile client start --seconds 20 --timeline --no-samples
   .\horizon-ctl.exe profile client status
   .\horizon-ctl.exe profile client stop
-The capture stops automatically after 20 seconds; stop/status reports its path.
+The start reply and latest.log contain the capture path. The file is complete
+after the automatic 20-second stop; stop ends it earlier if still active.
 Send that .hzperf file if needed. This records frames, memory and CPU timeline
 phases, including the DX9 section worker. Windows CPU stack/heap sampling and
 DX9 GPU timestamps are unavailable. No capture is uploaded automatically.

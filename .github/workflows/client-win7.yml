@@ -18,6 +18,9 @@ on:
       - 'tools/build_win7_client.sh'
       - 'packaging/win7-client/**'
       - '.github/workflows/client-win7.yml'
+concurrency:
+  group: win7-d3d9-client-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 jobs:
   package:
     runs-on: ubuntu-24.04

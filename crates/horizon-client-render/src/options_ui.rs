@@ -2,7 +2,9 @@
 //! Controls, Key Binds, Mouse Settings, Chat Settings, Accessibility,
 //! Language and Resource Packs, laid out like vanilla's HeaderAndFooter /
 //! OptionsList screens and drawn with the shared widgets.
+mod graphics_api;
 mod pack_drop;
+use graphics_api::graphics_api_tooltip;
 
 use std::time::Instant;
 
@@ -1219,23 +1221,6 @@ impl Opt {
             s.graphics_preset = "custom".into();
         }
     }
-}
-
-/// `Options.preferredGraphicsBackend`'s tooltip: the restart note once the choice differs from
-/// the startup one, the description, and Vulkan's warning.
-fn graphics_api_tooltip(s: &Settings) -> Text {
-    let line = |key: &str| lang::get_or(key, key);
-    let mut lines = Vec::new();
-    if s.horizon.api.selected() != s.startup_api.selected() {
-        lines.push(line("options.needsRestart"));
-        lines.push(String::new());
-    }
-    lines.push(line("options.graphicsApi.tooltip"));
-    if s.horizon.api.selected() == crate::graphics::GraphicsApi::Vulkan {
-        lines.push(String::new());
-        lines.push(line("options.graphicsApi.tooltip.vulkan"));
-    }
-    Text::literal(lines.join("\n"))
 }
 
 /// `selected_key` while a native mod's key waits (`selected_native_key`).
