@@ -26,7 +26,10 @@ const D3DERR_DEVICENOTRESET: HRESULT = HRESULT(0x88760869u32 as i32);
 const D3DTS_WORLD: D3DTRANSFORMSTATETYPE = D3DTRANSFORMSTATETYPE(256);
 const FVF: u32 = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2;
 const MAX_QUADS: u32 = 16_383;
-use crate::{Fog, IndexBatch, Ring, Vertex};
+use crate::{EncodedVertices, Fog, IndexBatch, Ring, Vertex, VertexEncoding};
+#[path = "terrain_device.rs"]
+mod terrain_device;
+use terrain_device::TerrainPipeline;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blend {
     Opaque,
@@ -113,6 +116,7 @@ pub struct Mesh {
     owner: Rc<Inner>,
     pub vertices: u32,
     filled: u32,
+    encoding: VertexEncoding,
 }
 /// Immutable visibility indices. Managed storage survives a real device Reset;
 /// the runtime owns the small CPU copy instead of a second application Vec.
@@ -134,7 +138,13 @@ impl Mesh {
         self.raw.borrow().is_some()
     }
     pub fn bytes(&self) -> u64 {
-        u64::from(self.vertices) * size_of::<Vertex>() as u64
+        u64::from(self.vertices) * self.stride() as u64
+    }
+    pub fn stride(&self) -> usize {
+        self.encoding.stride()
+    }
+    pub fn encoding(&self) -> VertexEncoding {
+        self.encoding
     }
 }
 struct StateCache {
@@ -235,6 +245,10 @@ pub struct Device {
     fog_shader: Option<IDirect3DPixelShader9>,
     shader_active: bool,
     fog_constants: Option<Fog>,
+    terrain: Option<TerrainPipeline>,
+    terrain_encoding: Option<VertexEncoding>,
+    vertex_constants: [[f32; 4]; 8],
+    vertex_constants_dirty: bool,
     pub draws: u64,
     pub binds: u64,
     pub uploads: u64,
@@ -450,6 +464,10 @@ impl Device {
             fog_shader: None,
             shader_active: false,
             fog_constants: None,
+            terrain: None,
+            terrain_encoding: None,
+            vertex_constants: [[0.0; 4]; 8],
+            vertex_constants_dirty: true,
             draws: 0,
             binds: 0,
             uploads: 0,
@@ -485,6 +503,26 @@ impl Device {
         } else {
             log::warn!("D3D9 dual fog unavailable in caps; fixed-function fog approximation");
         }
+        if !software_vertices
+            && raw.VertexShaderVersion >= 0xfffe_0200
+            && raw.MaxVertexShaderConst >= 9
+            && result.fog_shader.is_some()
+        {
+            match TerrainPipeline::new(&result.inner.device) {
+                Ok(pipeline) => {
+                    result.terrain = Some(pipeline);
+                    log::info!(
+                        "D3D9 terrain: hardware vs_2_0, exact 20/28-byte vertices; full 32-byte fallback"
+                    );
+                }
+                Err(error) => {
+                    log::warn!("D3D9 compact vertex path unavailable ({error}); keeping FFP")
+                }
+            }
+        }
+        if result.terrain.is_none() {
+            log::info!("D3D9 terrain: fixed-function 32-byte vertices; no vertex shader required");
+        }
         // Test a real texture, VB and lightmap allocation before accepting the adapter.
         let _texture = result.texture(16, 16, 1, &[255; 1024])?;
         let _vertices = result.mesh(&[Vertex::zero(); 4])?;
@@ -514,6 +552,10 @@ impl Device {
             fog_shader: self.fog_shader.clone(),
             shader_active: false,
             fog_constants: None,
+            terrain: self.terrain.clone(),
+            terrain_encoding: None,
+            vertex_constants: [[0.0; 4]; 8],
+            vertex_constants_dirty: true,
             draws: 0,
             binds: 0,
             uploads: 0,
@@ -523,6 +565,50 @@ impl Device {
             stream_locks: 0,
             index_uploads: 0,
         }
+    }
+    pub fn compact_vertices(&self) -> bool {
+        self.terrain.is_some()
+    }
+    fn vertex_pipeline(&mut self, encoding: VertexEncoding) -> Result<()> {
+        if encoding == VertexEncoding::Full {
+            if self.terrain_encoding.take().is_some() {
+                // SAFETY: the canonical FVF matches every transient/full vertex.
+                unsafe {
+                    self.inner.device.SetVertexShader(None)?;
+                    self.inner.device.SetFVF(FVF)?;
+                }
+            }
+            return Ok(());
+        }
+        let pipeline = self
+            .terrain
+            .as_ref()
+            .ok_or("D3D9 compact vertices require the hardware VS2 path")?;
+        if self.terrain_encoding != Some(encoding) {
+            // SAFETY: encoding is private in Mesh/EncodedVertices and declarations match its stride.
+            unsafe {
+                self.inner.device.SetVertexShader(&pipeline.shader)?;
+                self.inner.device.SetVertexDeclaration(match encoding {
+                    VertexEncoding::Compact => &pipeline.compact,
+                    _ => &pipeline.wide,
+                })?;
+            }
+            self.terrain_encoding = Some(encoding);
+            self.vertex_constants_dirty = true;
+        }
+        if self.vertex_constants_dirty {
+            self.vertex_constants[7] = encoding.scales();
+            // SAFETY: exactly eight contiguous float4 registers, the SDK program's input constants.
+            unsafe {
+                self.inner.device.SetVertexShaderConstantF(
+                    0,
+                    self.vertex_constants.as_ptr().cast(),
+                    8,
+                )?;
+            }
+            self.vertex_constants_dirty = false;
+        }
+        Ok(())
     }
     fn create_indices(&mut self) -> Result<()> {
         let quads = MAX_QUADS
@@ -724,6 +810,8 @@ impl Device {
         self.index_uploads = 0;
         self.draws = 0;
         self.binds = 0;
+        self.terrain_encoding = None;
+        self.vertex_constants_dirty = true;
         self.cached_state = None;
         self.state_cache = StateCache::default();
         self.cached_transform = None;
@@ -831,6 +919,8 @@ impl Device {
         mut view: [f32; 16],
         mut projection: [f32; 16],
     ) -> Result<()> {
+        let original_view = view;
+        let original_projection = projection;
         // A pair of Z reflections preserves every clip-space coordinate while
         // making D3D fixed-function camera-space Z positive for linear vertex fog.
         for index in [2, 6, 10, 14] {
@@ -840,6 +930,11 @@ impl Device {
             projection[index] = -projection[index];
         }
         let previous = self.cached_transform;
+        if self.terrain.is_some() && previous != Some([world, view, projection]) {
+            self.vertex_constants =
+                crate::terrain::constants(&world, &original_view, &original_projection);
+            self.vertex_constants_dirty = true;
+        }
         // SAFETY: Matrix4x4 is repr(C), sixteen f32 values in row order; glam's
         // column storage supplies the transpose for D3D's row-vector convention.
         unsafe {
@@ -977,9 +1072,46 @@ impl Device {
     }
     pub fn mesh(&mut self, vertices: &[Vertex]) -> Result<Mesh> {
         if vertices.is_empty() || vertices.len() > self.max_vertices() || vertices.len() % 4 != 0 {
+            return Err("D3D9 mesh outside quad/caps limits".into());
+        }
+        if self.compact_vertices() {
+            return self.mesh_encoded(&EncodedVertices::new(vertices, true));
+        }
+        self.mesh_bytes(
+            bytemuck::cast_slice(vertices),
+            vertices.len(),
+            VertexEncoding::Full,
+        )
+    }
+    pub fn mesh_encoded(&mut self, vertices: &EncodedVertices) -> Result<Mesh> {
+        self.mesh_encoded_range(vertices, 0..vertices.len())
+    }
+    pub fn mesh_encoded_range(
+        &mut self,
+        vertices: &EncodedVertices,
+        range: std::ops::Range<usize>,
+    ) -> Result<Mesh> {
+        if vertices.encoding() != VertexEncoding::Full && !self.compact_vertices() {
+            return Err("D3D9 compact upload requires supported hardware vertex processing".into());
+        }
+        if range.start > range.end
+            || range.end > vertices.len()
+            || range.start % 4 != 0
+            || range.end % 4 != 0
+        {
+            return Err("D3D9 encoded upload range is outside complete quads".into());
+        }
+        let stride = vertices.encoding().stride();
+        self.mesh_bytes(
+            &vertices.bytes()[range.start * stride..range.end * stride],
+            range.len(),
+            vertices.encoding(),
+        )
+    }
+    fn mesh_bytes(&mut self, bytes: &[u8], count: usize, encoding: VertexEncoding) -> Result<Mesh> {
+        if count == 0 || count > self.max_vertices() || count % 4 != 0 {
             return Err("D3D9 mesh must contain complete quads within the caps/index limit".into());
         }
-        let bytes = bytemuck::cast_slice::<_, u8>(vertices);
         let mut raw = None;
         // SAFETY: bounded allocation and matching lock length; the slice cannot escape the lock.
         unsafe {
@@ -991,7 +1123,11 @@ impl Device {
                     } else {
                         0
                     },
-                FVF,
+                if encoding == VertexEncoding::Full {
+                    FVF
+                } else {
+                    0
+                },
                 D3DPOOL_DEFAULT,
                 &mut raw,
                 ptr::null_mut(),
@@ -1012,8 +1148,9 @@ impl Device {
             Ok(Mesh {
                 raw,
                 owner: self.inner.clone(),
-                vertices: vertices.len() as u32,
-                filled: vertices.len() as u32,
+                vertices: count as u32,
+                filled: count as u32,
+                encoding,
             })
         }
     }
@@ -1040,6 +1177,7 @@ impl Device {
         {
             return Err("D3D9 terrain index batch exceeds its buffer/caps".into());
         }
+        self.vertex_pipeline(mesh.encoding)?;
         if self.dynamic_indices.is_none() {
             let mut raw = None;
             // SAFETY: bounded DEFAULT index ring, released/unbound before Reset.
@@ -1095,7 +1233,7 @@ impl Device {
             self.using_dynamic_indices = true;
             self.inner
                 .device
-                .SetStreamSource(0, raw, 0, size_of::<Vertex>() as u32)?;
+                .SetStreamSource(0, raw, 0, mesh.stride() as u32)?;
             self.inner.device.DrawIndexedPrimitive(
                 D3DPT_TRIANGLELIST,
                 0,
@@ -1151,6 +1289,7 @@ impl Device {
         {
             return Err("D3D9 cached draw bounds/device mismatch".into());
         }
+        self.vertex_pipeline(mesh.encoding)?;
         let raw = mesh.raw.borrow();
         let raw = raw.as_ref().ok_or("D3D9 arena requires re-upload")?;
         // SAFETY: index/vertex ranges were validated against this device and mesh.
@@ -1158,7 +1297,7 @@ impl Device {
             self.inner.device.SetIndices(&indices.raw)?;
             self.inner
                 .device
-                .SetStreamSource(0, raw, 0, size_of::<Vertex>() as u32)?;
+                .SetStreamSource(0, raw, 0, mesh.stride() as u32)?;
             self.inner.device.DrawIndexedPrimitive(
                 D3DPT_TRIANGLELIST,
                 0,
@@ -1378,6 +1517,7 @@ impl Device {
         if count == 0 {
             return Ok(());
         }
+        self.vertex_pipeline(mesh.encoding)?;
         self.shared_indices()?;
         let raw = mesh.raw.borrow();
         let raw = raw
@@ -1387,7 +1527,7 @@ impl Device {
         unsafe {
             self.inner
                 .device
-                .SetStreamSource(0, raw, 0, size_of::<Vertex>() as u32)?;
+                .SetStreamSource(0, raw, 0, mesh.stride() as u32)?;
             self.inner.device.DrawIndexedPrimitive(
                 D3DPT_TRIANGLELIST,
                 first as i32,
@@ -1418,6 +1558,7 @@ impl Device {
         if vertices.len() % primitive != 0 {
             return Err("D3D9 incomplete primitive".into());
         }
+        self.vertex_pipeline(VertexEncoding::Full)?;
         let limit = self.max_vertices() / primitive * primitive;
         for chunk in vertices.chunks(limit) {
             if chunk.is_empty() {
@@ -1494,6 +1635,7 @@ impl Device {
         if range.is_empty() {
             return Ok(());
         }
+        self.vertex_pipeline(VertexEncoding::Full)?;
         let buffer = self
             .transient
             .as_ref()

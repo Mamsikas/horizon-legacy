@@ -138,6 +138,21 @@ pub struct AtlasSet {
     pub locations: Vec<(usize, u32)>,
     pub offsets: Vec<usize>,
 }
+#[derive(Clone, Copy)]
+pub struct AtlasUv {
+    pub page: usize,
+    offset: [f32; 2],
+    size: f32,
+    inverse_side: f32,
+}
+impl AtlasUv {
+    pub fn map(self, uv: [f32; 2]) -> [f32; 2] {
+        [
+            (self.offset[0] + uv[0] * self.size) * self.inverse_side,
+            (self.offset[1] + uv[1] * self.size) * self.inverse_side,
+        ]
+    }
+}
 impl AtlasSet {
     pub fn new(sizes: &[u32], animated: &[u32], max_texture: u32) -> Result<Self, String> {
         let mut groups = std::collections::BTreeMap::<(bool, u32), Vec<u32>>::new();
@@ -169,12 +184,22 @@ impl AtlasSet {
         Ok(result)
     }
     pub fn uv(&self, layer: u32, uv: [f32; 2]) -> Result<(usize, [f32; 2]), String> {
+        let transform = self.transform(layer)?;
+        Ok((transform.page, transform.map(uv)))
+    }
+    pub fn transform(&self, layer: u32) -> Result<AtlasUv, String> {
         let &(group, local) = self
             .locations
             .get(layer as usize)
             .ok_or("D3D9 sprite layer outside atlas")?;
-        let (page, uv) = self.layouts[group].uv(local, uv)?;
-        Ok((self.offsets[group] + page, uv))
+        let layout = &self.layouts[group];
+        let (page, x, y) = layout.placement(local)?;
+        Ok(AtlasUv {
+            page: self.offsets[group] + page,
+            offset: [(x + layout.padding) as f32, (y + layout.padding) as f32],
+            size: layout.size as f32,
+            inverse_side: 1.0 / layout.side as f32,
+        })
     }
     pub fn bytes(&self) -> u64 {
         self.layouts.iter().map(AtlasLayout::bytes).sum()
@@ -200,6 +225,13 @@ mod tests {
         for layer in 0..1301 {
             let (page, uv) = a.uv(layer, [0.0; 2]).unwrap();
             assert!(rectangles.insert((page, uv[0].to_bits(), uv[1].to_bits())));
+            let (group, local) = a.locations[layer as usize];
+            for source in [[0.0, 1.0], [-0.125, 1.25], [0.123456, 0.96875]] {
+                let (expected_page, expected) = a.layouts[group].uv(local, source).unwrap();
+                let (actual_page, actual) = a.uv(layer, source).unwrap();
+                assert_eq!(actual_page, a.offsets[group] + expected_page);
+                assert_eq!(actual.map(f32::to_bits), expected.map(f32::to_bits));
+            }
         }
     }
     #[test]

@@ -13,6 +13,7 @@ pub struct MeshData {
     bytes: Vec<u8>,
     vertices: usize,
     compressed: bool,
+    encoding: crate::VertexEncoding,
 }
 impl MeshData {
     pub fn new(vertices: &[Vertex]) -> Self {
@@ -21,16 +22,32 @@ impl MeshData {
     /// Reuse the encoder's temporary storage across a burst of section updates.
     pub fn with_scratch(vertices: &[Vertex], shuffled: &mut Vec<u8>) -> Self {
         let raw: &[u8] = bytemuck::cast_slice(vertices);
+        Self::encode(raw, vertices.len(), crate::VertexEncoding::Full, shuffled)
+    }
+    pub fn from_encoded(vertices: &crate::EncodedVertices, scratch: &mut Vec<u8>) -> Self {
+        Self::encode(
+            vertices.bytes(),
+            vertices.len(),
+            vertices.encoding(),
+            scratch,
+        )
+    }
+    fn encode(
+        raw: &[u8],
+        count: usize,
+        encoding: crate::VertexEncoding,
+        shuffled: &mut Vec<u8>,
+    ) -> Self {
         // Vertex deltas have repeated colours/light and short position/UV
         // changes. Byte planes let LZ4 see those runs without losing one bit
         // (including signed zero/NaN payloads). Small blocks bound decode scratch.
         shuffled.clear();
         shuffled.extend_from_slice(raw);
-        let stride = size_of::<Vertex>();
+        let stride = encoding.stride();
         for i in (stride..shuffled.len()).rev() {
             shuffled[i] ^= shuffled[i - stride];
         }
-        shuffle(shuffled, false);
+        shuffle(shuffled, stride, false);
         let compressed = lz4_flex::block::compress(shuffled);
         let use_compressed = compressed.len() < raw.len();
         Self {
@@ -39,8 +56,9 @@ impl MeshData {
             } else {
                 raw.to_vec()
             },
-            vertices: vertices.len(),
+            vertices: count,
             compressed: use_compressed,
+            encoding,
         }
     }
     pub fn len(&self) -> usize {
@@ -52,30 +70,41 @@ impl MeshData {
     pub fn bytes(&self) -> u64 {
         self.bytes.len() as u64
     }
+    pub fn encoding(&self) -> crate::VertexEncoding {
+        self.encoding
+    }
     pub fn decode(&self, out: &mut Vec<Vertex>) -> Result<(), String> {
         out.resize(self.vertices, bytemuck::Zeroable::zeroed());
-        let dest = bytemuck::cast_slice_mut(out);
+        let stride = self.encoding.stride();
+        let dest = &mut bytemuck::cast_slice_mut::<_, u8>(out)[..self.vertices * stride];
         if self.compressed {
             let n =
                 lz4_flex::block::decompress_into(&self.bytes, dest).map_err(|e| e.to_string())?;
             if n != dest.len() {
                 return Err("D3D9 mesh shadow length mismatch".into());
             }
-            shuffle(dest, true);
-            for i in size_of::<Vertex>()..dest.len() {
-                dest[i] ^= dest[i - size_of::<Vertex>()];
+            shuffle(dest, stride, true);
+            for i in stride..dest.len() {
+                dest[i] ^= dest[i - stride];
             }
         } else {
             dest.copy_from_slice(&self.bytes);
         }
+        crate::terrain::expand_in_place(self.encoding, out);
         Ok(())
     }
 }
-fn shuffle(bytes: &mut [u8], inverse: bool) {
-    const STRIDE: usize = size_of::<Vertex>();
-    const BLOCK: usize = STRIDE * 16;
-    let mut scratch = [0u8; BLOCK];
-    for chunk in bytes.chunks_mut(BLOCK) {
+fn shuffle(bytes: &mut [u8], stride: usize, inverse: bool) {
+    match stride {
+        20 => shuffle_fixed::<20>(bytes, inverse),
+        28 => shuffle_fixed::<28>(bytes, inverse),
+        32 => shuffle_fixed::<32>(bytes, inverse),
+        _ => unreachable!(),
+    }
+}
+fn shuffle_fixed<const STRIDE: usize>(bytes: &mut [u8], inverse: bool) {
+    let mut scratch = [0u8; size_of::<Vertex>() * 16];
+    for chunk in bytes.chunks_mut(STRIDE * 16) {
         scratch[..chunk.len()].copy_from_slice(chunk);
         let n = chunk.len() / STRIDE;
         for b in 0..STRIDE {

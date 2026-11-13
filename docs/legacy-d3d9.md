@@ -1,7 +1,7 @@
 # Windows 7 Direct3D9 client preview
 
-Base audited: `fd37e40220151e9279745d8e332b5d58fbea0041` (this fork's main,
-11 November 2026), rather than the specification's older `36fc4fa1`.
+Current upstream integration: `298c01b0206d72294b25753c9f8d0a77b742b3bb` (this fork's main,
+13 November 2026). Merged into the existing development branch without rewriting its history.
 Scope: Windows 7 SP1 **x64**, Atom N455/GMA3150 first, HD4570 second. No x86 deliverable.
 The ZIP's executable selects DX9 by its `legacy-d3d9` feature, without changing other backend implementations or any saved graphics defaults.
 
@@ -74,7 +74,7 @@ NOOVERWRITE on append and DISCARD only on wrap, rather than renaming a full buff
 for every small draw. Terrain GPU residency is bounded, with offscreen pages evicted
 first; an allocation failure still permits transient draws. Missing visible geometry is cached on its first draw instead of repeatedly streaming it for seconds behind a two-millisecond warmup cap. One CPU compaction worker consolidates small VBs into at most one 2 MiB page per job. Jobs/results are bounded, carry immutable shadows and revisions, and keep old GPU data until a successful replacement allocation. This avoids render-thread decompression for compaction. The automatic target is
 one third of the driver's available-memory hint, bounded by one eighth of system RAM
-and 16 MiB–1 GiB. It no longer imposes the GMA-scale 128 MiB ceiling on an RTX.
+and 16 MiB–2 GiB. It no longer imposes the GMA-scale 128 MiB ceiling on an RTX.
 Render distance and texture quality are never rewritten. CPU shadows, physical
 arena allocations, live GPU vertices and decode/index scratch are reported separately.
 
@@ -122,59 +122,73 @@ Static block-entity snapshots currently use the dynamic entity draw path. GPU ca
 of those optional snapshots, finer transparent-quad sorting and CPU-transformed vertex
 A/B testing remain performance follow-ups requiring hardware evidence.
 
-## RTX3050 investigation
+## Current optimization and profiling pass
 
-The owner now reports about 400 FPS at 16 chunks on RTX3050/i5-10400, 700+ with
-HUD hidden, no camera-turn stalls, and RAM around twice the Vulkan build. The
-attached 20-second capture contains 358.31 average FPS, frame p50/p95/p99
-2.62/4.68/6.36 ms and maximum 11.77 ms. CPU-frame average is 2.54 ms; a separate
-stage snapshot attributes 0.802 ms to GUI. The memory snapshot reports 1260.2 MiB
-resident, 294.7 MiB of requested terrain arenas (253.4 MiB live), 73.3 MiB retained
-CPU geometry and 0.7 MiB index/decode scratch. These describe the preceding build;
-requested GPU storage is not measured physical VRAM.
+The owner reports 580+ FPS at 16 chunks. Their attached 20-second capture contains
+507.09 average FPS, frame p50/p95/p99 1.833/2.633/4.262 ms, and maximum 71.243 ms.
+Average DX9 CPU frame time is 1.746 ms. A separate stage snapshot shows GUI 0.345 ms
+(one draw, one texture bind, one vertex-buffer lock), terrain plan preparation
+0.326 ms, solid draws 0.254 ms, translucent draws 0.131 ms and visibility 0.102 ms.
+Memory capture: 1116.4 MiB process resident; 261.6 MiB requested terrain GPU storage,
+238.5 MiB live vertices; 68.2 MiB compressed CPU shadows. Requested GPU storage is
+not a measurement of physical VRAM, and allocator commit is not process resident.
+DX9's elapsed CPU stages must not be compared directly to the other backends' GPU
+timestamp labels.
 
-This iteration replaces the sparse GUI GPU layout with demand-packed tiles, retains
-batch allocations, and stages the entire ordinary HUD in one vertex-buffer lock,
-then draws ordered texture/blend/depth/scissor ranges. Very large HUDs use bounded
-streaming without dropping content. Painter barriers merge adjacent same-page bounds
-without forcing a flush every 128 triangles. CPU tile backing and reusable buffers
-are included in the memory census; GUI draws/binds/vertex bytes/locks are logged.
+The owner's separate 48-chunk comparison is DX9 80 FPS/3240 MB, DX12 244/1570,
+Vulkan 415/1350, OpenGL 201/1480. The attached capture is at 16 chunks; it does not
+establish the cause of the 48-chunk gap. None of these numbers measures this update.
 
-F5 exposed a separate depth error: OIT_ENTITY marks optional modern OIT routing,
-not a request to disable ordinary entity depth writes. Legacy now follows the
-classic entity pipeline's depth-write classification, including translucent skin
-layers and held items. GUI models also use normal LessEqual depth with clear=1,
-independently of the world's reverse Z. Depth clears disable any preceding scissor,
-including the previous frame's item clip. F3+A still uses the existing common mesh
-workers and rebuild semantics; legacy conversion reuses dense bucket/page groups,
-expanded-vertex storage and shadow-encoder scratch across section uploads.
+The shared wgpu renderer backs Vulkan, DX12 and OpenGL. Reused mechanisms are its
+CPU column/frustum/portal culling, dense Resident storage, model data and mip generator.
+Its compute/indirect draw and shader-expanded packed quads cannot run on baseline
+D3D9/SM2. This update therefore adds compatible storage and submission paths:
 
-The owner's log shows the hand-assembled fog shader was rejected with
-D3DERR_INVALIDCALL; the old CPU arithmetic test did not validate driver acceptance.
-The replacement is compiled from tools/d3d9/fog.hlsl by Windows SDK FXC
-10.0.26100.7705, ps_2_0, 22 instruction slots (2 texture, 20 arithmetic). CI recompiles
-it, compares executable tokens with the embedded Rust program, and publishes the
-ASM/profile. Players require no shader compiler DLL. Environmental and distance
-fog still use the existing Frame parameters. The new shader and F5 visuals require
-an owner hardware retest. Common resource preparation/startup is outside this change.
+- One dense Resident<Section> replaces a second section hash store. Empty sections
+  retain only a presence key; block-entity-only sections retain their CPU data.
+  Visible slots access the draw data directly.
+- An exact solid-plan cache compares section identities, revisions and camera-facing
+  ranges. Unchanged plans reuse their cached indices; resource/page/reset changes
+  invalidate them. There is no lossy fingerprint or stale-frustum shortcut.
+- Hardware VS2 devices can use exact 20-byte terrain vertices or 28-byte vertices
+  for models with arbitrary floating-point position/UV. Unrepresentable values
+  retain the 32-byte format. CPU shadows encode the same smaller layout and expand
+  losslessly for fallback/recovery. The SDK-generated vs_2_0 program uses 12
+  arithmetic slots. Shader/declaration creation must succeed, and PS2 fog must be
+  available. GMA/software vertex processing keeps the original FFP format, with
+  no software vertex-shader requirement.
+- Initial section conversion and shadow/vertex encoding share the existing single
+  compaction worker. A conservative 8 MiB charge bounds pending source/results;
+  overflow and replacements/edits use the synchronous path. COM uploads stay on
+  the render thread. Tickets and a world epoch reject obsolete results. Reusable
+  scratch is separate from that charge; one recycled vertex vector is capped at
+  2 MiB. This does not change the shared streaming worker policy.
+- Animation mip/extrusion pixels have a 4 MiB payload LRU cache. Misses use the
+  existing mip generator; hits preserve its bytes and avoid regenerating them.
+  Atlas placement is resolved once per terrain quad instead of once per vertex.
+- The F3 axis crosshair consumes the existing debug_crosshair frame data after
+  screen overlays and before the HUD, using the hand projection without bob/fog.
 
-Changed sections upload from their already-expanded CPU vertices when the portal
-graph and cache budget allow, including behind the camera. The same bounded worker
-preloads older reachable shadows before compaction, avoiding first-view decode work
-where possible. Source revisions, current residency and the current budget are
-rechecked before applying a result. A cold cache can still require demand loading.
-The log counts eager section uploads as well as compactions. A host-only synthetic
-2,097,024-byte vertex sample shrank from 767,126 bytes with raw LZ4 to 168,815 bytes
-with the new shadow codec; warm decode averaged 1.105 vs 1.977 ms. This explains
-the eager/background loading work: the memory saving has a decode cost. Those
-numbers are not a Minecraft scene, RTX3050 or Atom benchmark.
+Logs distinguish compact20/wide28/ffp32 bytes, uncached_visible_bytes,
+solid_plan_reused, staging queue/conversion wall time and animation-cache hits.
+These counters permit diagnosis of budget fallback, upload pressure and cold work
+without attributing all delay to drawing. Cache targets are advisory; allocation
+failures keep the existing drawable fallback. Settings files are not rewritten.
 
-The log/F3 report CPU timings, not GPU timestamps. `horizon-ctl.exe` provides the
-existing opt-in `bench 20`, `memory` and `trace render-trace.json 10` commands; see
-TESTING.txt. New log fields count successful compactions. `memory` lists retained
-managed visibility IBs separately. The Win7 executable offers DX9 in the stock API
-row and retains other saved API preferences; this ZIP currently contains DX9 only.
-A unified executable still requires runtime dispatch and lazy modern API imports.
+The upstream .hzperf profiler is useful here: DX9 phases and section-worker spans
+now feed its timeline. Windows supports frame/timeline/memory capture; the CPU
+stack/heap sampler currently exists only on Linux. DX9 GPU timestamps remain
+explicitly unavailable, rather than being populated with CPU milliseconds. Use
+`horizon-ctl profile client start --seconds 20 --timeline --no-samples`, then
+`horizon-ctl profile client status` or `stop` to obtain the capture path. Capture
+is opt-in and nothing is shared automatically. The old trace command now also
+writes .hzperf, not Chrome JSON. See TESTING.txt for complete launch commands.
+
+The supplied RTX log confirms acceptance of the SDK-compiled ps_2_0 fog program.
+F5 skin depth and fast-leaf colour fixes are in the preceding iteration. Common
+resource preparation before device creation remains outside this work. Remaining
+work includes real 48-chunk measurements, transparency draw overhead and further
+GUI CPU preparation reductions; parity with OpenGL has not been established.
 
 ## Build, package and test
 
@@ -191,26 +205,29 @@ tools/bootstrap_win7_cross.sh "$PWD/work/win7-client/cross"
 tools/build_win7_client.sh
 ```
 
-The archive contains `horizon-client.exe`, `horizon-ctl.exe`, `TESTING.txt` and exact
-build information. Select the client exe in the existing Win7 launcher's native-client
+The Actions artifact ZIP directly contains `horizon-client.exe`, `horizon-ctl.exe`,
+`TESTING.txt`, checksums, import reports and exact build information; no inner ZIP. Select the client exe in the existing Win7 launcher's native-client
 setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
 Resources and saves are never distributed in this archive.
 
-This iteration has twelve CPU tests (including tile seams/placement, shader arithmetic
-and exact shadow bits) and eleven PE policy/parser tests. The packaging workflow builds
+This iteration has fifteen CPU tests (including tile seams/placement, executable SM2 arithmetic,
+all vertex layouts/partial codec blocks and animation-cache eviction) and eleven PE policy/parser tests. The packaging workflow builds
 the client/control ZIP and audits static/delay imports,
 architecture and subsystem version. Compiler warnings inherited from the current
 nightly/native dependencies are separate from a successful check. Full parity harnesses
 and a resource/world/launcher gameplay run were not performed in this environment.
 
 Changed presentation files: `horizon-client-d3d9/device.rs` owns swapchains, depth,
-cached IBs, staged GUI buffers and PS2 state; `fog.rs`/`fog_program.rs` contain the
-SDK-generated fog program; `geometry.rs` compresses CPU shadows; `tiles.rs` stores
+cached IBs, staged GUI buffers and shader state; `fog.rs`/`fog_program.rs` contain the
+SDK-generated fog program; `terrain.rs`, `terrain_device.rs`, `terrain_program.rs`
+implement hardware-only compact vertices; `animation.rs` caches prepared pixels;
+`geometry.rs` compresses CPU shadows; `tiles.rs` stores
 virtual atlas tiles; `atlas.rs` preserves transparent RGB. The optional development
 smoke example remains in source but is no longer built/shipped by the client package. In `horizon-client-render`, only
 `gfx.rs` helper visibility changes for normal builds. The legacy renderer and its
-`atlas`, `compat`, `frame`, `mesh` and `mesh/compact` modules own culling, cached
-plans, shared mips, sky and bounded compaction. Cargo only adds the already-used
+`atlas`, `compat`, `frame`, `resident`, `solid_cache`, `mesh` and its
+`compact`, `convert`, `upload` helpers own culling, cached plans, shared mips, sky
+and bounded CPU staging/compaction. Cargo only adds the already-used
 glam dependency to the DX9 crate. CI and TESTING.txt carry reproducible checks.
 
 | Physical result | GMA3150 / N455 / Win7 x64 | HD4570 / Win7 x64 |

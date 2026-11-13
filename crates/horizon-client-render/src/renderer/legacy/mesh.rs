@@ -1,5 +1,7 @@
 use super::*;
 mod compact;
+pub(super) mod convert;
+mod upload;
 pub(super) use compact::Compactor;
 pub(super) struct Packet {
     pub page: usize,
@@ -49,6 +51,7 @@ pub(super) fn region_origin(region: RegionKey, layout: ColumnLayout, camera: DVe
 }
 struct PendingArena {
     region: RegionKey,
+    encoding: dx::VertexEncoding,
     vertices: Vec<dx::Vertex>,
     sections: Vec<SectionKey>,
 }
@@ -79,9 +82,18 @@ impl DrawBatch {
         device: &mut dx::Device,
         mesh: &dx::Mesh,
         scratch: &mut dx::IndexBatch,
+        unchanged: bool,
     ) -> Result<()> {
         if self.next.is_empty() {
             return Ok(());
+        }
+        if unchanged {
+            if let [(first, count)] = self.next.as_slice() {
+                return device.draw(mesh, *first, *count);
+            }
+            if let Some(indices) = &self.indices {
+                return device.draw_cached(mesh, indices);
+            }
         }
         // Visibility membership matters; near-first ordering of opaque sections
         // does not. Canonical ranges keep camera motion from rewriting the IB.
@@ -116,109 +128,95 @@ impl DrawBatch {
 }
 impl Renderer {
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
+        let _span = crate::spans::guard("d3d9_section_upload");
         let started = Instant::now();
-        if let Err(error) = self.upload_section(key, mesh) {
+        self.upload_ticket = self.upload_ticket.wrapping_add(1);
+        let replace =
+            self.sections.contains_key(&key) || self.pending_sections.remove(&key).is_some();
+        if !replace
+            && self
+                .compactor
+                .as_ref()
+                .is_some_and(|w| w.try_upload(key, self.upload_ticket, mesh))
+        {
+            self.pending_sections.insert(key, self.upload_ticket);
+        } else if let Err(error) = self.upload_section(key, mesh) {
             log::error!("D3D9 section {key:?}: {error}");
             self.pending_error = Some(format!("D3D9 section {key:?}: {error}"));
         }
         self.upload_cpu += started.elapsed();
     }
-    fn upload_section(&mut self, key: SectionKey, mesh: &SectionMesh) -> Result<()> {
-        // Bucket/page/alpha indices are dense and fixed by this resource set.
-        // Reuse their vectors instead of allocating tree nodes and buffers per section.
-        let pages = self.sprites.pages.len();
-        self.upload_groups.resize_with(7 * pages * 2, Vec::new);
-        for group in &mut self.upload_groups {
-            group.clear();
-        }
-        let sides = if mesh.sides.quads() == mesh.solid.len() as u32 / 4 {
-            mesh.sides
-        } else {
-            crate::mesher::Sides::unsorted(mesh.solid.len() as u32 / 4)
-        };
-        let thresholds = sides.thresholds().map(|v| v.0);
-        for (quad, input) in mesh.solid.chunks_exact(4).enumerate() {
-            let bucket = thresholds.map_or(0, |ends| {
-                ends.iter()
-                    .position(|&end| (quad as u32) < end)
-                    .unwrap_or(6)
-            });
-            self.sprites.quad(
-                u32::from(input[0].layer & !crate::mesher::OPAQUE_LAYER),
-                &terrain_quad(input),
-                |page, poly| {
-                    let opaque = input[0].layer & crate::mesher::OPAQUE_LAYER != 0;
-                    let group =
-                        &mut self.upload_groups[(bucket * pages + page) * 2 + usize::from(opaque)];
-                    atlas::quads(poly, group);
-                },
-            )?;
-        }
-        let mut vertices = std::mem::take(&mut self.upload_vertices);
-        vertices.clear();
-        vertices.reserve(mesh.solid.len() + mesh.translucent.len());
-        let mut solid = Vec::new();
-        for (i, part) in self
-            .upload_groups
-            .iter()
-            .enumerate()
-            .filter(|(_, v)| !v.is_empty())
-        {
-            let page = i / 2 % pages;
-            let bucket = i / (2 * pages);
-            let source = thresholds.map_or(0..mesh.solid.len() as u32 / 4, |ends| {
-                if bucket == 0 {
-                    0..ends[0]
-                } else {
-                    ends[bucket - 1]..ends[bucket]
-                }
-            });
-            solid.push(Packet {
-                page,
-                opaque: i % 2 != 0,
-                first: vertices.len() as u32,
-                count: part.len() as u32,
-                source,
-            });
-            vertices.extend_from_slice(part);
-        }
-        let mut translucent = Vec::<Packet>::new();
-        for input in mesh.translucent.chunks_exact(4) {
-            self.sprites.quad(
-                u32::from(input[0].layer & !crate::mesher::OPAQUE_LAYER),
-                &terrain_quad(input),
-                |page, poly| {
-                    if translucent.last().is_none_or(|p| p.page != page) {
-                        translucent.push(Packet {
-                            page,
-                            opaque: false,
-                            first: vertices.len() as u32,
-                            count: 0,
-                            source: 0..u32::MAX,
-                        });
-                    }
-                    let before = vertices.len();
-                    atlas::quads(poly, &mut vertices);
-                    translucent.last_mut().unwrap().count += (vertices.len() - before) as u32;
-                },
-            )?;
-        }
-        let offset = [
-            (key.0.rem_euclid(8) * 16) as f32,
-            (key.1.rem_euclid(8) * 16) as f32,
-            (key.2.rem_euclid(8) * 16) as f32,
-        ];
-        for v in &mut vertices {
-            for axis in 0..3 {
-                v.pos[axis] += offset[axis];
+    pub(super) fn drain_uploads(&mut self) -> Result<()> {
+        loop {
+            let Some(ready) = self.compactor.as_ref().and_then(Compactor::take_upload) else {
+                break;
+            };
+            if self.pending_sections.get(&ready.key) != Some(&ready.ticket) {
+                continue;
             }
+            self.pending_sections.remove(&ready.key);
+            let queue_ms = ready.queue.as_secs_f64() * 1000.0;
+            let conversion_ms = ready.conversion.as_secs_f64() * 1000.0;
+            self.stage_profile[0] += 1.0;
+            self.stage_profile[1] += queue_ms;
+            self.stage_profile[2] = self.stage_profile[2].max(queue_ms);
+            self.stage_profile[3] += conversion_ms;
+            self.stage_profile[4] = self.stage_profile[4].max(conversion_ms);
+            let started = Instant::now();
+            let converted = ready
+                .result
+                .map_err(|e| format!("D3D9 staged section {:?}: {e}", ready.key))?;
+            let vertices = self.apply_converted(ready.key, converted)?;
+            if let Some(worker) = &self.compactor {
+                worker.recycle(vertices);
+            }
+            self.staged_sections += 1;
+            self.upload_cpu += started.elapsed();
         }
-        let decoded_bytes = vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
-        let shadow = Arc::new(dx::MeshData::with_scratch(
-            &vertices,
-            &mut self.shadow_scratch,
-        ));
+        Ok(())
+    }
+    fn upload_section(&mut self, key: SectionKey, mesh: &SectionMesh) -> Result<()> {
+        if mesh.solid.is_empty() && mesh.translucent.is_empty() && mesh.block_entities.is_empty() {
+            self.release_gpu_section(key);
+            if let Some(old) = self.sections.remove(&key) {
+                self.mesh_bytes -= old.bytes;
+                self.decoded_mesh_bytes -=
+                    old.vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
+            }
+            self.sections.insert_empty(key);
+            self.occlusion.set(key, mesh.visibility);
+            self.revision = self.revision.wrapping_add(1);
+            return Ok(());
+        }
+        let ready = self.convert_scratch.prepare(
+            &self.sprites.layout,
+            key,
+            mesh,
+            self.device.compact_vertices(),
+            self.device.max_vertices(),
+        )?;
+        let vertices = self.apply_converted(key, ready)?;
+        self.convert_scratch.vertices = vertices;
+        Ok(())
+    }
+    fn apply_converted(
+        &mut self,
+        key: SectionKey,
+        ready: convert::Converted,
+    ) -> Result<Vec<dx::Vertex>> {
+        let convert::Converted {
+            solid,
+            translucent,
+            vertices,
+            shadow,
+            sides,
+            blocks,
+            bounds,
+            visibility,
+            gpu,
+        } = ready;
         let bytes = shadow.bytes();
+        let decoded_bytes = vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
         self.release_gpu_section(key);
         if let Some(old) = self.sections.remove(&key) {
             self.mesh_bytes -= old.bytes;
@@ -234,29 +232,28 @@ impl Renderer {
                 gpu: Vec::new(),
                 retry_after: 0,
                 sides,
-                blocks: mesh.block_entities.clone(),
+                blocks,
                 revision: self.revision,
                 bytes,
             },
+            bounds,
         );
         self.mesh_bytes += bytes;
         self.decoded_mesh_bytes += decoded_bytes;
-        self.occlusion.set(key, mesh.visibility);
-        if decoded_bytes != 0 {
-            self.spatial.insert_marked(key, (), mesh.bounds, false);
-        } else {
-            self.spatial.remove(key);
-        }
-        self.prefetch_ready_section(key, &vertices);
-        self.upload_vertices = vertices;
-        Ok(())
+        self.occlusion.set(key, visibility);
+        self.prefetch_ready_section(key, &vertices, gpu.as_ref());
+        Ok(vertices)
     }
-    fn prefetch_ready_section(&mut self, key: SectionKey, vertices: &[dx::Vertex]) {
-        let bytes = std::mem::size_of_val(vertices) as u64;
+    fn prefetch_ready_section(
+        &mut self,
+        key: SectionKey,
+        vertices: &[dx::Vertex],
+        encoded: Option<&dx::EncodedVertices>,
+    ) {
+        let bytes = encoded.map_or(std::mem::size_of_val(vertices), |v| v.bytes().len()) as u64;
         if vertices.is_empty()
             || self.device.lost()
-            || self.occlusion.reach().is_none()
-            || !self.occlusion.contains(key)
+            || self.occlusion.reach().is_some() && !self.occlusion.contains(key)
             || self.gpu_mesh_bytes + bytes > self.mesh_budget
         {
             return;
@@ -265,7 +262,13 @@ impl Renderer {
         // including behind the camera, instead of decompressing them on first view.
         let mut pages = Vec::new();
         for (i, part) in vertices.chunks(self.device.max_vertices()).enumerate() {
-            match self.device.mesh(part) {
+            let uploaded = if let Some(v) = encoded {
+                let first = i * self.device.max_vertices();
+                self.device.mesh_encoded_range(v, first..first + part.len())
+            } else {
+                self.device.mesh(part)
+            };
+            match uploaded {
                 Ok(mesh) => {
                     self.pending_mesh_uploads += mesh.bytes();
                     let first = (i * self.device.max_vertices()) as u32;
@@ -341,7 +344,7 @@ impl Renderer {
         let hidden: Vec<_> = self
             .sections
             .iter()
-            .filter_map(|(&key, section)| {
+            .filter_map(|(key, section)| {
                 (!section.gpu.is_empty()
                     && self.occlusion.visible_for_camera(key, from) == Some(false))
                 .then_some(key)
@@ -372,7 +375,12 @@ impl Renderer {
         pending_bytes: &mut u64,
         stale: &mut impl Iterator<Item = (u64, u64)>,
     ) -> Result<bool> {
-        let bytes = self.sections[&key].vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
+        let encoding = if self.device.compact_vertices() {
+            self.sections[&key].vertices.encoding()
+        } else {
+            dx::VertexEncoding::Full
+        };
+        let bytes = self.sections[&key].vertices.len() as u64 * encoding.stride() as u64;
         while self.gpu_mesh_bytes + *pending_bytes + bytes > self.mesh_budget {
             let Some((_, id)) = stale.next() else {
                 return Ok(false);
@@ -391,10 +399,9 @@ impl Renderer {
         let limit = self.device.max_vertices();
         let mut first = 0;
         while first < decoded.len() {
-            let id = if let Some((&id, _)) = pending
-                .iter()
-                .find(|(_, a)| a.region == region && a.vertices.len() < limit)
-            {
+            let id = if let Some((&id, _)) = pending.iter().find(|(_, a)| {
+                a.region == region && a.encoding == encoding && a.vertices.len() < limit
+            }) {
                 id
             } else {
                 self.next_arena += 1;
@@ -403,6 +410,7 @@ impl Renderer {
                     id,
                     PendingArena {
                         region,
+                        encoding,
                         vertices: Vec::new(),
                         sections: Vec::new(),
                     },
@@ -423,7 +431,7 @@ impl Renderer {
                 first: offset,
                 source: first as u32..(first + count) as u32,
             });
-            *pending_bytes += count as u64 * size_of::<dx::Vertex>() as u64;
+            *pending_bytes += count as u64 * encoding.stride() as u64;
             first += count;
         }
         self.decode_scratch = decoded;
@@ -445,8 +453,7 @@ impl Renderer {
         }
         self.collect_compaction()?;
         for v in visible {
-            let key = &v.key;
-            for slice in &self.sections[key].gpu {
+            for slice in &self.sections.at(v.slot).gpu {
                 self.arenas.get_mut(&slice.arena).unwrap().last_used = self.frames + 1;
             }
         }
@@ -462,7 +469,7 @@ impl Renderer {
         let mut pending_bytes = 0;
         for v in visible {
             let key = v.key;
-            let section = &self.sections[&key];
+            let section = self.sections.at(v.slot);
             if !section.gpu.is_empty()
                 || section.vertices.is_empty()
                 || self.frames < section.retry_after
@@ -543,16 +550,16 @@ impl Renderer {
         }
         self.solid_batches
             .retain(|(_, _, id), _| self.arenas.contains_key(id));
-        for batch in self.solid_batches.values_mut() {
-            batch.next.clear();
-        }
         self.schedule_compaction();
         Ok(())
     }
     pub fn clear_sections(&mut self, layout: ColumnLayout) {
+        self.pending_sections.clear();
+        if let Some(worker) = &self.compactor {
+            worker.cancel_uploads();
+        }
         self.sections.clear();
-        self.spatial.clear();
-        self.spatial.set_min_y(layout.min_y());
+        self.sections.set_min_y(layout.min_y());
         if self.layout != layout {
             self.occlusion =
                 gfx::occlusion::Occlusion::new(layout.min_y(), layout.sections() as i32);
@@ -562,6 +569,7 @@ impl Renderer {
         self.visible.clear();
         self.arenas.clear();
         self.solid_batches.clear();
+        self.solid_cache = solid_cache::SolidCache::default();
         self.decode_scratch.clear();
         self.decoded_mesh_bytes = 0;
         self.layout = layout;
@@ -571,15 +579,15 @@ impl Renderer {
     }
     pub fn remove_columns(&mut self, columns: impl IntoIterator<Item = (i32, i32)>) {
         let columns: FxHashSet<_> = columns.into_iter().collect();
+        self.pending_sections
+            .retain(|k, _| !columns.contains(&(k.0, k.2)));
         self.occlusion.remove_columns(&columns);
         let keys: Vec<_> = self
             .sections
             .keys()
-            .copied()
             .filter(|k| columns.contains(&(k.0, k.2)))
             .collect();
         for key in keys {
-            self.spatial.remove(key);
             self.release_gpu_section(key);
             if let Some(s) = self.sections.remove(&key) {
                 self.mesh_bytes -= s.bytes;

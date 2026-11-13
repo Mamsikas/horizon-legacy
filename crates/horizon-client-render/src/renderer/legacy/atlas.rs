@@ -1,10 +1,12 @@
 use super::*;
 
 pub(super) struct Sprites {
-    pub layout: dx::AtlasSet,
+    pub layout: Arc<dx::AtlasSet>,
     pub pages: Vec<dx::Texture>,
     pub animations: Vec<(SpriteAnimation, usize)>,
     mips: Vec<crate::mipmap::Settings>,
+    pub frame_cache: dx::AnimationCache,
+    frame_scratch: Vec<u8>,
 }
 impl Sprites {
     pub fn new(
@@ -29,7 +31,11 @@ impl Sprites {
             })
             .collect();
         let animated: Vec<_> = animations.iter().map(|a| a.layer).collect();
-        let layout = dx::AtlasSet::new(&sizes, &animated, device.caps.max_texture)?;
+        let layout = Arc::new(dx::AtlasSet::new(
+            &sizes,
+            &animated,
+            device.caps.max_texture,
+        )?);
         let mut pages = Vec::new();
         for (group, plan) in layout.layouts.iter().enumerate() {
             let mut sources = vec![0; plan.layers as usize];
@@ -96,6 +102,8 @@ impl Sprites {
                 .cloned()
                 .map(|a| (a, usize::MAX))
                 .collect(),
+            frame_cache: dx::AnimationCache::new(4 << 20),
+            frame_scratch: Vec::new(),
         })
     }
     pub fn animate(&mut self, device: &mut dx::Device, ticks: u64) -> Result<()> {
@@ -108,17 +116,30 @@ impl Sprites {
             let plan = &self.layout.layouts[group];
             let (page, x, y) = plan.placement(local)?;
             let page = self.layout.offsets[group] + page;
-            let chain = sprite_mips(
-                animation.pixels(frame),
-                self.mips
-                    .get(animation.layer as usize)
-                    .copied()
-                    .unwrap_or_default(),
-            );
+            if !self
+                .frame_cache
+                .decode(animation.layer, frame, &mut self.frame_scratch)?
+            {
+                let chain = sprite_mips(
+                    animation.pixels(frame),
+                    self.mips
+                        .get(animation.layer as usize)
+                        .copied()
+                        .unwrap_or_default(),
+                );
+                self.frame_scratch.clear();
+                for level in 0..plan.levels {
+                    let mip = &chain[chain.len() - plan.levels as usize + level as usize];
+                    let pixels = plan.tile(level, bytemuck::cast_slice(&mip.pixels))?;
+                    self.frame_scratch.extend_from_slice(&pixels);
+                }
+                self.frame_cache
+                    .insert(animation.layer, frame, &self.frame_scratch);
+            }
+            let mut at = 0;
             for level in 0..plan.levels {
                 let cell = (plan.cell >> level).max(1);
-                let mip = &chain[chain.len() - plan.levels as usize + level as usize];
-                let pixels = plan.tile(level, bytemuck::cast_slice(&mip.pixels))?;
+                let len = (cell * cell * 4) as usize;
                 device.patch(
                     &self.pages[page],
                     level,
@@ -126,69 +147,75 @@ impl Sprites {
                     y >> level,
                     cell,
                     cell,
-                    &pixels,
+                    &self.frame_scratch[at..at + len],
                 )?;
+                at += len;
             }
             *previous = frame;
         }
         Ok(())
     }
+    pub fn cpu_bytes(&self) -> usize {
+        self.frame_cache.bytes() + self.frame_scratch.capacity()
+    }
     pub fn quad(
         &self,
         layer: u32,
         vertices: &[dx::Vertex; 4],
-        mut emit: impl FnMut(usize, &[dx::Vertex]),
+        emit: impl FnMut(usize, &[dx::Vertex]),
     ) -> Result<()> {
-        let min = std::array::from_fn::<_, 2, _>(|k| {
-            vertices
-                .iter()
-                .map(|v| v.uv[k])
-                .fold(f32::INFINITY, f32::min)
-        });
-        let max = std::array::from_fn::<_, 2, _>(|k| {
-            vertices
-                .iter()
-                .map(|v| v.uv[k])
-                .fold(f32::NEG_INFINITY, f32::max)
-        });
-        let lower = min.map(|v| v.floor() as i32);
-        let upper = std::array::from_fn::<_, 2, _>(|k| (max[k].ceil() as i32).max(lower[k] + 1));
-        if upper[0] - lower[0] > 32 || upper[1] - lower[1] > 32 {
-            return Err("D3D9 sprite quad repeats more than 32 times per axis".into());
-        }
-        if lower == [0, 0] && upper == [1, 1] {
-            let mut out = *vertices;
-            let mut page = 0;
-            for v in &mut out {
-                let (p, uv) = self.layout.uv(layer, v.uv)?;
-                page = p;
-                v.uv = uv;
-            }
-            emit(page, &out);
-            return Ok(());
-        }
-        for y in lower[1]..upper[1] {
-            for x in lower[0]..upper[0] {
-                let mut polygon = clip_rect(
-                    vertices.to_vec(),
-                    [x as f32, y as f32, (x + 1) as f32, (y + 1) as f32],
-                );
-                if polygon.len() < 3 {
-                    continue;
-                }
-                let mut page = 0;
-                for v in &mut polygon {
-                    let (p, uv) = self
-                        .layout
-                        .uv(layer, [v.uv[0] - x as f32, v.uv[1] - y as f32])?;
-                    page = p;
-                    v.uv = uv;
-                }
-                emit(page, &polygon);
-            }
-        }
-        Ok(())
+        sprite_quad(&self.layout, layer, vertices, emit)
     }
+}
+
+pub(super) fn sprite_quad(
+    layout: &dx::AtlasSet,
+    layer: u32,
+    vertices: &[dx::Vertex; 4],
+    mut emit: impl FnMut(usize, &[dx::Vertex]),
+) -> Result<()> {
+    let mapping = layout.transform(layer)?;
+    let min = std::array::from_fn::<_, 2, _>(|k| {
+        vertices
+            .iter()
+            .map(|v| v.uv[k])
+            .fold(f32::INFINITY, f32::min)
+    });
+    let max = std::array::from_fn::<_, 2, _>(|k| {
+        vertices
+            .iter()
+            .map(|v| v.uv[k])
+            .fold(f32::NEG_INFINITY, f32::max)
+    });
+    let lower = min.map(|v| v.floor() as i32);
+    let upper = std::array::from_fn::<_, 2, _>(|k| (max[k].ceil() as i32).max(lower[k] + 1));
+    if upper[0] - lower[0] > 32 || upper[1] - lower[1] > 32 {
+        return Err("D3D9 sprite quad repeats more than 32 times per axis".into());
+    }
+    if lower == [0, 0] && upper == [1, 1] {
+        let mut out = *vertices;
+        for v in &mut out {
+            v.uv = mapping.map(v.uv);
+        }
+        emit(mapping.page, &out);
+        return Ok(());
+    }
+    for y in lower[1]..upper[1] {
+        for x in lower[0]..upper[0] {
+            let mut polygon = clip_rect(
+                vertices.to_vec(),
+                [x as f32, y as f32, (x + 1) as f32, (y + 1) as f32],
+            );
+            if polygon.len() < 3 {
+                continue;
+            }
+            for v in &mut polygon {
+                v.uv = mapping.map([v.uv[0] - x as f32, v.uv[1] - y as f32]);
+            }
+            emit(mapping.page, &polygon);
+        }
+    }
+    Ok(())
 }
 fn sprite_mips(pixels: &[u8], settings: crate::mipmap::Settings) -> Vec<crate::mipmap::Image> {
     let size = (pixels.len() / 4).isqrt() as u32;

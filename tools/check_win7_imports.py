@@ -136,7 +136,9 @@ SAFE_IMPORTS = {
         GetTextExtentPoint32W GetTextMetricsW PatBlt Rectangle SelectObject SetBkColor
         SetBkMode SetTextColor StretchBlt TextOutW
     """,
-    "comctl32.dll": "InitCommonControls InitCommonControlsEx ImageList_Destroy",
+    # XP+, exported by Comctl32.dll 5.8+ (not the Windows 10 API-set contract).
+    # learn.microsoft.com/windows/win32/api/commctrl/nf-commctrl-{defsubclassproc,setwindowsubclass}
+    "comctl32.dll": "InitCommonControls InitCommonControlsEx ImageList_Destroy DefSubclassProc SetWindowSubclass",
     "comdlg32.dll": "GetOpenFileNameW GetSaveFileNameW",
     "shell32.dll": """
         CommandLineToArgvW DragFinish DragQueryFileW SHBrowseForFolderW SHCreateItemFromParsingName

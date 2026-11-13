@@ -74,6 +74,9 @@ class Win7Imports(unittest.TestCase):
                 self.assertTrue(report["passed"], report["problems"])
                 self.assertEqual(report["imports"], [{"dll": "kernel32.dll",
                     "symbols": ["GetLastError"], "delayed": delayed}])
+            for symbol in ("DefSubclassProc", "SetWindowSubclass"):
+                report = CHECK.audit(fixture("comctl32.dll", symbol, delayed=delayed))
+                self.assertTrue(report["passed"], report["problems"])
 
     def test_pe32_and_legacy_delay_addresses(self):
         for legacy in (False, True):

@@ -58,7 +58,10 @@ cargo "+$toolchain" rustc --locked --manifest-path launcher/Cargo.toml --release
     --no-default-features --features win7 --bin horizon-launcher-win7 -- -L "native=$import_lib"
 binary="$CARGO_TARGET_DIR/$target/release/horizon-launcher-win7.exe"
 # Keep developer evidence out of the player archive.
-python3 tools/check_win7_imports.py --json "$binary" > "$work/imports-win7-x64.json"
+if ! python3 tools/check_win7_imports.py --json "$binary" > "$work/imports-win7-x64.json"; then
+    cat "$work/imports-win7-x64.json" >&2
+    exit 1
+fi
 out=${1:-"$work/artifacts"}
 mkdir -p "$out"
 out=$(cd -- "$out" && pwd)

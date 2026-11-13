@@ -15,7 +15,7 @@ impl Renderer {
         [
             self.arenas
                 .values()
-                .map(|a| u64::from(a.live) * size_of::<dx::Vertex>() as u64)
+                .map(|a| u64::from(a.live) * a.mesh.stride() as u64)
                 .sum(),
             0,
         ]
@@ -40,12 +40,11 @@ impl Renderer {
     pub fn gpu_memory_by_label(&self) -> Option<(u64, u64, Vec<(String, u64)>)> {
         None
     }
-    pub fn cpu_census(&self) -> [(&'static str, usize); 4] {
+    pub fn cpu_census(&self) -> [(&'static str, usize); 5] {
         [
             (
                 "D3D9 section metadata",
-                self.sections.capacity() * size_of::<Section>()
-                    + self.spatial.heap_bytes()
+                self.sections.heap_bytes()
                     + self
                         .sections
                         .values()
@@ -70,22 +69,18 @@ impl Renderer {
                     + self.gui_commands.capacity() * size_of::<frame::GuiCommand>(),
             ),
             ("D3D9 retained CPU geometry", self.mesh_bytes as usize),
+            ("D3D9 animation cache/scratch", self.sprites.cpu_bytes()),
             (
                 "D3D9 index/mesh scratch",
                 self.decode_scratch.capacity() * size_of::<dx::Vertex>()
-                    + self.upload_vertices.capacity() * size_of::<dx::Vertex>()
-                    + self
-                        .upload_groups
-                        .iter()
-                        .map(|v| v.capacity() * size_of::<dx::Vertex>())
-                        .sum::<usize>()
-                    + self.shadow_scratch.capacity()
+                    + self.convert_scratch.bytes()
                     + self
                         .solid_batches
                         .values()
                         .map(mesh::DrawBatch::bytes)
                         .sum::<usize>()
-                    + self.index_scratch.bytes(),
+                    + self.index_scratch.bytes()
+                    + self.solid_cache.bytes(),
             ),
         ]
     }
@@ -220,7 +215,7 @@ impl Renderer {
     }
     pub fn set_terrain_loading(&mut self, loading: bool) {}
     pub fn lod_detail_columns(&self) -> impl Iterator<Item = (i32, i32)> + '_ {
-        self.sections.keys().map(|&(x, _, z)| (x, z))
+        self.sections.keys().map(|(x, _, z)| (x, z))
     }
     pub fn lod_detail_revision(&self) -> u64 {
         self.revision
@@ -348,11 +343,21 @@ impl Renderer {
     pub fn take_timed_frames(&mut self) -> gfx::pack_timing::TimedFrames {
         Default::default()
     }
-    pub fn gpu_readout(&self) -> Option<gfx::pack_timing::GpuReadout> { None }
-    pub fn pass_detail(&self) -> bool { false }
-    pub fn pass_detail_support(&self) -> Option<gfx::pack_timing::DetailSupport> { None }
-    pub fn own_pass_parts(&self) -> Vec<(String, Vec<(String, f32)>)> { Vec::new() }
-    pub fn own_pass_counters(&self) -> Vec<(String, gfx::pack_timing::PassCounters)> { Vec::new() }
+    pub fn gpu_readout(&self) -> Option<gfx::pack_timing::GpuReadout> {
+        None
+    }
+    pub fn pass_detail(&self) -> bool {
+        false
+    }
+    pub fn pass_detail_support(&self) -> Option<gfx::pack_timing::DetailSupport> {
+        None
+    }
+    pub fn own_pass_parts(&self) -> Vec<(String, Vec<(String, f32)>)> {
+        Vec::new()
+    }
+    pub fn own_pass_counters(&self) -> Vec<(String, gfx::pack_timing::PassCounters)> {
+        Vec::new()
+    }
     pub fn set_world_text_shaders(&mut self, shaders: &gfx::core_text::TextShaders) {}
     pub fn set_pass_timing_gap(&mut self, gap: std::time::Duration) {}
     pub fn shader_pass_times(&self) -> Vec<(String, f32)> {

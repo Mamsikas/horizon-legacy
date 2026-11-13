@@ -183,10 +183,12 @@ impl Renderer {
         if self.suspended {
             return Ok(false);
         }
+        self.drain_uploads()?;
         if let Some(error) = self.pending_error.take() {
             return Err(error.into());
         }
         let started = Instant::now();
+        self.profile_laps = crate::spans::laps();
         self.timings.clear();
         let clear = if frame.end_sky {
             [0.0; 3]
@@ -210,6 +212,7 @@ impl Renderer {
         }
         self.timings
             .push(("begin/reset", started.elapsed().as_secs_f32() * 1000.0));
+        self.profile_laps.lap("d3d9_begin");
         self.device.mesh_uploads += std::mem::take(&mut self.pending_mesh_uploads);
         if let Err(error) = self.draw_frame(frame) {
             self.device.cancel_frame();
@@ -222,6 +225,7 @@ impl Renderer {
         self.last_encode = started.elapsed();
         let wait = Instant::now();
         let shown = self.device.finish()?;
+        self.profile_laps.lap("d3d9_present");
         self.last_wait = wait.elapsed();
         self.uploaded_bytes = std::mem::take(&mut self.device.uploads);
         self.frames += 1;
@@ -281,6 +285,47 @@ impl Renderer {
                 self.gui_stats[3]
             );
             log::info!(
+                "D3D9 solid_plan_reused={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
+                self.solid_reused,
+                self.uncached_mesh_bytes,
+                self.pending_sections.len(),
+                self.compactor
+                    .as_ref()
+                    .map_or(0, mesh::Compactor::reserved_uploads),
+                self.staged_sections
+            );
+            let mut vertex_bytes = [0u64; 3];
+            for a in self.arenas.values() {
+                let i = match a.mesh.stride() {
+                    20 => 0,
+                    28 => 1,
+                    _ => 2,
+                };
+                vertex_bytes[i] += a.mesh.bytes();
+            }
+            log::info!(
+                "D3D9 terrain_vertex_bytes compact20={} wide28={} ffp32={}",
+                vertex_bytes[0],
+                vertex_bytes[1],
+                vertex_bytes[2]
+            );
+            log::info!(
+                "D3D9 animation_cache hits={} misses={} cpu_bytes={}",
+                self.sprites.frame_cache.hits,
+                self.sprites.frame_cache.misses,
+                self.sprites.cpu_bytes()
+            );
+            let n = self.stage_profile[0].max(1.0);
+            log::info!(
+                "D3D9 staging completed={} queue_wall_avg_ms={:.3} queue_wall_peak_ms={:.3} conversion_wall_avg_ms={:.3} conversion_wall_peak_ms={:.3}",
+                self.stage_profile[0],
+                self.stage_profile[1] / n,
+                self.stage_profile[2],
+                self.stage_profile[3] / n,
+                self.stage_profile[4]
+            );
+            self.stage_profile = [0.0; 5];
+            log::info!(
                 "D3D9 window_frames={} cpu_avg_ms={:.3} cpu_peak_ms={:.3} peak_stages_ms={:?} mesh_uploads={} stream_uploads={} index_uploads={}",
                 self.profile_window.0,
                 self.profile_window.1 / self.profile_window.0 as f64,
@@ -297,6 +342,7 @@ impl Renderer {
         Ok(shown)
     }
     fn stamp(&mut self, name: &'static str, clock: &mut Instant) {
+        self.profile_laps.lap(name);
         self.timings
             .push((name, clock.elapsed().as_secs_f32() * 1000.0));
         *clock = Instant::now();
@@ -361,6 +407,8 @@ impl Renderer {
         self.drawn_sections = 0;
         self.section_draws = 0;
         self.section_draw_calls = 0;
+        self.solid_reused = false;
+        self.uncached_mesh_bytes = 0;
         if frame.title {
             self.draw_panorama(frame)?;
         } else {
@@ -402,87 +450,108 @@ impl Renderer {
                 self.start_occlusion(frame.camera, frame.detail_distance);
                 self.prune_hidden(frame.camera);
             }
-            self.spatial.walk(
+            self.sections.walk(
                 frame.camera,
                 (frame.distance / 16.0).ceil() as i32,
                 &frustum,
                 |key| !frame.cave_culling || self.occlusion.contains(key),
                 |_, _| false,
-                false,
+                true,
                 &mut visible,
             );
             self.stamp("visibility", &mut clock);
             self.prepare_sections(&visible)?;
             self.stamp("terrain cache", &mut clock);
+            self.uncached_mesh_bytes = visible
+                .iter()
+                .map(|v| self.sections.at(v.slot))
+                .filter(|s| s.gpu.is_empty())
+                .map(|s| s.vertices.len() as u64 * size_of::<dx::Vertex>() as u64)
+                .sum();
+            self.solid_reused = self.solid_cache.update(
+                &self.sections,
+                &visible,
+                (self.next_arena, self.device.resets),
+                self.sides,
+                !self.device.caps.software_vertices,
+            );
             self.drawn_sections = visible.len();
             let mut decoded = std::mem::take(&mut self.decode_scratch);
             let before = self.device.draws;
-            for v in &visible {
-                let key = &v.key;
-                let origin = Vec3::from_array(v.origin);
-                let section = &self.sections[key];
-                if section.solid.is_empty() {
-                    continue;
+            if !self.solid_reused {
+                for batch in self.solid_batches.values_mut() {
+                    batch.next.clear();
                 }
-                if section.gpu.is_empty() {
-                    section.vertices.decode(&mut decoded)?;
-                }
-                let direct = section.gpu.is_empty() || self.device.caps.software_vertices;
-                if direct {
-                    self.device.transform(
-                        Mat4::from_translation(mesh::region_origin(
-                            mesh::region_key(*key),
-                            self.layout,
-                            frame.camera,
-                        ))
-                        .to_cols_array(),
-                        view.view.to_cols_array(),
-                        projection.to_cols_array(),
-                    )?;
-                }
-                let mut runs = smallvec::SmallVec::<[Range<u32>; 7]>::new();
-                if self.sides {
-                    section.sides.visible((-origin).to_array(), |first, count| {
-                        runs.push(first..first + count)
-                    });
-                } else {
-                    runs.push(0..u32::MAX);
-                }
-                for packet in &section.solid {
-                    if !runs
-                        .iter()
-                        .any(|r| r.start < packet.source.end && packet.source.start < r.end)
-                    {
+                for v in &visible {
+                    let key = &v.key;
+                    let origin = Vec3::from_array(v.origin);
+                    let section = self.sections.at(v.slot);
+                    if section.solid.is_empty() {
                         continue;
                     }
+                    if section.gpu.is_empty() {
+                        section.vertices.decode(&mut decoded)?;
+                    }
+                    let direct = section.gpu.is_empty() || self.device.caps.software_vertices;
                     if direct {
-                        self.device.state(
-                            DrawState {
-                                alpha_test: !packet.opaque,
-                                fog,
-                                linear: self.linear,
-                                mipmaps: self.mipmaps,
-                                ..Default::default()
-                            },
-                            &self.sprites.pages[packet.page],
-                            Some(&self.lightmap),
+                        self.device.transform(
+                            Mat4::from_translation(mesh::region_origin(
+                                mesh::region_key(*key),
+                                self.layout,
+                                frame.camera,
+                            ))
+                            .to_cols_array(),
+                            view.view.to_cols_array(),
+                            projection.to_cols_array(),
                         )?;
-                        mesh::draw_packet(
-                            &mut self.device,
-                            &self.arenas,
-                            section,
-                            packet,
-                            &decoded,
-                        )?;
+                    }
+                    let mut runs = smallvec::SmallVec::<[Range<u32>; 7]>::new();
+                    if self.sides {
+                        section.sides.visible((-origin).to_array(), |first, count| {
+                            runs.push(first..first + count)
+                        });
                     } else {
-                        for slice in &section.gpu {
-                            let first = packet.first.max(slice.source.start);
-                            let end = (packet.first + packet.count).min(slice.source.end);
-                            if first < end {
-                                self.solid_batches
-                                    .entry((packet.page, !packet.opaque, slice.arena))
-                                    .or_default()
-                                    .append(slice.first + first - slice.source.start, end - first);
+                        runs.push(0..u32::MAX);
+                    }
+                    for packet in &section.solid {
+                        if !runs
+                            .iter()
+                            .any(|r| r.start < packet.source.end && packet.source.start < r.end)
+                        {
+                            continue;
+                        }
+                        if direct {
+                            self.device.state(
+                                DrawState {
+                                    alpha_test: !packet.opaque,
+                                    fog,
+                                    linear: self.linear,
+                                    mipmaps: self.mipmaps,
+                                    ..Default::default()
+                                },
+                                &self.sprites.pages[packet.page],
+                                Some(&self.lightmap),
+                            )?;
+                            mesh::draw_packet(
+                                &mut self.device,
+                                &self.arenas,
+                                section,
+                                packet,
+                                &decoded,
+                            )?;
+                        } else {
+                            for slice in &section.gpu {
+                                let first = packet.first.max(slice.source.start);
+                                let end = (packet.first + packet.count).min(slice.source.end);
+                                if first < end {
+                                    self.solid_batches
+                                        .entry((packet.page, !packet.opaque, slice.arena))
+                                        .or_default()
+                                        .append(
+                                            slice.first + first - slice.source.start,
+                                            end - first,
+                                        );
+                                }
                             }
                         }
                     }
@@ -516,7 +585,12 @@ impl Renderer {
                     &self.sprites.pages[page],
                     Some(&self.lightmap),
                 )?;
-                batch.draw(&mut self.device, &arena.mesh, &mut self.index_scratch)?;
+                batch.draw(
+                    &mut self.device,
+                    &arena.mesh,
+                    &mut self.index_scratch,
+                    self.solid_reused,
+                )?;
             }
             self.section_draws = (self.device.draws - before) as usize;
             self.device.transform(
@@ -547,7 +621,7 @@ impl Renderer {
             let before_translucent = self.device.draws;
             for v in visible.iter().rev() {
                 let key = &v.key;
-                if self.sections[key].translucent.is_empty() {
+                if self.sections.at(v.slot).translucent.is_empty() {
                     continue;
                 }
                 self.device.transform(
@@ -560,7 +634,7 @@ impl Renderer {
                     view.view.to_cols_array(),
                     projection.to_cols_array(),
                 )?;
-                let section = &self.sections[key];
+                let section = self.sections.at(v.slot);
                 let mut decoded = std::mem::take(&mut self.decode_scratch);
                 if section.gpu.is_empty() {
                     section.vertices.decode(&mut decoded)?;
@@ -865,6 +939,7 @@ impl Renderer {
             &overlays,
             false,
         )?;
+        self.draw_crosshair(frame)?;
         let h = frame.hud;
         self.pictures
             .retain(|id, _| h.pictures.iter().any(|p| p.legacy_data().0 == *id));
@@ -1010,6 +1085,55 @@ impl Renderer {
         ];
         self.gui_stats = std::array::from_fn(|i| after[i] - before[i]);
         Ok(())
+    }
+    fn draw_crosshair(&mut self, frame: &Frame) -> Result<()> {
+        if frame.debug_crosshair.is_empty() {
+            return Ok(());
+        }
+        let view = View::screen(
+            frame.yaw,
+            frame.pitch,
+            frame.hand_fov_degrees,
+            self.config.width as f32 / self.config.height.max(1) as f32,
+            frame.depth_far,
+        );
+        let projection = view.projection * view.view;
+        let size = glam::Vec2::new(self.config.width as f32, self.config.height as f32);
+        let mut vertices = Vec::with_capacity(frame.debug_crosshair.len() * 4);
+        // Match the shared line renderer's pixel widths, including the black 4px
+        // outline underneath each coloured 2px axis. No hand bob or world fog.
+        for line in frame.debug_crosshair {
+            let a = projection.project_point3(Vec3::new(line[0], line[1], line[2]));
+            let b = projection.project_point3(Vec3::new(line[3], line[4], line[5]));
+            if !a.is_finite() || !b.is_finite() {
+                continue;
+            }
+            let delta = (b - a).truncate() * size;
+            let offset = glam::Vec2::new(-delta.y, delta.x).normalize_or_zero() * line[7] / size;
+            for (p, sign) in [(a, -1.0), (b, -1.0), (b, 1.0), (a, 1.0)] {
+                vertices.push(dx::Vertex {
+                    pos: [p.x + sign * offset.x, p.y + sign * offset.y, p.z],
+                    color: line[6].to_bits(),
+                    uv: [0.5; 2],
+                    light: [0.0; 2],
+                });
+            }
+        }
+        self.device.state(
+            DrawState {
+                blend: Blend::Alpha,
+                cull: false,
+                depth_test: false,
+                depth_write: false,
+                alpha_test: false,
+                lightmap: false,
+                mipmaps: false,
+                ..Default::default()
+            },
+            &self.white,
+            None,
+        )?;
+        self.device.draw_transient(&vertices)
     }
     fn save_screenshot(&mut self) {
         let Some(request) = self.screenshot.take() else {

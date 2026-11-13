@@ -2,8 +2,12 @@
 //! One bounded CPU job/result, no GPU objects or gameplay state cross the thread.
 use super::*;
 use std::sync::mpsc::{self, Receiver, SyncSender};
+use std::sync::{
+    Mutex,
+    atomic::{AtomicUsize, Ordering},
+};
 type Snapshot = (SectionKey, u64, Arc<dx::MeshData>);
-struct Job {
+pub(super) struct Job {
     region: RegionKey,
     sections: Vec<Snapshot>,
     resident: bool,
@@ -13,26 +17,65 @@ struct Prepared {
     sections: Vec<(SectionKey, u64, Range<u32>)>,
     vertices: Vec<dx::Vertex>,
     resident: bool,
+    encoded: Option<dx::EncodedVertices>,
+}
+pub(super) enum Work {
+    Compact(Job),
+    Upload(upload::Job),
 }
 pub(in super::super) struct Compactor {
-    jobs: SyncSender<Job>,
+    pub(super) jobs: SyncSender<Work>,
     done: Receiver<std::result::Result<Prepared, String>>,
+    pub(super) upload_done: Receiver<upload::Ready>,
+    pub(super) upload_quota: Arc<AtomicUsize>,
+    pub(super) upload_epoch: Arc<AtomicUsize>,
+    pub(super) recycled: Arc<Mutex<Option<Vec<dx::Vertex>>>>,
     busy: bool,
 }
 impl Compactor {
-    pub(in super::super) fn new() -> Option<Self> {
-        let (jobs, input) = mpsc::sync_channel::<Job>(1);
+    pub(in super::super) fn new(
+        layout: Arc<dx::AtlasSet>,
+        hardware: bool,
+        limit: usize,
+    ) -> Option<Self> {
+        let (jobs, input) = mpsc::sync_channel::<Work>(64);
         let (output, done) = mpsc::sync_channel(1);
+        let (uploads, upload_done) = mpsc::sync_channel(64);
+        let upload_quota = Arc::new(AtomicUsize::new(0));
+        let upload_epoch = Arc::new(AtomicUsize::new(0));
+        let epoch = upload_epoch.clone();
+        let recycled = Arc::new(Mutex::new(None));
+        let spare = recycled.clone();
         std::thread::Builder::new()
-            .name("d3d9 compaction".into())
+            .name("d3d9 section staging".into())
             .spawn(move || {
-                while let Ok(job) = input.recv() {
+                let mut scratch = convert::Scratch::default();
+                while let Ok(work) = input.recv() {
+                    let job = match work {
+                        Work::Upload(job) => {
+                            let ready = upload::prepare(
+                                job,
+                                &layout,
+                                &mut scratch,
+                                &spare,
+                                &epoch,
+                                hardware,
+                                limit,
+                            );
+                            if uploads.send(ready).is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        Work::Compact(job) => job,
+                    };
                     let prepare = || -> std::result::Result<Prepared, String> {
                         let mut prepared = Prepared {
                             region: job.region,
                             sections: Vec::new(),
                             vertices: Vec::new(),
                             resident: job.resident,
+                            encoded: None,
                         };
                         let mut decoded = Vec::new();
                         for (key, revision, data) in job.sections {
@@ -45,6 +88,10 @@ impl Compactor {
                                 first..prepared.vertices.len() as u32,
                             ));
                         }
+                        if hardware {
+                            prepared.encoded =
+                                Some(dx::EncodedVertices::new(&prepared.vertices, true));
+                        }
                         Ok(prepared)
                     };
                     if output.send(prepare()).is_err() {
@@ -56,6 +103,10 @@ impl Compactor {
         Some(Self {
             jobs,
             done,
+            upload_done,
+            upload_quota,
+            upload_epoch,
+            recycled,
             busy: false,
         })
     }
@@ -84,7 +135,13 @@ impl Renderer {
             return Ok(());
         }
         if !prepared.resident
-            && (self.gpu_mesh_bytes + std::mem::size_of_val(prepared.vertices.as_slice()) as u64
+            && (self.gpu_mesh_bytes
+                + prepared
+                    .encoded
+                    .as_ref()
+                    .map_or(std::mem::size_of_val(prepared.vertices.as_slice()), |v| {
+                        v.bytes().len()
+                    }) as u64
                 > self.mesh_budget
                 || prepared
                     .sections
@@ -94,7 +151,12 @@ impl Renderer {
             return Ok(());
         }
         // Allocate first: a failed optimization must keep the old scene drawable.
-        let mesh = match self.device.mesh(&prepared.vertices) {
+        let uploaded = if let Some(v) = &prepared.encoded {
+            self.device.mesh_encoded(v)
+        } else {
+            self.device.mesh(&prepared.vertices)
+        };
+        let mesh = match uploaded {
             Ok(mesh) => mesh,
             Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
             Err(error) => {
@@ -135,7 +197,11 @@ impl Renderer {
         Ok(())
     }
     pub(in super::super) fn schedule_compaction(&mut self) {
-        if self.compactor.as_ref().is_none_or(|w| w.busy) {
+        if self
+            .compactor
+            .as_ref()
+            .is_none_or(|w| w.busy || w.upload_quota.load(Ordering::Relaxed) != 0)
+        {
             return;
         }
         if self.schedule_prefetch() {
@@ -146,13 +212,15 @@ impl Renderer {
         }
         self.compact_scan = self.frames;
         let limit = self.device.max_vertices(); // at most 2 MiB of prepared vertices
-        let mut regions = HashMap::<RegionKey, (usize, usize)>::default();
+        let mut regions = HashMap::<(RegionKey, dx::VertexEncoding), (usize, usize)>::default();
         for arena in self.arenas.values() {
-            let entry = regions.entry(arena.region).or_default();
+            let entry = regions
+                .entry((arena.region, arena.mesh.encoding()))
+                .or_default();
             entry.0 += 1;
             entry.1 += arena.live as usize;
         }
-        let Some((region, _)) = regions
+        let Some(((region, encoding), _)) = regions
             .into_iter()
             .filter(|(_, (pages, live))| *pages > live.div_ceil(limit) * 2 + 1)
             .max_by_key(|(_, (pages, live))| pages - live.div_ceil(limit))
@@ -162,7 +230,7 @@ impl Renderer {
         let mut pages: Vec<_> = self
             .arenas
             .iter()
-            .filter(|(_, a)| a.region == region)
+            .filter(|(_, a)| a.region == region && a.mesh.encoding() == encoding)
             .collect();
         pages.sort_unstable_by_key(|(_, a)| a.live);
         let mut chosen = FxHashSet::default();
@@ -201,11 +269,11 @@ impl Renderer {
         let worker = self.compactor.as_mut().unwrap();
         worker.busy = worker
             .jobs
-            .try_send(Job {
+            .try_send(Work::Compact(Job {
                 region,
                 sections,
                 resident: true,
-            })
+            }))
             .is_ok();
     }
     fn schedule_prefetch(&mut self) -> bool {
@@ -224,16 +292,18 @@ impl Renderer {
                 && self.frames >= s.retry_after
                 && self.occlusion.contains(key)
         };
-        let Some((&key, _)) = self.sections.iter().find(|(k, s)| ready(**k, s)) else {
+        let Some((key, _)) = self.sections.iter().find(|(k, s)| ready(*k, s)) else {
             return false;
         };
         let region = region_key(key);
+        let encoding = self.sections[&key].vertices.encoding();
         let mut count = 0;
         let sections = self
             .sections
             .iter()
-            .filter_map(|(&key, section)| {
+            .filter_map(|(key, section)| {
                 if region_key(key) == region
+                    && (!self.device.compact_vertices() || section.vertices.encoding() == encoding)
                     && ready(key, section)
                     && count + section.vertices.len() <= limit
                 {
@@ -247,11 +317,11 @@ impl Renderer {
         let worker = self.compactor.as_mut().unwrap();
         worker.busy = worker
             .jobs
-            .try_send(Job {
+            .try_send(Work::Compact(Job {
                 region,
                 sections,
                 resident: false,
-            })
+            }))
             .is_ok();
         self.prefetch_scan = self.frames + 1;
         worker.busy

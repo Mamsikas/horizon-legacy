@@ -23,6 +23,8 @@ mod atlas;
 mod compat;
 mod frame;
 mod mesh;
+mod resident;
+mod solid_cache;
 use atlas::{Pixels, Sprites};
 use mesh::{Arena, Section};
 
@@ -66,8 +68,7 @@ pub struct Renderer {
     pub animated_textures: bool,
     pub capture: Option<capture::Request>,
     pub capture_result: Option<std::result::Result<serde_json::Value, String>>,
-    sections: HashMap<SectionKey, Section>,
-    spatial: gfx::resident::Resident<()>,
+    sections: resident::Sections,
     occlusion: gfx::occlusion::Occlusion,
     visible: Vec<gfx::resident::Visible>,
     layout: ColumnLayout,
@@ -81,6 +82,11 @@ pub struct Renderer {
     arenas: HashMap<u64, Arena>,
     next_arena: u64,
     compactor: Option<mesh::Compactor>,
+    pending_sections: HashMap<SectionKey, u64>,
+    upload_ticket: u64,
+    staged_sections: u64,
+    stage_profile: [f64; 5],
+    uncached_mesh_bytes: u64,
     compact_scan: u64,
     compactions: u64,
     prefetch_scan: u64,
@@ -88,10 +94,10 @@ pub struct Renderer {
     pending_mesh_uploads: u64,
     seen_resets: u64,
     decode_scratch: Vec<dx::Vertex>,
-    upload_vertices: Vec<dx::Vertex>,
-    upload_groups: Vec<Vec<dx::Vertex>>,
-    shadow_scratch: Vec<u8>,
+    convert_scratch: mesh::convert::Scratch,
     solid_batches: BTreeMap<(usize, bool, u64), mesh::DrawBatch>,
+    solid_cache: solid_cache::SolidCache,
+    solid_reused: bool,
     index_scratch: dx::IndexBatch,
     gui_batches: frame::GuiBatches,
     gui_vertices: Vec<dx::Vertex>,
@@ -99,6 +105,7 @@ pub struct Renderer {
     gui_stats: [u64; 4],
     upload_cpu: Duration,
     timings: Vec<(&'static str, f32)>,
+    profile_laps: crate::spans::Laps,
     texture_target_warned: bool,
     cache_warning: bool,
     dropped: bool,
@@ -149,7 +156,7 @@ impl Renderer {
         } else {
             (advisory / 3)
                 .min(horizon_threads::process_memory::usage().map_or(1 << 30, |m| m[2] / 8))
-                .clamp(16 << 20, 1 << 30)
+                .clamp(16 << 20, 2 << 30)
         };
         let mesh_budget = budget("HORIZON_D3D9_MESH_MIB", default_budget)?;
         let texture_budget = budget("HORIZON_D3D9_TEXTURE_MIB", default_budget)?;
@@ -182,7 +189,7 @@ impl Renderer {
         crate::mesher::packed::pack_quads(false);
         crate::mesher::group_parts(false);
         log::info!(
-            "Direct3D9 legacy: fixed-function HAL vertices, optional ps_2_0 fog; no shader compiler, hardware VS requirement, wgpu device or GPU compute. mesh_budget={} texture_budget={}",
+            "Direct3D9 legacy: HAL, caps-selected FFP/VS2 vertices, optional ps_2_0 fog; no shader compiler, mandatory hardware VS, wgpu device or GPU compute. mesh_budget={} texture_budget={}",
             mesh_budget,
             texture_budget
         );
@@ -205,6 +212,11 @@ impl Renderer {
             ),
             ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Noop)
         };
+        let compactor = mesh::Compactor::new(
+            sprites.layout.clone(),
+            device.compact_vertices(),
+            device.max_vertices(),
+        );
         Ok(Self {
             device,
             sprites,
@@ -254,8 +266,7 @@ impl Renderer {
             animated_textures: true,
             capture: None,
             capture_result: None,
-            sections: HashMap::default(),
-            spatial: gfx::resident::Resident::default(),
+            sections: resident::Sections::default(),
             occlusion: gfx::occlusion::Occlusion::new(
                 ColumnLayout::default().min_y(),
                 ColumnLayout::default().sections() as i32,
@@ -271,7 +282,12 @@ impl Renderer {
             decoded_mesh_bytes: 0,
             arenas: HashMap::default(),
             next_arena: 0,
-            compactor: mesh::Compactor::new(),
+            compactor,
+            pending_sections: HashMap::default(),
+            upload_ticket: 0,
+            staged_sections: 0,
+            stage_profile: [0.0; 5],
+            uncached_mesh_bytes: 0,
             compact_scan: 0,
             compactions: 0,
             prefetch_scan: 0,
@@ -279,10 +295,10 @@ impl Renderer {
             pending_mesh_uploads: 0,
             seen_resets: 0,
             decode_scratch: Vec::new(),
-            upload_vertices: Vec::new(),
-            upload_groups: Vec::new(),
-            shadow_scratch: Vec::new(),
+            convert_scratch: mesh::convert::Scratch::default(),
             solid_batches: BTreeMap::new(),
+            solid_cache: solid_cache::SolidCache::default(),
+            solid_reused: false,
             index_scratch: dx::IndexBatch::default(),
             gui_batches: frame::GuiBatches::new(dx::DrawState::default()),
             gui_vertices: Vec::new(),
@@ -290,6 +306,7 @@ impl Renderer {
             gui_stats: [0; 4],
             upload_cpu: Duration::ZERO,
             timings: Vec::new(),
+            profile_laps: crate::spans::laps(),
             texture_target_warned: false,
             cache_warning: false,
             dropped: false,
@@ -314,8 +331,8 @@ fn budget(name: &str, default: u64) -> Result<u64> {
             let mib: u64 = s
                 .parse()
                 .map_err(|_| format!("{name} must be an integer MiB budget"))?;
-            if !(4..=1024).contains(&mib) {
-                return Err(format!("{name} must be between 4 and 1024 MiB").into());
+            if !(4..=4096).contains(&mib) {
+                return Err(format!("{name} must be between 4 and 4096 MiB").into());
             }
             Ok(mib << 20)
         }

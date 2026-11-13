@@ -6,7 +6,7 @@ mod device;
 pub use device::*;
 
 mod atlas;
-pub use atlas::{AtlasLayout, AtlasSet};
+pub use atlas::{AtlasLayout, AtlasSet, AtlasUv};
 
 #[cfg(windows)]
 pub mod clipboard;
@@ -17,3 +17,7 @@ mod fog;
 pub use fog::Fog;
 mod tiles;
 pub use tiles::TileImage;
+mod terrain;
+pub use terrain::{EncodedVertices, VertexEncoding};
+mod animation;
+pub use animation::AnimationCache;
