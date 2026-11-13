@@ -343,6 +343,17 @@ impl Renderer {
         Default::default()
     }
     pub fn set_pass_timing(&mut self, on: bool) {}
+    pub fn set_pass_detail(&mut self, on: bool) {}
+    pub fn set_keep_timed_frames(&mut self, on: bool) {}
+    pub fn take_timed_frames(&mut self) -> gfx::pack_timing::TimedFrames {
+        Default::default()
+    }
+    pub fn gpu_readout(&self) -> Option<gfx::pack_timing::GpuReadout> { None }
+    pub fn pass_detail(&self) -> bool { false }
+    pub fn pass_detail_support(&self) -> Option<gfx::pack_timing::DetailSupport> { None }
+    pub fn own_pass_parts(&self) -> Vec<(String, Vec<(String, f32)>)> { Vec::new() }
+    pub fn own_pass_counters(&self) -> Vec<(String, gfx::pack_timing::PassCounters)> { Vec::new() }
+    pub fn set_world_text_shaders(&mut self, shaders: &gfx::core_text::TextShaders) {}
     pub fn set_pass_timing_gap(&mut self, gap: std::time::Duration) {}
     pub fn shader_pass_times(&self) -> Vec<(String, f32)> {
         Vec::new()

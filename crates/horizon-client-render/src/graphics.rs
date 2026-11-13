@@ -90,6 +90,8 @@ fn nits_setting(nits: u32) -> u32 {
 /// Simple-level presets. `Custom` leaves every option as the player set it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Preset {
+    /// Every saving on, over the lowest settings (`preset::table`).
+    FullPerformance,
     Performance,
     Balanced,
     Quality,
@@ -98,7 +100,8 @@ pub enum Preset {
     Custom,
 }
 impl Preset {
-    pub const ALL: [Preset; 5] = [
+    pub const ALL: [Preset; 6] = [
+        Preset::FullPerformance,
         Preset::Performance,
         Preset::Balanced,
         Preset::Quality,
@@ -107,6 +110,7 @@ impl Preset {
     ];
     pub fn name(self) -> &'static str {
         match self {
+            Preset::FullPerformance => "full_performance",
             Preset::Performance => "performance",
             Preset::Balanced => "balanced",
             Preset::Quality => "quality",
@@ -116,6 +120,7 @@ impl Preset {
     }
     pub fn label(self) -> &'static str {
         match self {
+            Preset::FullPerformance => "Full Performance",
             Preset::Performance => "Performance",
             Preset::Balanced => "Balanced",
             Preset::Quality => "Quality",
@@ -798,9 +803,9 @@ pub struct Graphics {
     pub cave_culling: bool,
     /// Near solid terrain culled, and its draws listed, on the GPU (`gfx::gpu_culling`), where it
     /// is offered (`gpu_culling_offer`). Off by default (GPU Culling, Performance graphics); it
-    /// applies at once, and no preset sets it. Every save writes it, so a default turned on later
-    /// needs a new key, as `batchTranslucent` did. Auto turns it on only where the CPU limits the
-    /// frame and it makes the frame faster (`autotune`).
+    /// applies at once, and every preset sets it to Auto. Every save writes it, so a default
+    /// turned on later needs a new key, as `batchTranslucent` did. Auto turns it on only where
+    /// the CPU limits the frame and it makes the frame faster (`autotune`).
     pub gpu_culling: GpuCullingMode,
     /// Skip drawing entities hidden behind opaque terrain, synchronously or asynchronously.
     pub entity_culling: EntityCullingMode,
@@ -849,6 +854,11 @@ pub struct Graphics {
     pub overlay: Overlay,
     /// World resolution as a percentage of the window's (50..=200).
     pub resolution_scale: u32,
+    /// Dynamic Resolution: below 100%, `resolution_scale` is the floor, and the scale rises
+    /// toward 100% while the GPU keeps `target_fps` (`crate::dynamic_resolution`). Off by default.
+    pub dynamic_resolution: bool,
+    /// The frame rate Dynamic Resolution keeps (30..=240).
+    pub target_fps: u32,
     /// FXAA over the world.
     pub fxaa: bool,
     /// TAA over the world (FXAA is off while it is on).
@@ -945,6 +955,8 @@ impl Default for Graphics {
             workers: 0,
             overlay: Overlay::Off,
             resolution_scale: 100,
+            dynamic_resolution: false,
+            target_fps: 60,
             fxaa: false,
             taa: false,
             upscaling: Upscaling::Native,
@@ -1106,6 +1118,8 @@ impl Graphics {
                 }
                 "workers" => g.workers = number(g.workers).min(64),
                 "resolutionScale" => g.resolution_scale = number(g.resolution_scale).clamp(50, 200),
+                "dynamicResolution" => g.dynamic_resolution = flag(g.dynamic_resolution),
+                "targetFps" => g.target_fps = number(g.target_fps).clamp(30, 240),
                 "fxaa" => g.fxaa = flag(g.fxaa),
                 "taa" => g.taa = flag(g.taa),
                 "upscaling" => g.upscaling = Upscaling::parse(value),
@@ -1160,7 +1174,7 @@ impl Graphics {
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1197,6 +1211,8 @@ impl Graphics {
                 Overlay::Graph => "graph",
             },
             self.resolution_scale,
+            bool_text(self.dynamic_resolution),
+            self.target_fps,
             bool_text(self.fxaa),
             bool_text(self.taa),
             self.upscaling.name(),
@@ -1294,37 +1310,9 @@ impl Graphics {
     }
 }
 
-/// A preset's values for vanilla's options and Horizon's own.
-pub fn apply_preset(preset: Preset, s: &mut crate::settings::Settings) {
-    let (rd, sim, clouds, particles, shadows, blend, mipmaps, entity, leaves, weather_r) =
-        match preset {
-            Preset::Performance => (8, 6, "false", 2, false, 0, 0, 0.5, false, 3),
-            Preset::Balanced => (12, 8, "fast", 1, true, 1, 2, 0.75, true, 5),
-            Preset::Quality => (16, 12, "true", 0, true, 2, 4, 1.0, true, 10),
-            Preset::Ultra => (24, 12, "true", 0, true, 3, 4, 1.5, true, 10),
-            Preset::Custom => return,
-        };
-    s.render_distance = rd;
-    s.simulation_distance = sim;
-    s.clouds = clouds.into();
-    s.particles = particles;
-    s.entity_shadows = shadows;
-    s.biome_blend = blend;
-    s.mipmap_levels = mipmaps;
-    s.entity_distance = entity;
-    s.cutout_leaves = leaves;
-    s.weather_radius = weather_r;
-    s.graphics_preset = "custom".into();
-    let g = &mut s.horizon;
-    g.preset = preset;
-    g.cave_culling = true;
-    g.animated_textures = true;
-    g.chunk_updates = 0;
-    g.upload_budget_kib = 0;
-    g.sky = true;
-    g.fog = true;
-    g.weather = true;
-}
+#[path = "graphics_preset.rs"]
+mod preset;
+pub use preset::apply_preset;
 
 #[cfg(test)]
 mod tests {
@@ -1564,6 +1552,8 @@ mod tests {
             workers: 6,
             overlay: Overlay::Graph,
             resolution_scale: 75,
+            dynamic_resolution: false,
+            target_fps: 60,
             fxaa: true,
             taa: true,
             upscaling: Upscaling::Balanced,
@@ -1924,10 +1914,12 @@ mod tests {
         let g = Graphics::default();
         assert_eq!(g.workers, 0);
         let cores = horizon_threads::worker_count();
+        // Vanilla's bound: one core is always left for the render and server threads.
         assert!((1..=cores.saturating_sub(1).max(1)).contains(&g.worker_threads()));
-        if !cfg!(target_vendor = "apple") {
-            assert_eq!(g.worker_threads(), cores.saturating_sub(1).max(1));
-        }
+        // The count itself is `horizon_threads::default_workers`, which is one less than
+        // the *smaller* of the machine's cores and its performance cores (a Linux hybrid
+        // CPU reports fewer of the latter), so it is not always `cores - 1`.
+        assert_eq!(g.worker_threads(), horizon_threads::default_workers());
         // A manual count is the player's own choice, kept as asked.
         let manual = Graphics { workers: 3, ..g };
         assert_eq!(manual.worker_threads(), 3);

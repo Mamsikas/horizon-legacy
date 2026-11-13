@@ -100,6 +100,8 @@ pub enum H {
     Workers,
     Overlay,
     ResolutionScale,
+    DynamicResolution,
+    TargetFps,
     Antialiasing,
     Upscaling,
     UpscalingSharpness,
@@ -365,6 +367,16 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
                             H::ResolutionScale,
                             High,
                             "World pixels per screen pixel. Below 100% is faster on the GPU.",
+                        ),
+                        h(
+                            H::DynamicResolution,
+                            Medium,
+                            "Raises Resolution Scale toward 100% while the frame rate allows it.",
+                        ),
+                        h(
+                            H::TargetFps,
+                            Low,
+                            "The frame rate Dynamic Resolution keeps.",
                         ),
                         h(
                             H::Antialiasing,
@@ -795,6 +807,7 @@ impl H {
             }
             H::Workers => Some(g.workers as f32 / max_workers() as f32),
             H::ResolutionScale => Some((g.resolution_scale as f32 - 50.0) / 150.0),
+            H::TargetFps => Some((g.target_fps as f32 - 30.0) / 210.0),
             H::UpscalingSharpness => Some(g.upscaling_sharpness as f32 / 100.0),
             // Auto, then 10..480 by 10.
             H::HdrPaperWhite => Some(crate::graphics::nits_position(g.hdr_paper_white)),
@@ -815,6 +828,7 @@ impl H {
             H::UploadBudget => Some((UPLOAD_STEPS.len() - 1) as u32),
             H::Workers => Some(max_workers()),
             H::ResolutionScale => Some(30),
+            H::TargetFps => Some(42),
             H::UpscalingSharpness => Some(20),
             H::HdrPaperWhite | H::HdrUiBrightness => Some(crate::graphics::NITS_STEPS),
             H::HdrPeak => Some(PEAK_POSITIONS),
@@ -839,7 +853,7 @@ impl H {
     fn label(self, s: &Settings, out: &EffectiveOutput) -> Text {
         let g = &s.horizon;
         match self {
-            H::Preset => labelled("Preset", g.preset.label()),
+            H::Preset => labelled("Horizon Preset", g.preset.label()),
             H::LodDistance => match g.lod_distance {
                 0 => labelled("LOD Distance", "Off"),
                 n => labelled("LOD Distance", lang::tr("%s chunks", &[&n])),
@@ -914,6 +928,8 @@ impl H {
                 n => labelled("Worker Threads", n),
             },
             H::ResolutionScale => labelled_percent("Resolution Scale", g.resolution_scale),
+            H::DynamicResolution => labelled("Dynamic Resolution", on_off(g.dynamic_resolution)),
+            H::TargetFps => labelled("Target FPS", g.target_fps),
             H::Antialiasing => labelled(
                 "Anti-aliasing",
                 match (g.fxaa, g.taa) {
@@ -978,6 +994,7 @@ impl H {
             }
             H::Workers => g.workers = (v * max_workers() as f32).round() as u32,
             H::ResolutionScale => g.resolution_scale = (50.0 + (v * 30.0).round() * 5.0) as u32,
+            H::TargetFps => g.target_fps = (30.0 + (v * 42.0).round() * 5.0) as u32,
             H::UpscalingSharpness => g.upscaling_sharpness = (v * 20.0).round() as u32 * 5,
             H::HdrPaperWhite => g.hdr_paper_white = crate::graphics::nits_at(v),
             H::HdrUiBrightness => g.hdr_ui_nits = crate::graphics::nits_at(v),
@@ -1037,6 +1054,7 @@ impl H {
             H::Fog => g.fog = !g.fog,
             H::Weather => g.weather = !g.weather,
             H::AnimatedTextures => g.animated_textures = !g.animated_textures,
+            H::DynamicResolution => g.dynamic_resolution = !g.dynamic_resolution,
             H::DitherCutoutMips => g.dither_cutout_mips = !g.dither_cutout_mips,
             H::PresentMode => g.present_mode = step(&PresentMode::ALL, g.present_mode, back),
             // Off, FXAA, TAA.
@@ -1187,6 +1205,7 @@ impl Item {
             Item::Horizon(H::Fog) => g.fog,
             Item::Horizon(H::Weather) => g.weather,
             Item::Horizon(H::AnimatedTextures) => g.animated_textures,
+            Item::Horizon(H::DynamicResolution) => g.dynamic_resolution,
             Item::Horizon(H::DitherCutoutMips) => g.dither_cutout_mips,
             Item::Horizon(H::HdrLighting) => g.hdr_lighting,
             Item::Horizon(H::BatteryMode) => g.battery,
@@ -1277,7 +1296,6 @@ impl Item {
                         | H::GraphicsApi
                         | H::TranslucentBatching
                         | H::HdrSmoothGradients
-                        | H::GpuCulling
                 )
                 | Item::Vanilla(
                     Opt::GuiScale
@@ -1734,6 +1752,14 @@ mod tests {
         ui.set_search("tearing");
         let found = ui.listed(&s, SIZE);
         assert!(found.iter().any(|(_, i)| *i == Item::Vanilla(Opt::Vsync)));
+        // Both presets answer "preset"; Horizon's own, named apart from vanilla's, answers its name.
+        ui.set_search("preset");
+        let found = ui.listed(&s, SIZE);
+        let general = |item| (Page::General, item);
+        assert!(found.contains(&general(Item::Horizon(H::Preset))));
+        assert!(found.contains(&general(Item::Vanilla(Opt::Preset))));
+        ui.set_search("horizon preset");
+        assert_eq!(ui.listed(&s, SIZE), [general(Item::Horizon(H::Preset))]);
         ui.set_search("hdr");
         let [x, y, w, h] = cols.page(Page::ALL.len() - 1);
         press(&mut ui, &mut s, (x + w / 2.0, y + h / 2.0));
@@ -2206,9 +2232,18 @@ mod tests {
     fn presets_set_vanilla_and_horizon_options() {
         let mut s = Settings::default();
         Item::Horizon(H::Preset).cycle(&mut s, false, [854, 480], &NONE);
+        assert_eq!(s.horizon.preset, Preset::FullPerformance);
+        assert_eq!(s.render_distance, 6);
+        assert_eq!(s.clouds, "false");
+        assert_eq!(s.horizon.resolution_scale, 75);
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+        assert!(s.horizon.opaque_ice && s.horizon.cache_chests);
+        // The next one puts back what only Full Performance lowers.
+        Item::Horizon(H::Preset).cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(s.horizon.preset, Preset::Performance);
         assert_eq!(s.render_distance, 8);
-        assert_eq!(s.clouds, "false");
+        assert_eq!(s.horizon.resolution_scale, 100);
+        assert!(!s.horizon.opaque_ice && s.horizon.cache_chests);
         // Any quality change leaves the preset.
         Item::Vanilla(Opt::Clouds).cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(s.horizon.preset, Preset::Custom);
@@ -2216,6 +2251,14 @@ mod tests {
         Item::Horizon(H::Preset).cycle(&mut s, true, [854, 480], &NONE);
         Item::Vanilla(Opt::Vsync).cycle(&mut s, false, [854, 480], &NONE);
         assert_eq!(s.horizon.preset, Preset::Ultra);
+        // Ultra keeps the optimizations that leave the picture as it is, and no others.
+        assert_eq!(s.horizon.entity_culling, EntityCullingMode::Asynchronous);
+        assert_eq!(s.horizon.gpu_culling, GpuCullingMode::Auto);
+        assert_eq!((s.horizon.lod_distance, s.horizon.fxaa), (128, true));
+        assert_eq!(
+            (s.horizon.resolution_scale, s.horizon.opaque_ice),
+            (100, false)
+        );
     }
 
     #[test]
@@ -2230,7 +2273,7 @@ mod tests {
         assert_eq!(seen, [2, 4, 8, 1]);
         Item::Horizon(H::ScreenshotQuality).cycle(&mut s, true, [854, 480], &NONE);
         assert_eq!(s.horizon.screenshot_quality, 8);
-        assert_eq!(s.horizon.preset, Preset::Performance);
+        assert_eq!(s.horizon.preset, Preset::FullPerformance);
     }
 
     #[test]
@@ -2278,14 +2321,6 @@ mod tests {
         let item = Item::Horizon(H::EntityCulling);
         assert_eq!(s.horizon.entity_culling, EntityCullingMode::Off);
         assert_eq!(item.label(&s, &NONE).plain(), "Entity Culling: Off");
-        for mode in EntityCullingMode::ALL {
-            s.horizon.entity_culling = mode;
-            for preset in Preset::ALL {
-                crate::graphics::apply_preset(preset, &mut s);
-                assert_eq!(s.horizon.entity_culling, mode);
-            }
-        }
-        s.horizon.entity_culling = EntityCullingMode::Off;
         let mut ui = ui();
         let r = row(&mut ui, &s, item);
         for mode in [
@@ -2314,10 +2349,6 @@ mod tests {
         assert_eq!(item.label(&s, &NONE).plain(), "Particle Culling: Off");
         for mode in ParticleCullingMode::ALL {
             s.horizon.particle_culling = mode;
-            for preset in Preset::ALL {
-                crate::graphics::apply_preset(preset, &mut s);
-                assert_eq!(s.horizon.particle_culling, mode);
-            }
             assert_eq!(
                 crate::graphics::Graphics::parse(&s.horizon.serialize()).particle_culling,
                 mode
@@ -2511,8 +2542,8 @@ mod tests {
         }
     }
 
-    /// GPU Culling: Off, On or Auto right after Cave Culling, off by default, no part of a
-    /// preset, and greyed out with its reason, reading Off, wherever it isn't offered.
+    /// GPU Culling: Off, On or Auto right after Cave Culling, off by default, and greyed out
+    /// with its reason, reading Off, wherever it isn't offered.
     #[test]
     fn gpu_culling_steps_off_on_auto_where_it_is_offered() {
         use crate::graphics::GpuCullingOffer;
@@ -2551,7 +2582,7 @@ mod tests {
             assert!(key(&mut ui, &mut s, K::Enter).is_empty());
             assert_eq!(s.horizon.gpu_culling, GpuCullingMode::On, "{offer:?}");
         }
-        // Where it is, it steps through its three values and keeps the preset.
+        // Where it is, it steps through its three values and leaves the preset.
         crate::graphics::offer_gpu_culling(GpuCullingOffer::Offered);
         assert_eq!(item.blocked(&s, &NONE), None);
         for label in ["Auto", "Off", "On"] {
@@ -2567,18 +2598,10 @@ mod tests {
         }
         item.cycle(&mut s, true, FB, &NONE);
         assert_eq!(s.horizon.gpu_culling, GpuCullingMode::Off);
-        assert_eq!(s.horizon.preset, Preset::Balanced);
+        assert_eq!(s.horizon.preset, Preset::Custom);
         // Auto says what it does.
         s.horizon.gpu_culling = GpuCullingMode::Auto;
         assert!(description(item, &s, &NONE, "").starts_with("Auto: "));
-        // No preset sets it.
-        for mode in GpuCullingMode::ALL {
-            s.horizon.gpu_culling = mode;
-            for preset in Preset::ALL {
-                crate::graphics::apply_preset(preset, &mut s);
-                assert_eq!(s.horizon.gpu_culling, mode, "{preset:?}");
-            }
-        }
     }
 
     #[test]
@@ -2704,6 +2727,7 @@ mod tests {
             H::UploadBudget,
             H::Workers,
             H::ResolutionScale,
+            H::TargetFps,
             H::UpscalingSharpness,
             H::HdrPaperWhite,
             H::HdrPeak,

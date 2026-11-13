@@ -24,5 +24,7 @@ pool/main/g/gcc-mingw-w64/gcc-mingw-w64-x86-64-posix-runtime_14.2.0-19+27+b1_amd
 pool/main/m/mingw-w64/mingw-w64-common_12.0.0-5_all.deb 97dce5d0d8aff1cade4786ad4ef5078345477a598829afcac2e7f2fbc5399990
 pool/main/m/mingw-w64/mingw-w64-x86-64-dev_12.0.0-5_all.deb 0bf89cf7454cccb49cd2a46a6f7b33896f6ae3a1a2fe33e02c40be6155bbb385
 PACKAGES
+# windres invokes the conventional GCC name when preprocessing embedded icons.
+ln -sfn x86_64-w64-mingw32-gcc-posix "$root/usr/bin/x86_64-w64-mingw32-gcc"
 "$root/usr/bin/x86_64-w64-mingw32-gcc-posix" --version
 echo "Cross compiler extracted into $root (add $root/usr/bin to PATH)."
