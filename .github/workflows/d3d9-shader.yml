@@ -2,9 +2,9 @@ name: Direct3D9 SM2 shader validation
 on:
   push:
     branches: [codex/win7-d3d9-client]
-    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', '.github/workflows/d3d9-shader.yml']
+    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', 'crates/horizon-client-d3d9/src/terrain*', '.github/workflows/d3d9-shader.yml']
   pull_request:
-    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', '.github/workflows/d3d9-shader.yml']
+    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', 'crates/horizon-client-d3d9/src/terrain*', '.github/workflows/d3d9-shader.yml']
 jobs:
   shader:
     runs-on: windows-2022
@@ -14,7 +14,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compile and check the embedded ps_2_0 program
         shell: pwsh
-        run: tools/d3d9/compile.ps1 -OutDir "$env:RUNNER_TEMP/sm2"
+        run: |
+          tools/d3d9/compile.ps1 -OutDir "$env:RUNNER_TEMP/sm2"
+          tools/d3d9/compile.ps1 -OutDir "$env:RUNNER_TEMP/sm2" -Name terrain -Profile vs_2_0
       - uses: actions/upload-artifact@v4
         with:
           name: d3d9-sm2-validation
