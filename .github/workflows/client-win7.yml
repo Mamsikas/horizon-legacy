@@ -49,4 +49,4 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: horizon-client-win7-x64
-          path: ${{ runner.temp }}/win7-client/artifacts/*
+          path: ${{ runner.temp }}/win7-client/artifacts/package/*
