@@ -1,5 +1,8 @@
 //! Embeds Horizon's icon (`packaging/icons/horizon.ico`) in the Windows executables, as icon
 //! resource 1: Explorer and the task bar show it, and the window takes it as its icon.
+#[path = "build_support.rs"]
+mod build_support;
+
 fn main() {
     if std::env::var_os("CARGO_FEATURE_WIN7").is_some() {
         embed_win7_support();
@@ -24,33 +27,20 @@ fn main() {
 }
 
 // Ship only Horizon's original exporters and their pins, never Mojang's files.
-// Source selection matches tools/release_train.py::exporters.
+// Include the transitive same-package helpers javac loads from its sourcepath.
 fn embed_win7_support() {
-    use std::{collections::BTreeSet, fs, path::PathBuf};
+    use std::{fs, path::PathBuf};
     let root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap()).join("..");
-    let mut files = BTreeSet::from([
-        "research-lock.json".to_string(),
-        "crates/horizon-prepare/src/exporters.rs".to_string(),
-    ]);
-    for source in fs::read_dir(root.join("crates/horizon-prepare/src")).unwrap() {
-        let source = source.unwrap().path();
-        if source.extension().is_none_or(|ext| ext != "rs") {
-            continue;
-        }
-        println!("cargo:rerun-if-changed={}", source.display());
-        for token in fs::read_to_string(&source).unwrap().split('"') {
-            if token.ends_with(".java")
-                && token.as_bytes().first().is_some_and(u8::is_ascii_uppercase)
-                && token
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.')
-            {
-                files.insert(format!(
-                    "mods/horizon/src/test/java/dev/horizonlab/parity/{token}"
-                ));
-            }
-        }
-    }
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join("crates/horizon-prepare/src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        root.join(build_support::JAVA_ROOT).display()
+    );
+    let files =
+        build_support::collect_sources(&root).expect("collecting preparation source dependencies");
     let mut code = String::from("pub const FILES: &[(&str, &[u8])] = &[\n");
     for name in files {
         let path = root

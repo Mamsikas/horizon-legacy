@@ -433,6 +433,23 @@ pub(crate) fn export_failure(error: String, java: &Path, log: &Path) -> String {
             java.display()
         ));
     }
+    // javac often prints deprecation warnings before the actual error. Put its first
+    // error ahead of that preamble so the native dialog's short view stays useful.
+    if let Some(index) = output.lines().position(|line| {
+        line.contains(": error:")
+            || line.starts_with("error:")
+            || line.starts_with("Exception in thread")
+    }) {
+        result.push_str("\nFirst error:\n");
+        result.push_str(
+            &output
+                .lines()
+                .skip(index)
+                .take(5)
+                .collect::<Vec<_>>()
+                .join("\n"),
+        );
+    }
     if log.is_file() {
         result.push_str(&format!("\nProcess log: {}", log.display()));
     }
@@ -572,6 +589,26 @@ mod tests {
         assert!(error.contains(&path.display().to_string()), "{error}");
         assert!(!error.contains("OutOfMemoryError"), "{error}");
         assert!(!error.contains("increase HORIZON_PREPARE"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compiler_errors_precede_warning_preambles_in_the_short_diagnostic() {
+        let root = std::env::temp_dir().join(format!("prepare-error-order-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("server.log");
+        fs::write(&log, "Example.java:1: warning: deprecated API\nExample.java:2: error: cannot find symbol\n  symbol: class Helper\n1 error\n").unwrap();
+        let error = export_failure(
+            "javac failed (exit code: 1)".into(),
+            Path::new("javac"),
+            &log,
+        );
+        assert!(
+            error.find("error: cannot find symbol").unwrap()
+                < error.find("warning: deprecated API").unwrap()
+        );
+        assert!(error.contains("symbol: class Helper"));
+        assert!(error.contains("Process output:"));
         fs::remove_dir_all(root).unwrap();
     }
 

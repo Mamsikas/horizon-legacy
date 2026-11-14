@@ -18,6 +18,9 @@ cc=${WIN7_CC:-"$cross/usr/bin/x86_64-w64-mingw32-gcc-posix"}
 command -v rustup >/dev/null || { echo "Install rustup with CARGO_HOME=$CARGO_HOME RUSTUP_HOME=$RUSTUP_HOME first." >&2; exit 1; }
 [[ -x "$cc" ]] || { echo "Run tools/bootstrap_win7_cross.sh '$cross' first (or set WIN7_CC)." >&2; exit 1; }
 rustup toolchain install "$toolchain" --profile minimal --component rust-src
+# The source packager must follow helper dependencies before producing a player archive.
+rustc "+$toolchain" --edition=2021 --test "$repo/launcher/build_support.rs" -o "$work/source-bundle-check"
+"$work/source-bundle-check"
 export CARGO_TARGET_X86_64_WIN7_WINDOWS_GNU_LINKER="$cc"
 export CC_x86_64_win7_windows_gnu="$cc"
 export AR_x86_64_win7_windows_gnu=x86_64-w64-mingw32-ar
