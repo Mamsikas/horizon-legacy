@@ -4,6 +4,10 @@
 mod device;
 #[cfg(windows)]
 pub use device::*;
+#[cfg(windows)]
+mod thread_time;
+#[cfg(windows)]
+pub use thread_time::{process_cpu_time, system_cpu_ticks, thread_cpu_time};
 
 mod atlas;
 pub use atlas::{AtlasLayout, AtlasSet, AtlasUv};
@@ -16,7 +20,7 @@ pub use geometry::{IndexBatch, MeshData, PaintWindow, Ring, Vertex, fog_interval
 mod screen;
 pub use screen::{GuiDepth, ScreenVertex};
 mod fog;
-pub use fog::Fog;
+pub use fog::{Fog, FogProgram};
 mod tiles;
 pub use tiles::TileImage;
 mod terrain;

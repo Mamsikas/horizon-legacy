@@ -126,7 +126,7 @@ impl Device {
                 range.len() as u32 / 3,
             )?;
         }
-        self.draws += 1;
+        self.record_draw();
         Ok(())
     }
     pub fn draw_screen_triangles(&mut self, vertices: &[ScreenVertex]) -> Result<()> {

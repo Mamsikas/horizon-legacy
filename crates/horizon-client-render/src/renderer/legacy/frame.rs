@@ -255,6 +255,18 @@ impl Renderer {
             self.worst_stages.clone_from(&self.timings);
         }
         if self.last_log.elapsed() >= Duration::from_secs(5) {
+            let cpu = dx::thread_cpu_time();
+            let busy = cpu
+                .zip(self.last_thread_cpu)
+                .and_then(|(now, old)| now.checked_sub(old))
+                .map(|elapsed| {
+                    (elapsed.as_secs_f64() * 100.0 / self.last_log.elapsed().as_secs_f64())
+                        .clamp(0.0, 100.0)
+                });
+            log::info!(
+                "D3D9 main_thread_busy_pct={busy:?} (CPU execution; driver waits are wall time)"
+            );
+            self.last_thread_cpu = cpu;
             log::info!(
                 "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_decoded_bytes={} mesh_gpu_bytes={} arenas={} texture_bytes={} compactions={} eager_sections={}",
                 self.frames,
@@ -296,6 +308,15 @@ impl Renderer {
                 self.translucent_stats[2]
             );
             log::info!(
+                "D3D9 fog draws dual={} environment={} distance={} unfogged={} fully_fogged={}",
+                self.device.fog_draws[0],
+                self.device.fog_draws[1],
+                self.device.fog_draws[2],
+                self.device.fog_draws[3],
+                self.device.fog_draws[4]
+            );
+            log::info!("D3D9 fog parameters={:?}", self.device.fog_parameters());
+            log::info!(
                 "D3D9 GUI cache reused_chunks={} rebuilt_chunks={} cpu_bytes={}",
                 self.gui_cache.hits,
                 self.gui_cache.misses,
@@ -306,6 +327,15 @@ impl Renderer {
                 self.arrival_pages,
                 self.arrival_sections,
                 self.arrival_max_sections
+            );
+            let batches = self
+                .compactor
+                .as_ref()
+                .map_or([0; 2], mesh::Compactor::batch_stats);
+            log::info!(
+                "D3D9 staging batches={} max_sections_per_batch={}",
+                batches[0],
+                batches[1]
             );
             log::info!(
                 "D3D9 solid_plan_reused={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
@@ -497,13 +527,14 @@ impl Renderer {
                 &visible,
                 (self.next_arena, self.device.resets),
                 self.sides,
+                fog,
             );
             self.drawn_sections = visible.len();
             let mut decoded = std::mem::take(&mut self.decode_scratch);
             let before = self.device.draws;
             if !self.solid_reused {
                 self.solid_batches
-                    .retain(|(_, _, id), _| self.arenas.contains_key(id));
+                    .retain(|(_, _, id, _), _| self.arenas.contains_key(id));
                 for batch in self.solid_batches.values_mut() {
                     batch.next.clear();
                 }
@@ -511,6 +542,7 @@ impl Renderer {
                     let key = &v.key;
                     let origin = Vec3::from_array(v.origin);
                     let section = self.sections.at(v.slot);
+                    let fog_program = solid_cache::section_fog(&self.sections, v, fog);
                     if section.solid.is_empty() {
                         continue;
                     }
@@ -550,6 +582,7 @@ impl Renderer {
                                 DrawState {
                                     alpha_test: !packet.opaque,
                                     fog,
+                                    fog_program,
                                     linear: self.linear,
                                     mipmaps: self.mipmaps,
                                     ..Default::default()
@@ -570,7 +603,12 @@ impl Renderer {
                                 let end = (packet.first + packet.count).min(slice.source.end);
                                 if first < end {
                                     self.solid_batches
-                                        .entry((packet.page, !packet.opaque, slice.arena))
+                                        .entry((
+                                            packet.page,
+                                            !packet.opaque,
+                                            slice.arena,
+                                            fog_program,
+                                        ))
                                         .or_default()
                                         .append(
                                             slice.first + first - slice.source.start,
@@ -584,7 +622,7 @@ impl Renderer {
             }
             self.decode_scratch = decoded;
             self.stamp("terrain indices/cold draws", &mut clock);
-            for (&(page, cutout, id), batch) in &mut self.solid_batches {
+            for (&(page, cutout, id, fog_program), batch) in &mut self.solid_batches {
                 if batch.next.is_empty() {
                     continue;
                 }
@@ -603,6 +641,7 @@ impl Renderer {
                     DrawState {
                         alpha_test: cutout,
                         fog,
+                        fog_program,
                         linear: self.linear,
                         mipmaps: self.mipmaps,
                         ..Default::default()
@@ -677,6 +716,7 @@ impl Renderer {
                     cull: true,
                     alpha_test: false,
                     fog,
+                    fog_program: solid_cache::section_fog(&self.sections, v, fog),
                     linear: self.linear,
                     mipmaps: self.mipmaps,
                     ..Default::default()

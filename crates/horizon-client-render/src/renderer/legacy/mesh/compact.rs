@@ -1,6 +1,7 @@
 //! Consolidate small immutable VBs without decoding them on the render thread.
 //! One bounded CPU job/result, no GPU objects or gameplay state cross the thread.
 use super::*;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 type Snapshot = (SectionKey, u64, Arc<dx::MeshData>);
@@ -22,17 +23,22 @@ pub(super) enum Work {
 pub(in super::super) struct Compactor {
     pub(super) jobs: SyncSender<Work>,
     done: Receiver<std::result::Result<Prepared, String>>,
-    pub(super) upload_done: Receiver<upload::Ready>,
+    pub(super) upload_done: Receiver<Vec<upload::Ready>>,
+    pub(super) upload_ready: VecDeque<upload::Ready>,
+    pub(super) upload_batches: [u64; 2],
     pub(super) upload_quota: Arc<AtomicUsize>,
+    pub(super) upload_count: Arc<AtomicUsize>,
     pub(super) upload_epoch: Arc<AtomicUsize>,
     busy: bool,
 }
 impl Compactor {
     pub(in super::super) fn new(layout: Arc<dx::AtlasSet>, hardware: bool) -> Option<Self> {
-        let (jobs, input) = mpsc::sync_channel::<Work>(64);
+        // One extra slot belongs to the sole outstanding compaction job.
+        let (jobs, input) = mpsc::sync_channel::<Work>(upload::MAX_JOBS + 1);
         let (output, done) = mpsc::sync_channel(1);
-        let (uploads, upload_done) = mpsc::sync_channel(64);
+        let (uploads, upload_done) = mpsc::sync_channel(2);
         let upload_quota = Arc::new(AtomicUsize::new(0));
+        let upload_count = Arc::new(AtomicUsize::new(0));
         let upload_epoch = Arc::new(AtomicUsize::new(0));
         let epoch = upload_epoch.clone();
         std::thread::Builder::new()
@@ -41,11 +47,19 @@ impl Compactor {
                 let mut scratch = convert::Scratch::default();
                 let mut combined = Vec::<dx::Vertex>::new();
                 let mut decoded = Vec::new();
-                while let Ok(work) = input.recv() {
+                let mut next = None;
+                while let Some(work) = next.take().or_else(|| input.recv().ok()) {
                     let job = match work {
                         Work::Upload(job) => {
-                            let ready =
-                                upload::prepare(job, &layout, &mut scratch, &epoch, hardware);
+                            let (ready, pending) = upload::prepare_batch(
+                                job,
+                                &input,
+                                &layout,
+                                &mut scratch,
+                                &epoch,
+                                hardware,
+                            );
+                            next = pending;
                             if uploads.send(ready).is_err() {
                                 break;
                             }
@@ -82,7 +96,10 @@ impl Compactor {
             jobs,
             done,
             upload_done,
+            upload_ready: VecDeque::new(),
+            upload_batches: [0; 2],
             upload_quota,
+            upload_count,
             upload_epoch,
             busy: false,
         })

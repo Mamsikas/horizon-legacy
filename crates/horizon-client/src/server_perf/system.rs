@@ -23,14 +23,25 @@ pub(super) struct SystemProbe {
 
 impl SystemProbe {
     pub(super) fn read(&mut self, t: f64, counts: WorldCounts) -> Gauges {
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
         let pid = std::process::id();
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        let cpu_s = horizon_client_render::renderer::process_cpu_time().map(|t| t.as_secs_f64());
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
         let cpu_s = horizon_bench::cpu_seconds(pid);
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        let stat = horizon_client_render::renderer::system_cpu_ticks();
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
         let stat = std::fs::read_to_string("/proc/stat")
             .ok()
             .and_then(|s| parse_cpu_stat(&s));
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        let rss = horizon_threads::process_memory::resident_bytes();
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+        let rss = horizon_bench::rss_bytes(pid);
         let mut g = Gauges {
-            rss_mb: horizon_bench::rss_bytes(pid).map_or(0.0, |b| (b >> 20) as f32),
+            rss_mb: rss.map_or(0.0, |b| (b >> 20) as f32),
             players: counts.players,
             chunks: counts.chunks,
             entities: counts.entities,
@@ -99,6 +110,7 @@ impl BackgroundProbe {
 }
 
 /// `/proc/stat`'s first line as (busy, total) jiffies: everything but idle and iowait is busy.
+#[cfg(any(test, not(all(windows, feature = "legacy-d3d9"))))]
 pub(super) fn parse_cpu_stat(text: &str) -> Option<(u64, u64)> {
     let fields: Vec<u64> = text
         .lines()

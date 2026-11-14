@@ -8,6 +8,7 @@ struct Stamp {
     revision: u64,
     ranges: [[u32; 2]; 14],
     count: usize,
+    fog: dx::FogProgram,
 }
 #[derive(Default)]
 pub(super) struct SolidCache {
@@ -25,6 +26,7 @@ impl SolidCache {
         visible: &[gfx::resident::Visible],
         generation: (u64, u64),
         sides: bool,
+        fog: Option<dx::Fog>,
     ) -> bool {
         self.probe.clear();
         for v in visible {
@@ -41,6 +43,7 @@ impl SolidCache {
                 revision: section.revision,
                 ranges: [[0; 2]; 14],
                 count: 0,
+                fog: section_fog(sections, v, fog),
             };
             if sides {
                 section
@@ -65,5 +68,19 @@ impl SolidCache {
             self.generation = Some(generation);
             false
         }
+    }
+}
+
+pub(super) fn section_fog(
+    sections: &resident::Sections,
+    visible: &gfx::resident::Visible,
+    fog: Option<dx::Fog>,
+) -> dx::FogProgram {
+    match (fog, sections.bounds(visible.slot)) {
+        (Some(fog), Some(bounds)) => {
+            let origin = Vec3::from_array(visible.origin);
+            fog.program(bounds.map(|b| (b + origin).to_array()))
+        }
+        _ => dx::FogProgram::Dual,
     }
 }

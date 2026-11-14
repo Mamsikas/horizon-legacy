@@ -54,6 +54,7 @@ pub struct DrawState {
     pub cull: bool,
     pub lightmap: bool,
     pub fog: Option<Fog>,
+    pub fog_program: crate::FogProgram,
     pub scissor: Option<[u32; 4]>,
     pub linear: bool,
     pub mipmaps: bool,
@@ -71,6 +72,7 @@ impl Default for DrawState {
             cull: true,
             lightmap: true,
             fog: None,
+            fog_program: crate::FogProgram::Dual,
             scissor: None,
             linear: false,
             mipmaps: true,
@@ -247,13 +249,15 @@ pub struct Device {
     state_cache: StateCache,
     cached_transform: Option<[[f32; 16]; 3]>,
     fog_shader: Option<IDirect3DPixelShader9>,
-    shader_active: bool,
+    fog_variants: [Option<IDirect3DPixelShader9>; 4],
+    shader_active: Option<crate::FogProgram>,
     fog_constants: Option<Fog>,
     terrain: Option<TerrainPipeline>,
     terrain_encoding: Option<VertexEncoding>,
     vertex_constants: [[f32; 4]; 8],
     vertex_constants_dirty: bool,
     pub draws: u64,
+    pub fog_draws: [u64; 5],
     pub binds: u64,
     pub uploads: u64,
     pub resets: u64,
@@ -263,6 +267,15 @@ pub struct Device {
     pub index_uploads: u64,
 }
 impl Device {
+    pub fn fog_parameters(&self) -> Option<Fog> {
+        self.fog_constants
+    }
+    fn record_draw(&mut self) {
+        self.draws += 1;
+        if let Some(mode) = self.shader_active {
+            self.fog_draws[mode as usize] += 1;
+        }
+    }
     pub fn new(window: Arc<Window>, vsync: bool) -> Result<Self> {
         let RawWindowHandle::Win32(handle) = window.window_handle()?.as_raw() else {
             return Err("Direct3D9 requires a Win32 HWND".into());
@@ -468,13 +481,15 @@ impl Device {
             state_cache: StateCache::default(),
             cached_transform: None,
             fog_shader: None,
-            shader_active: false,
+            fog_variants: [None, None, None, None],
+            shader_active: None,
             fog_constants: None,
             terrain: None,
             terrain_encoding: None,
             vertex_constants: [[0.0; 4]; 8],
             vertex_constants_dirty: true,
             draws: 0,
+            fog_draws: [0; 5],
             binds: 0,
             uploads: 0,
             resets: 0,
@@ -494,10 +509,33 @@ impl Device {
                 result
                     .inner
                     .device
-                    .CreatePixelShader(crate::fog::bytecode().as_ptr())
+                    .CreatePixelShader(crate::fog::variant(crate::FogProgram::Dual).as_ptr())
             } {
                 Ok(shader) => {
                     result.fog_shader = Some(shader);
+                    for (slot, mode) in [
+                        crate::FogProgram::Environment,
+                        crate::FogProgram::Distance,
+                        crate::FogProgram::Unfogged,
+                        crate::FogProgram::FullyFogged,
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        // SAFETY: SDK-compiled and checked ps_2_0 programs. A
+                        // driver rejecting an optimization keeps the dual path.
+                        match unsafe {
+                            result
+                                .inner
+                                .device
+                                .CreatePixelShader(crate::fog::variant(mode).as_ptr())
+                        } {
+                            Ok(shader) => result.fog_variants[slot] = Some(shader),
+                            Err(error) => log::warn!(
+                                "D3D9 fog {mode:?} unavailable ({error}); using dual curves"
+                            ),
+                        }
+                    }
                     log::info!(
                         "D3D9 fog: ps_2_0 sphere/cylinder curves; fixed-function vertex processing"
                     );
@@ -558,13 +596,15 @@ impl Device {
             state_cache: StateCache::default(),
             cached_transform: None,
             fog_shader: self.fog_shader.clone(),
-            shader_active: false,
+            fog_variants: self.fog_variants.clone(),
+            shader_active: None,
             fog_constants: None,
             terrain: self.terrain.clone(),
             terrain_encoding: None,
             vertex_constants: [[0.0; 4]; 8],
             vertex_constants_dirty: true,
             draws: 0,
+            fog_draws: [0; 5],
             binds: 0,
             uploads: 0,
             resets: self.resets,
@@ -822,13 +862,14 @@ impl Device {
         self.screen_active = false;
         self.index_uploads = 0;
         self.draws = 0;
+        self.fog_draws = [0; 5];
         self.binds = 0;
         self.terrain_encoding = None;
         self.vertex_constants_dirty = true;
         self.cached_state = None;
         self.state_cache = StateCache::default();
         self.cached_transform = None;
-        self.shader_active = false;
+        self.shader_active = None;
         self.fog_constants = None;
         // SAFETY: state values are D3D9 constants; begin/finish pair on this thread.
         unsafe {
@@ -1267,7 +1308,7 @@ impl Device {
         }
         self.uploads += bytes.len() as u64;
         self.index_uploads += bytes.len() as u64;
-        self.draws += 1;
+        self.record_draw();
         Ok(())
     }
     pub fn cache_indices(&mut self, batch: &IndexBatch) -> Result<Indices> {
@@ -1365,7 +1406,7 @@ impl Device {
             )?;
         }
         self.using_dynamic_indices = true;
-        self.draws += 1;
+        self.record_draw();
         Ok(())
     }
     pub fn state(
@@ -1478,15 +1519,23 @@ impl Device {
                 })?;
             }
             let shader_fog = state.fog.is_some() && state.lightmap && self.fog_shader.is_some();
-            if shader_fog != self.shader_active {
-                d.SetPixelShader(if shader_fog {
-                    self.fog_shader.as_ref()
+            let mode = shader_fog.then(|| {
+                let at = state.fog_program as usize;
+                if at > 0 && self.fog_variants[at - 1].is_some() {
+                    state.fog_program
                 } else {
-                    None
+                    crate::FogProgram::Dual
+                }
+            });
+            if mode != self.shader_active {
+                d.SetPixelShader(match mode {
+                    Some(crate::FogProgram::Dual) => self.fog_shader.as_ref(),
+                    Some(mode) => self.fog_variants[mode as usize - 1].as_ref(),
+                    None => None,
                 })?;
-                self.shader_active = shader_fog;
+                self.shader_active = mode;
             }
-            if shader_fog {
+            if mode.is_some_and(crate::FogProgram::position) {
                 cache.stage(
                     d,
                     2,
@@ -1494,14 +1543,14 @@ impl Device {
                     D3DTSS_TCI_CAMERASPACEPOSITION | 2,
                 )?;
                 cache.stage(d, 2, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT3.0 as u32)?;
-                if self.fog_constants != state.fog {
-                    let constants = state.fog.unwrap().constants();
-                    d.SetPixelShaderConstantF(0, constants.as_ptr().cast(), 3)?;
-                    self.fog_constants = state.fog;
-                }
             } else if self.fog_shader.is_some() {
                 cache.stage(d, 2, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE.0 as u32)?;
                 cache.stage(d, 2, D3DTSS_TEXCOORDINDEX, 2)?;
+            }
+            if shader_fog && self.fog_constants != state.fog {
+                let constants = state.fog.unwrap().constants();
+                d.SetPixelShaderConstantF(0, constants.as_ptr().cast(), 3)?;
+                self.fog_constants = state.fog;
             }
             cache.render(
                 d,
@@ -1594,7 +1643,7 @@ impl Device {
                 count / 2,
             )?;
         }
-        self.draws += 1;
+        self.record_draw();
         Ok(())
     }
     pub fn draw_transient(&mut self, vertices: &[Vertex]) -> Result<()> {
@@ -1657,7 +1706,7 @@ impl Device {
                     )?;
                 }
             }
-            self.draws += 1;
+            self.record_draw();
         }
         Ok(())
     }
@@ -1708,7 +1757,7 @@ impl Device {
                 range.len() as u32 / 3,
             )?;
         }
-        self.draws += 1;
+        self.record_draw();
         Ok(())
     }
     fn stage_vertices(&mut self, vertices: &[Vertex]) -> Result<u32> {

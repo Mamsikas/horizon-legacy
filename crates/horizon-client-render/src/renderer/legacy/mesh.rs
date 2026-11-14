@@ -171,7 +171,7 @@ impl Renderer {
         let _span = crate::spans::guard("d3d9_arrival_uploads");
         let mut batch = dx::UploadBatch::new(self.device.max_vertices())?;
         loop {
-            let Some(ready) = self.compactor.as_ref().and_then(Compactor::take_upload) else {
+            let Some(ready) = self.compactor.as_mut().and_then(Compactor::take_upload) else {
                 break;
             };
             if self.pending_sections.get(&ready.key) != Some(&ready.ticket) {

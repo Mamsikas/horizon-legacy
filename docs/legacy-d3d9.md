@@ -143,89 +143,78 @@ A/B testing remain performance follow-ups requiring hardware evidence.
 
 ## Current optimization and profiling pass
 
-Owner measurements of build `7d536626fb`: about 950 FPS / 1.1 GiB at 16 chunks,
-135 FPS / about 4 GiB at 48 once settled, with loading dropping toward 50 FPS.
-The attached 48-chunk memory snapshot reports 3613.2 MiB resident, 1364.8 MiB
-requested terrain storage and 559.4 MiB CPU shadows. These counters are not
-physical VRAM. Most hardware vertices remain Wide28, not Compact20.
+The owner tested package `4b6f861fd3` on real N455/GMA3150: the same two-chunk
+ice scene rose from the good 23 FPS baseline, through the 5 FPS regression, to
+about 42 FPS. RTX returned to approximately its earlier settled performance.
+The supplied GMA log now has about 70 total draws, including 25 transparent
+page draws, instead of 3790 draws / 1994 binds. Basic transparency stays; exact
+per-quad ordering is deliberately outside this backend's performance target.
 
-Build `7ce2bb42c8` regressed transparency badly. The owner's GMA comparison
-dropped from 23 to 5 FPS. Its 18.2-second capture averages 6.6 FPS with 124.5 ms
-in translucent submission, 9.5 ms solid and 3.1 ms GUI. The static scene has only
-20 visible sections but about 3790 draws and 1994 texture binds per frame, with
-zero terrain index uploads. Per-quad sorting alternated texture pages; bounding
-software-VP index spans split those runs still further. Cached indices avoided
-uploads but did not make thousands of driver calls cheap.
+The stationary 57.5-second capture averages 39.4 FPS: render wall 21.4 ms, solid
+9.8, translucent 7.6, GUI 2.4, prepare 2.7 ms. The moving 59.1-second capture
+averages 41.9 FPS: render wall 18.2, solid 13.5, translucent 1.1, GUI 0.9 and
+synchronous section uploads 0.3 ms. Both have 49 loaded columns; neither proves
+whether CPU vertex processing or GPU work dominates. The owner had Fog OFF.
 
-The latest 68.8-second RTX loading capture averages 58.3 FPS, with renderer
-14.0 ms, solid 6.7, translucent 2.5, plans/cold draws 2.4 and synchronous uploads
-0.1 ms. The settled capture averages 105.1 FPS, renderer 7.8 ms, translucent 2.6
-and solid 2.3 ms. These are measurements of the regressed build, not this fix.
-The log shows over 8300 small terrain buffers decreasing toward 1700 after
-loading; merging only when the upload quota was completely empty delayed that
-work. Periodic memory/control reports add roughly 100 ms pauses of their own.
+The former Windows health probe used `/proc` through the common CPU/RSS helpers,
+so those metrics were recorded as zero. This is missing diagnostics, not zero CPU
+use or zero resident memory. The legacy build now samples GetProcessTimes,
+GetSystemTimes and its existing Windows resident-memory API for .hzperf health.
+A five-second GetThreadTimes delta also logs `main_thread_busy_pct` for the render/
+game thread. It includes CPU work in the driver but excludes time not scheduled
+on CPU. Wall phase labels still include driver waits; GPU timestamps remain
+unavailable. These counters do not report a measured GPU utilization percentage.
 
-This update targets costs relevant to low render distances too:
+This pass makes two bounded renderer changes:
 
-- A full staging quota now applies backpressure to the existing nearest-first
-  game upload backlog. Bulk jobs no longer spill into synchronous conversion
-  just because the conservative 8 MiB queue charge is temporarily full. Existing
-  and pending section edits go first and remain synchronous. Unsupported/oversized
-  jobs retain a synchronous path so a job that cannot fit never blocks the queue.
-  Mesher scheduling, graphics defaults and the user's upload limits are unchanged.
-- FFP shares the exact solid visibility-plan cache and texture/state grouping.
-  Adjacent ranges merge; software VP still transforms only tight contiguous
-  ranges rather than sparse whole-page spans. Its immutable input VBs use
-  SYSTEMMEM; hardware-VP buffers still use DEFAULT.
-- Basic translucent batches now use one contiguous range per texture page,
-  split only at native VB boundaries. The CPU check packs 4096 alternating
-  quads into three ranges, or 19 draws with deliberately tiny 1024-vertex VBs,
-  without changing vertex attributes or winding. Back-face culling addresses
-  double-sided ice. Exact overlapping-glass/water order is not promised; the
-  owner explicitly prefers basic transparency and speed. No per-quad centers,
-  sorting state, cached translucent IBs or scratch buffers remain.
-- The same bounded worker can merge resident VBs during bulk loading rather
-  than waiting for an empty upload quota. Only one merge is outstanding, capped
-  at 2 MiB; speculative nonresident prefetch waits for bulk work to finish.
-  Old buffers stay drawable until the replacement succeeds. This reduces a
-  source of post-load warmup; it does not change world generation or meshing.
-- Alpha GUI and depth/scissor inventory models reuse byte-exact prepared ranges;
-  the first model clears depth, then overlapping model pixel bounds or a bounded
-  coverage-window reset require another clear. Disjoint slots share depth and
-  compatible adjacent draws; necessary clears remain explicit barriers. Only newly present sparse atlas tiles
-  invalidate geometry. Pixel-only animation/glyph/map/skin patches keep their UV
-  mappings, avoiding global cache rebuilds each animation tick. Pictures, foil
-  and invert runs keep ordinary preparation; the existing 2 MiB/128-slot bound stays.
-- Software-VP HALs use a separate 28-byte XYZRHW GUI stream, preserving logical
-  scale, half-pixel placement, model depth and scissor while bypassing runtime
-  matrix T&L. Hardware-VP GUI is unchanged. Failure to allocate the optional stream
-  keeps the ordinary FFP path. F3 no longer prefixes DX9 with the metadata's Noop.
+- Fog OFF moves both ramps to `1e9..2e9`; it previously still ran the complete
+  22-slot PS2 program on every terrain pixel. Conservative geometry bounds now
+  select SDK-compiled equivalent programs: environmental-only (14 slots),
+  distance-only (17), unfogged (5) or fully fogged (4, one texture read). Unknown
+  bounds or a rejected optional program retain the dual path. Camera-position
+  texture generation is disabled when the selected program does not read it.
+  This also removes wasted work with the owner's Fog OFF preset. Fog ranges,
+  colors, alpha, gameplay-significant fluid/effect fog and stored options stay
+  intact. CPU execution of the bytecode checks colors/alpha across the selected
+  bounds and keeps boundary/partial-density cases general. Logs show actual
+  draw counts by program and the fog parameters.
+- The ordinary renderer reuses a staging belt rather than allocating one native
+  upload per small write. DX9 now lets its existing conversion worker collect
+  ready sections with at most 2 ms waiting for more work, 32 results and a 2 MiB
+  encoded-data target before handing them to shared-page upload. An in-flight
+  conversion can finish past that wait deadline. Edits keep their synchronous
+  priority path. Both the existing 8 MiB charge and 64 outstanding-job limit
+  apply backpressure, including small meshes that previously filled the channel
+  before using its byte allowance. Only two output batches queue; compaction
+  boundaries, revisions and world-cancellation permits are preserved. Logs show
+  batch count and largest batch, alongside native page count and shared sections.
 
-The separately requested offline fix completes encryption without a fabricated
-session-service join when the profile has no token, preserving the server's
-admission/refusal. Previously the client rejected it before the encryption reply.
-Signed-in authentication is unchanged. Retest against the owner's offline server
-is still needed; no server gameplay result is claimed here.
+The development branch fast-forwarded to the exact already-tested PR merge
+`4b6f861fd3`; it did not select another new upstream revision. Package and shader
+workflows now check out the explicit feature-branch SHA, so an advancing main
+cannot silently change the benchmark package's source.
 
-Existing shared Resident/column/frustum/portal culling, model data, mip generation,
-exact solid-plan reuse, 20/28/32-byte hardware/FFP layouts and 4 MiB animation-pixel
-cache remain. GMA software vertex processing uses Full32 and does not require a
-hardware vertex shader. It benefits from pooled arrivals and GUI reuse too.
-The shared wgpu compute/indirect/shader-expanded quad implementation cannot be
-transplanted directly to baseline SM2; this path uses compatible CPU mechanisms.
+Existing GUI caches/projected SWVP stream, tight solid-side/portal/frustum
+culling, page-packed basic transparency, immutable input-buffer pools, compressed
+CPU shadows, bounded resident merging and animation cache remain. Source changes
+in this pass do not alter worldgen, server rules, saves, protocol or user graphics
+values. The requested offline admission fix and 854x480 default remain.
 
-The opt-in .hzperf timeline now also splits atlas conversion, vertex packing,
-shadow compression, arrival uploads, GUI preparation, textures, upload and submit.
-Windows frame/timeline/memory capture is available; stack/heap sampling remains
-Linux-only and DX9 GPU timestamps are explicitly unavailable. Nothing is uploaded
-automatically. Diagnostic memory captures have measurable cost; start with ordinary
-logs/F3 for plain FPS comparisons. `/profiler start client` and `/profiler stop client`
-work through chat without --control or a launcher change. Do not request GPU timing
-on DX9. Detailed timeline stops after 60 seconds; take separate loading segments.
-Common pre-device resource preparation is outside this work. The new log separates
-basic-transparency draws, texture binds and page ranges. No FPS improvement for
-this fix, OpenGL parity or physical HD4570 result is claimed before the owner's
-hardware retest.
+Large-distance memory/loading is still unfinished: the previous 48-chunk report
+had about 1.3 GiB requested terrain storage and 560 MiB compressed CPU shadows.
+These counters are not physical VRAM. Baseline D3D9 still consumes full vertices;
+modern GPU-expanded packed quads, compute and indirect submission cannot be
+copied onto GMA fixed-function processing. No Vulkan RAM parity or new FPS gain
+is claimed before the owner's retest. GMA is the primary test target; RTX remains
+useful for large loading/reload checks, not a required duplicate of every test.
+
+Use the same scene/resolution/preset first. Capture through chat with
+`/profiler start client` then `/profiler stop client`; no launcher arguments are
+needed. Send latest.log and the .hzperf for an idle view and for movement/loading.
+Logs now distinguish wall time from sampled thread CPU consumption. At a 60 FPS
+cap, reaching 60 establishes only the cap; higher-rate comparisons need the owner
+to choose an uncapped limit. No limit is changed automatically. Windows stack/
+heap sampling and DX9 GPU pass timestamps remain unavailable.
 
 ## Build, package and test
 
@@ -247,7 +236,8 @@ The Actions artifact ZIP directly contains `horizon-client.exe`, `horizon-ctl.ex
 setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
 Resources and saves are never distributed in this archive.
 
-This iteration has twenty-one CPU tests (including bounded texture-page ranges,
+This iteration has twenty-two CPU tests (including equivalent bounded fog programs,
+bounded texture-page ranges,
 projected GUI coordinates, depth-clear reuse equivalence, ordered index windows,
 sparse-tile invalidation, tile seams/placement, executable SM2 arithmetic,
 all vertex layouts/partial codec blocks, animation-cache eviction and shared-page source indices) and eleven PE policy/parser tests. The packaging workflow builds
@@ -260,8 +250,8 @@ not reported as executed on hardware here.
 
 Changed presentation files: `horizon-client-d3d9/device.rs` owns swapchains, depth,
 cached IBs and shader state; `screen.rs`/`gui_device.rs` own the projected GUI stream;
-`fog.rs`/`fog_program.rs` contain the
-SDK-generated fog program; `terrain.rs`, `terrain_device.rs`, `terrain_program.rs`
+`fog.rs` and its `fog*_program.rs` modules contain the
+SDK-generated SM2 programs; `thread_time.rs` isolates Win7 CPU accounting; `terrain.rs`, `terrain_device.rs`, `terrain_program.rs`
 implement hardware-only compact vertices; `animation.rs` caches prepared pixels;
 `geometry.rs` compresses CPU shadows; `texture_pages.rs` packs basic alpha ranges
 and caches page order; `tiles.rs` stores
