@@ -12,10 +12,15 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Compile and check the embedded ps_2_0 program
         shell: pwsh
         run: |
           tools/d3d9/compile.ps1 -OutDir "$env:RUNNER_TEMP/sm2"
+          foreach ($name in 'fog_environment','fog_distance','fog_none','fog_full') {
+            tools/d3d9/compile.ps1 -OutDir "$env:RUNNER_TEMP/sm2" -Name $name
+          }
           tools/d3d9/compile.ps1 -OutDir "$env:RUNNER_TEMP/sm2" -Name terrain -Profile vs_2_0
       - uses: actions/upload-artifact@v4
         with:
