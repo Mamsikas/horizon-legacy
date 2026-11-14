@@ -84,6 +84,27 @@ impl Renderer {
                 },
             );
         }
+        // Nonempty GPU slices mean complete residency everywhere else. A failed
+        // tail page must therefore discard the section's earlier pieces too;
+        // its full CPU shadow remains available for demand/transient rendering.
+        let partial: Vec<_> = uploaded
+            .iter()
+            .copied()
+            .filter(|key| {
+                self.sections.get(key).is_none_or(|section| {
+                    section
+                        .gpu
+                        .iter()
+                        .map(|slice| slice.source.len())
+                        .sum::<usize>()
+                        != section.vertices.len()
+                })
+            })
+            .collect();
+        for key in partial {
+            self.release_gpu_section(key);
+            uploaded.remove(&key);
+        }
         self.eager_sections += uploaded.len() as u64;
         self.arrival_sections += uploaded.len() as u64;
     }
