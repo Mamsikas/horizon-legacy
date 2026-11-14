@@ -20,6 +20,10 @@ from pathlib import Path
 
 # Each name below exists on Win7 SP1. In particular, no API-set wildcard is allowed:
 # accepting every api-ms-win-* contract would silently accept Windows 8/10 imports.
+# CPU accounting additions: Microsoft documents Kernel32.dll exports since XP
+# (GetThreadTimes) and XP SP1 (GetSystemTimes), both before Win7:
+# https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes
+# https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes
 SAFE_IMPORTS = {
     # Direct3DCreate9 is supplied by the Direct3D 9 runtime (Windows XP and later).
     "d3d9.dll": "Direct3DCreate9",
@@ -51,6 +55,7 @@ SAFE_IMPORTS = {
         GetModuleHandleW GetModuleHandleExW GetNativeSystemInfo GetNumberOfConsoleInputEvents
         GetOverlappedResult GetProcAddress GetProcessHeap GetProcessHeaps GetProcessId
         GetProcessTimes GetProcessVersion GetProcessWorkingSetSize GetStartupInfoA
+        GetSystemTimes GetThreadTimes
         GetStartupInfoW GetStdHandle GetStringTypeW GetSystemDirectoryW GetSystemInfo
         GetSystemTime GetSystemTimeAsFileTime GetSystemTimeAdjustment GetTempFileNameW
         GetTempPathW GetThreadContext GetThreadLocale GetTickCount GetTickCount64

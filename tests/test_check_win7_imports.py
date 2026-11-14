@@ -96,6 +96,13 @@ class Win7Imports(unittest.TestCase):
             self.assertFalse(report["passed"])
             self.assertIn("post-Win7 API", report["problems"][0])
 
+    def test_accepts_reviewed_kernel32_cpu_accounting_in_both_tables(self):
+        for symbol in ("GetProcessTimes", "GetSystemTimes", "GetThreadTimes"):
+            for delayed in (False, True):
+                with self.subTest(symbol=symbol, delayed=delayed):
+                    report = CHECK.audit(fixture(symbol=symbol, delayed=delayed))
+                    self.assertTrue(report["passed"], report["problems"])
+
     def test_rejects_unreviewed_symbols_dlls_and_ordinals(self):
         for dll, symbol in (("kernel32.dll", "NewUnreviewedAPI"),
                             ("combase.dll", "CoTaskMemFree"),
