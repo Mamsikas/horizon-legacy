@@ -13,6 +13,7 @@ pub struct TileImage {
     pub columns: u32,
     pub rows: u32,
     tiles: Vec<Tile>,
+    presence_revision: u64,
 }
 impl TileImage {
     pub fn new(
@@ -70,6 +71,7 @@ impl TileImage {
             columns,
             rows,
             tiles,
+            presence_revision: 0,
         })
     }
     pub fn cell(&self) -> u32 {
@@ -94,6 +96,11 @@ impl TileImage {
     }
     pub fn present(&self, id: usize) -> bool {
         !matches!(self.tiles[id], Tile::Empty)
+    }
+    /// Existing tiles/UVs stay fixed when their pixels change. A newly present
+    /// tile can add triangles previously omitted by the sparse GUI mapper.
+    pub fn presence_revision(&self) -> u64 {
+        self.presence_revision
     }
     pub fn bytes(&self) -> usize {
         self.tiles.capacity() * size_of::<Tile>()
@@ -149,6 +156,9 @@ impl TileImage {
                 ..=((x + w - 1 + self.padding).min(self.width - 1) / self.tile)
             {
                 let id = (py * self.columns + px) as usize;
+                if matches!(self.tiles[id], Tile::Empty) {
+                    self.presence_revision = self.presence_revision.wrapping_add(1);
+                }
                 if !matches!(self.tiles[id], Tile::Raw(_)) {
                     let mut raw = Vec::new();
                     self.decode(id, &mut raw)?;
@@ -184,6 +194,24 @@ impl TileImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn patches_only_invalidate_geometry_when_a_sparse_tile_becomes_present() {
+        let mut image = TileImage::new(&[0; 128], 8, 4, 4, 0).unwrap();
+        assert!(!image.present(0));
+        assert!(!image.present(1));
+        image.patch(1, 1, 1, 1, &[11, 22, 33, 255]).unwrap();
+        let first = image.presence_revision();
+        assert!(image.present(0));
+        assert!(!image.present(1));
+        let mut pixels = Vec::new();
+        image.decode(0, &mut pixels).unwrap();
+        assert_eq!(&pixels[20..24], &[11, 22, 33, 255]);
+        image.patch(2, 1, 1, 1, &[44, 55, 66, 255]).unwrap();
+        assert_eq!(image.presence_revision(), first);
+        image.patch(5, 1, 1, 1, &[77, 88, 99, 255]).unwrap();
+        assert!(image.present(1));
+        assert_ne!(image.presence_revision(), first);
+    }
     #[test]
     fn physical_tiles_fill_rows_then_pages_without_overlapping() {
         let image = TileImage::new(&[255; 64], 4, 4, 4, 1).unwrap();

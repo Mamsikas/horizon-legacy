@@ -520,17 +520,19 @@ impl Game<'_> {
                 wgpu::DeviceType::Other => "",
             };
             let driver = format!("{} {}", info.driver, info.driver_info);
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            let api_driver = driver.trim().lines().next().unwrap_or("").to_owned();
+            #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+            let api_driver = format!(
+                "{:?} {}",
+                info.backend,
+                driver.trim().lines().next().unwrap_or("")
+            );
             d.group(
                 "system",
                 [
                     format!("{}{kind}", info.name),
-                    format!(
-                        "{:?} {}",
-                        info.backend,
-                        driver.trim().lines().next().unwrap_or("")
-                    )
-                    .trim_end()
-                    .to_owned(),
+                    api_driver.trim_end().to_owned(),
                 ],
             );
         }

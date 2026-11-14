@@ -1,5 +1,6 @@
-//! Exact reuse of small ordinary alpha HUD ranges. Resource patches invalidate
-//! mappings; pictures/depth/invert and oversized ranges retain the normal path.
+//! Exact reuse of small alpha HUD and depth/scissor inventory ranges. Depth
+//! clears stay outside the cache. Pictures/glint/invert retain the normal path;
+//! newly present atlas tiles invalidate mappings, pixel-only patches do not.
 use super::*;
 const CHUNK: usize = 192; // complete triangles
 const SLOTS: usize = 128;

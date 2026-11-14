@@ -14,6 +14,7 @@ pub(super) struct Packet {
 pub(super) struct Section {
     pub solid: Vec<Packet>,
     pub translucent: Vec<Packet>,
+    pub sorted: Option<std::cell::RefCell<translucent::Sorted>>,
     pub vertices: Arc<dx::MeshData>,
     pub gpu: Vec<GpuSlice>,
     pub retry_after: u64,
@@ -88,7 +89,7 @@ impl DrawBatch {
         if self.next.is_empty() {
             return Ok(());
         }
-        if unchanged {
+        if unchanged && !device.caps.software_vertices {
             if let [(first, count)] = self.next.as_slice() {
                 return device.draw(mesh, *first, *count);
             }
@@ -98,18 +99,29 @@ impl DrawBatch {
         }
         // Visibility membership matters; near-first ordering of opaque sections
         // does not. Canonical ranges keep camera motion from rewriting the IB.
-        self.next.sort_unstable();
-        let mut used = 0;
-        for i in 0..self.next.len() {
-            let (first, count) = self.next[i];
-            if used > 0 && self.next[used - 1].0 + self.next[used - 1].1 == first {
-                self.next[used - 1].1 += count;
-            } else {
-                self.next[used] = (first, count);
-                used += 1;
+        if !unchanged {
+            self.next.sort_unstable();
+            let mut used = 0;
+            for i in 0..self.next.len() {
+                let (first, count) = self.next[i];
+                if used > 0 && self.next[used - 1].0 + self.next[used - 1].1 == first {
+                    self.next[used - 1].1 += count;
+                } else {
+                    self.next[used] = (first, count);
+                    used += 1;
+                }
             }
+            self.next.truncate(used);
         }
-        self.next.truncate(used);
+        if device.caps.software_vertices {
+            // Reuse the same visibility plan and group texture/state changes on
+            // FFP too. Keep every draw's transformed range tight: a sparse IB
+            // spanning a whole page would transform hidden vertices on the CPU.
+            for &(first, count) in &self.next {
+                device.draw(mesh, first, count)?;
+            }
+            return Ok(());
+        }
         if self.next.len() == 1 {
             self.indices = None;
             self.ranges.clear();
@@ -128,6 +140,14 @@ impl DrawBatch {
     }
 }
 impl Renderer {
+    /// Keep edits responsive while bulk arrivals wait in the game's existing
+    /// bounded upload backlog instead of overflowing onto the render thread.
+    pub fn urgent_upload(&self, key: SectionKey) -> bool {
+        self.sections.contains_key(&key) || self.pending_sections.contains_key(&key)
+    }
+    pub fn upload_room(&self, key: SectionKey, mesh: &SectionMesh) -> bool {
+        self.urgent_upload(key) || self.compactor.as_ref().is_none_or(|w| w.upload_room(mesh))
+    }
     pub fn upload(&mut self, key: SectionKey, mesh: &SectionMesh) {
         let _span = crate::spans::guard("d3d9_section_upload");
         let started = Instant::now();
@@ -212,6 +232,8 @@ impl Renderer {
         let convert::Converted {
             solid,
             translucent,
+            centers,
+            translucent_pages,
             shadow,
             sides,
             blocks,
@@ -230,6 +252,13 @@ impl Renderer {
         self.sections.insert(
             key,
             Section {
+                sorted: translucent.first().map(|p| {
+                    std::cell::RefCell::new(translucent::Sorted::new(
+                        p.first,
+                        centers,
+                        translucent_pages,
+                    ))
+                }),
                 solid,
                 translucent,
                 vertices: shadow,

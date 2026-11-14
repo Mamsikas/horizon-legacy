@@ -30,6 +30,9 @@ use crate::{EncodedVertices, Fog, IndexBatch, Ring, Vertex, VertexEncoding};
 #[path = "terrain_device.rs"]
 mod terrain_device;
 use terrain_device::TerrainPipeline;
+#[path = "gui_device.rs"]
+mod gui_device;
+pub use gui_device::ScreenTriangles;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blend {
     Opaque,
@@ -118,13 +121,12 @@ pub struct Mesh {
     filled: u32,
     encoding: VertexEncoding,
 }
-/// Immutable visibility indices. Managed storage survives a real device Reset;
+/// Immutable visibility indices. CPU/managed storage survives a real device Reset;
 /// the runtime owns the small CPU copy instead of a second application Vec.
 pub struct Indices {
     raw: IDirect3DIndexBuffer9,
     owner: Rc<Inner>,
-    start: u32,
-    end: u32,
+    windows: Vec<crate::geometry::IndexWindow>,
     count: u32,
 }
 impl Indices {
@@ -232,6 +234,8 @@ pub struct Device {
     transient_capacity: usize,
     transient_ring: Ring,
     transient_serial: u64,
+    screen: gui_device::Stream,
+    screen_active: bool,
     dynamic_indices: Option<IDirect3DIndexBuffer9>,
     index_ring: Ring,
     using_dynamic_indices: bool,
@@ -451,6 +455,8 @@ impl Device {
             transient_capacity: 0,
             transient_ring: Ring::default(),
             transient_serial: 0,
+            screen: gui_device::Stream::default(),
+            screen_active: false,
             dynamic_indices: None,
             index_ring: Ring::default(),
             using_dynamic_indices: false,
@@ -539,6 +545,8 @@ impl Device {
             transient_capacity: 0,
             transient_ring: Ring::default(),
             transient_serial: 0,
+            screen: gui_device::Stream::default(),
+            screen_active: false,
             dynamic_indices: None,
             index_ring: Ring::default(),
             using_dynamic_indices: false,
@@ -571,12 +579,13 @@ impl Device {
     }
     fn vertex_pipeline(&mut self, encoding: VertexEncoding) -> Result<()> {
         if encoding == VertexEncoding::Full {
-            if self.terrain_encoding.take().is_some() {
+            if self.terrain_encoding.take().is_some() || self.screen_active {
                 // SAFETY: the canonical FVF matches every transient/full vertex.
                 unsafe {
                     self.inner.device.SetVertexShader(None)?;
                     self.inner.device.SetFVF(FVF)?;
                 }
+                self.screen_active = false;
             }
             return Ok(());
         }
@@ -594,6 +603,7 @@ impl Device {
                 })?;
             }
             self.terrain_encoding = Some(encoding);
+            self.screen_active = false;
             self.vertex_constants_dirty = true;
         }
         if self.vertex_constants_dirty {
@@ -757,6 +767,7 @@ impl Device {
             self.transient_capacity = 0;
             self.transient_ring.reset();
             self.transient_serial = 0;
+            self.screen = gui_device::Stream::default();
             self.dynamic_indices = None;
             self.index_ring.reset();
             // SAFETY: no outstanding lock, scene, stateblock or backbuffer reference exists.
@@ -807,6 +818,8 @@ impl Device {
         self.stream_uploads = 0;
         self.stream_locks = 0;
         self.transient_serial = 0;
+        self.screen.serial = 0;
+        self.screen_active = false;
         self.index_uploads = 0;
         self.draws = 0;
         self.binds = 0;
@@ -1133,7 +1146,11 @@ impl Device {
                 } else {
                     0
                 },
-                D3DPOOL_DEFAULT,
+                if self.caps.software_vertices {
+                    D3DPOOL_SYSTEMMEM
+                } else {
+                    D3DPOOL_DEFAULT
+                },
                 &mut raw,
                 ptr::null_mut(),
             )?;
@@ -1255,9 +1272,26 @@ impl Device {
     }
     pub fn cache_indices(&mut self, batch: &IndexBatch) -> Result<Indices> {
         if batch.indices().is_empty()
-            || batch.indices().len() / 3 > self.caps.max_primitive_count as usize
+            || !batch.groups_complete()
+            || batch.indices().len() > u32::MAX as usize / 2
         {
             return Err("D3D9 cached index batch exceeds caps".into());
+        }
+        let windows = if batch.windows().is_empty() {
+            vec![crate::geometry::IndexWindow {
+                first: 0,
+                count: batch.indices().len() as u32,
+                start: batch.start_vertex(),
+                end: batch.end_vertex(),
+            }]
+        } else {
+            batch.windows().to_vec()
+        };
+        if windows
+            .iter()
+            .any(|w| w.count / 3 > self.caps.max_primitive_count)
+        {
+            return Err("D3D9 cached draw group exceeds primitive caps".into());
         }
         let bytes = bytemuck::cast_slice::<_, u8>(batch.indices());
         let mut raw = None;
@@ -1265,9 +1299,18 @@ impl Device {
         unsafe {
             self.inner.device.CreateIndexBuffer(
                 bytes.len() as u32,
-                D3DUSAGE_WRITEONLY as u32,
+                D3DUSAGE_WRITEONLY as u32
+                    | if self.caps.software_vertices {
+                        D3DUSAGE_SOFTWAREPROCESSING as u32
+                    } else {
+                        0
+                    },
                 D3DFMT_INDEX16,
-                D3DPOOL_MANAGED,
+                if self.caps.software_vertices {
+                    D3DPOOL_SYSTEMMEM
+                } else {
+                    D3DPOOL_MANAGED
+                },
                 &mut raw,
                 ptr::null_mut(),
             )?;
@@ -1281,16 +1324,25 @@ impl Device {
             Ok(Indices {
                 raw,
                 owner: self.inner.clone(),
-                start: batch.start_vertex(),
-                end: batch.end_vertex(),
+                windows,
                 count: batch.indices().len() as u32,
             })
         }
     }
     pub fn draw_cached(&mut self, mesh: &Mesh, indices: &Indices) -> Result<()> {
+        if indices.windows.len() != 1 {
+            return Err("D3D9 multi-group indices require an explicit draw group".into());
+        }
+        self.draw_cached_group(mesh, indices, 0)
+    }
+    pub fn draw_cached_group(&mut self, mesh: &Mesh, indices: &Indices, group: u32) -> Result<()> {
+        let window = indices
+            .windows
+            .get(group as usize)
+            .ok_or("D3D9 missing cached index group")?;
         if !Rc::ptr_eq(&mesh.owner, &self.inner)
             || !Rc::ptr_eq(&indices.owner, &self.inner)
-            || indices.end > mesh.filled
+            || window.end > mesh.filled
         {
             return Err("D3D9 cached draw bounds/device mismatch".into());
         }
@@ -1306,10 +1358,10 @@ impl Device {
             self.inner.device.DrawIndexedPrimitive(
                 D3DPT_TRIANGLELIST,
                 0,
-                indices.start,
-                indices.end - indices.start,
-                0,
-                indices.count / 3,
+                window.start,
+                window.end - window.start,
+                window.first,
+                window.count / 3,
             )?;
         }
         self.using_dynamic_indices = true;

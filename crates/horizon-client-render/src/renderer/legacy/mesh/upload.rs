@@ -60,16 +60,35 @@ pub(super) fn prepare(
     }
 }
 impl Compactor {
+    fn charge(mesh: &SectionMesh) -> usize {
+        let count = mesh.solid.len() + mesh.translucent.len();
+        count
+            .saturating_mul(size_of::<TerrainVertex>() * 8)
+            .saturating_add(mesh.block_entities.len() * 64)
+            .saturating_add(1024)
+    }
+    pub(in super::super) fn upload_room(&self, mesh: &SectionMesh) -> bool {
+        // Oversized jobs must still take the synchronous path: waiting for a
+        // job that can never fit would deadlock loading. This check needs only
+        // lengths; do not rescan every UV each frame while the quota is full.
+        let bytes = Self::charge(mesh);
+        (mesh.solid.is_empty() && mesh.translucent.is_empty())
+            || bytes > LIMIT
+            || self
+                .upload_quota
+                .load(Ordering::Relaxed)
+                .saturating_add(bytes)
+                <= LIMIT
+    }
     pub(in super::super) fn try_upload(
         &self,
         key: SectionKey,
         ticket: u64,
         mesh: &SectionMesh,
     ) -> bool {
-        let count = mesh.solid.len() + mesh.translucent.len();
         // The charge covers source, grouped/full vertices, shadow, encoded GPU
         // data and packets. Repeating UVs may expand; those stay synchronous.
-        if count == 0
+        if mesh.solid.is_empty() && mesh.translucent.is_empty()
             || mesh
                 .solid
                 .iter()
@@ -78,10 +97,7 @@ impl Compactor {
         {
             return false;
         }
-        let bytes = count
-            .saturating_mul(size_of::<TerrainVertex>() * 8)
-            .saturating_add(mesh.block_entities.len() * 64)
-            .saturating_add(1024);
+        let bytes = Self::charge(mesh);
         let mut used = self.upload_quota.load(Ordering::Relaxed);
         loop {
             let Some(next) = used.checked_add(bytes).filter(|&n| n <= LIMIT) else {

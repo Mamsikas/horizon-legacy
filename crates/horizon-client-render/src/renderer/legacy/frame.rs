@@ -280,11 +280,12 @@ impl Renderer {
                 horizon_threads::process_memory::usage()
             );
             log::info!(
-                "D3D9 GUI draws={} texture_binds={} vertex_uploads={} buffer_locks={}",
+                "D3D9 GUI draws={} texture_binds={} vertex_uploads={} buffer_locks={} projected={}",
                 self.gui_stats[0],
                 self.gui_stats[1],
                 self.gui_stats[2],
-                self.gui_stats[3]
+                self.gui_stats[3],
+                !self.gui_screen.is_empty()
             );
             log::info!(
                 "D3D9 GUI cache reused_chunks={} rebuilt_chunks={} cpu_bytes={}",
@@ -487,7 +488,6 @@ impl Renderer {
                 &visible,
                 (self.next_arena, self.device.resets),
                 self.sides,
-                !self.device.caps.software_vertices,
             );
             self.drawn_sections = visible.len();
             let mut decoded = std::mem::take(&mut self.decode_scratch);
@@ -508,7 +508,7 @@ impl Renderer {
                     if section.gpu.is_empty() {
                         section.vertices.decode(&mut decoded)?;
                     }
-                    let direct = section.gpu.is_empty() || self.device.caps.software_vertices;
+                    let direct = section.gpu.is_empty();
                     if direct {
                         self.device.transform(
                             Mat4::from_translation(mesh::region_origin(
@@ -651,28 +651,84 @@ impl Renderer {
                     projection.to_cols_array(),
                 )?;
                 let section = self.sections.at(v.slot);
-                let mut decoded = std::mem::take(&mut self.decode_scratch);
-                if section.gpu.is_empty() {
-                    section.vertices.decode(&mut decoded)?;
+                let mut sorted = section
+                    .sorted
+                    .as_ref()
+                    .expect("translucent sort state")
+                    .borrow_mut();
+                sorted.update(
+                    frame.camera,
+                    [key.0 * 16, self.layout.min_y() + key.1 * 16, key.2 * 16],
+                    &mut self.translucent_sorter,
+                );
+                let state = DrawState {
+                    blend: Blend::Alpha,
+                    // Match Horizon's terrain pass: back faces culled, sorted
+                    // front faces blended back-to-front with real depth writes.
+                    cull: true,
+                    alpha_test: false,
+                    fog,
+                    linear: self.linear,
+                    mipmaps: self.mipmaps,
+                    ..Default::default()
+                };
+                let cached = if section.gpu.is_empty() {
+                    false
+                } else {
+                    match sorted.prepare(&mut self.device, section, &mut self.translucent_scratch) {
+                        Ok(()) => true,
+                        Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
+                        Err(error) => {
+                            if !self.cache_warning {
+                                log::warn!(
+                                    "D3D9 sorted index allocation failed ({error}); keeping ordered transient geometry"
+                                );
+                                self.cache_warning = true;
+                            }
+                            false
+                        }
+                    }
+                };
+                if cached {
+                    for draw in &sorted.draws {
+                        self.device.state(
+                            state,
+                            &self.sprites.pages[draw.page],
+                            Some(&self.lightmap),
+                        )?;
+                        sorted.draw(&mut self.device, &self.arenas, draw)?;
+                    }
+                } else {
+                    section.vertices.decode(&mut self.decode_scratch)?;
+                    self.translucent_vertices.clear();
+                    let mut page = None;
+                    for &first in &sorted.order {
+                        let next = sorted.page(first);
+                        if let Some(old) = page
+                            && old != next
+                        {
+                            self.device.state(
+                                state,
+                                &self.sprites.pages[old],
+                                Some(&self.lightmap),
+                            )?;
+                            self.device.draw_transient(&self.translucent_vertices)?;
+                            self.translucent_vertices.clear();
+                        }
+                        page = Some(next);
+                        self.translucent_vertices.extend_from_slice(
+                            &self.decode_scratch[first as usize..first as usize + 4],
+                        );
+                    }
+                    if let Some(page) = page {
+                        self.device.state(
+                            state,
+                            &self.sprites.pages[page],
+                            Some(&self.lightmap),
+                        )?;
+                        self.device.draw_transient(&self.translucent_vertices)?;
+                    }
                 }
-                for packet in &section.translucent {
-                    self.device.state(
-                        DrawState {
-                            blend: Blend::Alpha,
-                            depth_write: false,
-                            cull: false,
-                            alpha_test: false,
-                            fog,
-                            linear: self.linear,
-                            mipmaps: self.mipmaps,
-                            ..Default::default()
-                        },
-                        &self.sprites.pages[packet.page],
-                        Some(&self.lightmap),
-                    )?;
-                    mesh::draw_packet(&mut self.device, &self.arenas, section, packet, &decoded)?;
-                }
-                self.decode_scratch = decoded;
             }
             self.visible = visible;
             self.stamp("terrain translucent", &mut clock);
@@ -1040,7 +1096,10 @@ impl Renderer {
                     pixels,
                     state,
                     picture,
-                    cache: matches!(blend, crate::hud::Blend::Alpha),
+                    cache: matches!(
+                        blend,
+                        crate::hud::Blend::Alpha | crate::hud::Blend::Depth(_)
+                    ),
                 },
                 &mut self.gui_batches,
                 &mut self.gui_vertices,
@@ -1049,12 +1108,40 @@ impl Renderer {
         }
         self.gui_cache.finish();
         phases.lap("d3d9_gui_prepare");
+        self.gui_screen.clear();
+        if self.gui_projected && self.device.caps.software_vertices {
+            self.gui_screen.extend(
+                self.gui_vertices
+                    .iter()
+                    .map(|v| dx::ScreenVertex::from_gui(v, scale)),
+            );
+        }
+        phases.lap("d3d9_gui_project");
         self.hud.atlas.prepare(&mut self.device)?;
         for picture in self.pictures.values() {
             picture.prepare(&mut self.device)?;
         }
         phases.lap("d3d9_gui_textures");
-        let staged = if !self.gui_vertices.is_empty()
+        let screen = if !self.gui_screen.is_empty()
+            && self.gui_screen.len() <= self.device.max_vertices()
+        {
+            match self.device.stage_screen(&self.gui_screen) {
+                Ok(screen) => Some(screen),
+                Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
+                Err(error) => {
+                    log::warn!(
+                        "D3D9 projected GUI stream unavailable ({error}); using the ordinary FFP GUI path"
+                    );
+                    self.gui_projected = false;
+                    self.gui_screen.clear();
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let staged = if self.gui_screen.is_empty()
+            && !self.gui_vertices.is_empty()
             && self.gui_vertices.len() <= self.device.max_vertices()
         {
             Some(self.device.stage_triangles(&self.gui_vertices)?)
@@ -1081,8 +1168,14 @@ impl Renderer {
                 continue;
             };
             self.device.state(*state, texture, Some(&self.lightmap))?;
-            if let Some(staged) = &staged {
+            if let Some(screen) = &screen {
+                self.device.draw_screen(screen, range.clone())?;
+            } else if let Some(staged) = &staged {
                 self.device.draw_staged_triangles(staged, range.clone())?;
+            } else if !self.gui_screen.is_empty() {
+                self.device.draw_screen_triangles(
+                    &self.gui_screen[range.start as usize..range.end as usize],
+                )?;
             } else {
                 self.device
                     .draw_triangles(&self.gui_vertices[range.start as usize..range.end as usize])?;

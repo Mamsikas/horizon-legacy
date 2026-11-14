@@ -9,6 +9,8 @@ pub(in super::super) struct Scratch {
 pub(in super::super) struct Converted {
     pub solid: Vec<Packet>,
     pub translucent: Vec<Packet>,
+    pub centers: Vec<[f32; 3]>,
+    pub translucent_pages: Vec<u32>,
     pub shadow: Arc<dx::MeshData>,
     pub sides: crate::mesher::Sides,
     pub blocks: Vec<([i32; 3], u32)>,
@@ -96,6 +98,7 @@ impl Scratch {
             });
             vertices.extend_from_slice(part);
         }
+        let first_translucent = vertices.len();
         let mut translucent = Vec::<Packet>::new();
         for input in mesh.translucent.chunks_exact(4) {
             atlas::sprite_quad(
@@ -119,6 +122,14 @@ impl Scratch {
             )
             .map_err(|e| e.to_string())?;
         }
+        let centers = vertices[first_translucent..]
+            .chunks_exact(4)
+            .map(|q| gfx::translucency::quad_center(q[0].pos, q[2].pos))
+            .collect();
+        let translucent_pages = translucent
+            .iter()
+            .flat_map(|p| std::iter::repeat_n(p.page as u32, p.count as usize / 4))
+            .collect();
         let offset = [
             (key.0.rem_euclid(8) * 16) as f32,
             (key.1.rem_euclid(8) * 16) as f32,
@@ -137,6 +148,8 @@ impl Scratch {
         Ok(Converted {
             solid,
             translucent,
+            centers,
+            translucent_pages,
             shadow,
             sides,
             blocks: mesh.block_entities.clone(),

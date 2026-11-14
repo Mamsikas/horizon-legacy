@@ -25,6 +25,7 @@ mod frame;
 mod mesh;
 mod resident;
 mod solid_cache;
+mod translucent;
 use atlas::{Pixels, Sprites};
 use mesh::{Arena, Section};
 
@@ -102,9 +103,14 @@ pub struct Renderer {
     solid_cache: solid_cache::SolidCache,
     solid_reused: bool,
     index_scratch: dx::IndexBatch,
+    translucent_scratch: translucent::Scratch,
+    translucent_sorter: gfx::translucency::Sorter,
+    translucent_vertices: Vec<dx::Vertex>,
     gui_batches: frame::GuiBatches,
     gui_cache: frame::gui_cache::GuiCache,
     gui_vertices: Vec<dx::Vertex>,
+    gui_screen: Vec<dx::ScreenVertex>,
+    gui_projected: bool,
     gui_commands: Vec<frame::GuiCommand>,
     gui_stats: [u64; 4],
     upload_cpu: Duration,
@@ -303,9 +309,14 @@ impl Renderer {
             solid_cache: solid_cache::SolidCache::default(),
             solid_reused: false,
             index_scratch: dx::IndexBatch::default(),
+            translucent_scratch: translucent::Scratch::default(),
+            translucent_sorter: gfx::translucency::Sorter::default(),
+            translucent_vertices: Vec::new(),
             gui_batches: frame::GuiBatches::new(dx::DrawState::default()),
             gui_cache: frame::gui_cache::GuiCache::default(),
             gui_vertices: Vec::new(),
+            gui_screen: Vec::new(),
+            gui_projected: true,
             gui_commands: Vec::new(),
             gui_stats: [0; 4],
             upload_cpu: Duration::ZERO,

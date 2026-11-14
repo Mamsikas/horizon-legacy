@@ -25,13 +25,22 @@ impl Renderer {
     }
     pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
         vec![
-            ("D3D9 terrain arenas (DEFAULT cache)", self.gpu_mesh_bytes),
             (
-                "D3D9 cached visibility indices (managed)",
+                "D3D9 terrain buffers (caps-selected pool)",
+                self.gpu_mesh_bytes,
+            ),
+            (
+                "D3D9 cached visibility indices (caps-selected pool)",
                 self.solid_batches
                     .values()
                     .map(mesh::DrawBatch::gpu_bytes)
-                    .sum(),
+                    .sum::<u64>()
+                    + self
+                        .sections
+                        .values()
+                        .filter_map(|s| s.sorted.as_ref())
+                        .map(|s| s.borrow().gpu_bytes())
+                        .sum::<u64>(),
             ),
             ("D3D9 sprite pages (managed)", self.sprites.layout.bytes()),
             ("D3D9 GUI pages (managed)", self.hud.atlas.bytes()),
@@ -54,6 +63,7 @@ impl Renderer {
                                 + (s.solid.capacity() + s.translucent.capacity())
                                     * size_of::<mesh::Packet>()
                                 + s.gpu.capacity() * size_of::<mesh::GpuSlice>()
+                                + s.sorted.as_ref().map_or(0, |s| s.borrow().bytes())
                         })
                         .sum::<usize>(),
             ),
@@ -66,6 +76,7 @@ impl Renderer {
                     + self.pictures.values().map(Pixels::cpu_bytes).sum::<usize>()
                     + self.gui_batches.bytes()
                     + self.gui_vertices.capacity() * size_of::<dx::Vertex>()
+                    + self.gui_screen.capacity() * size_of::<dx::ScreenVertex>()
                     + self.gui_commands.capacity() * size_of::<frame::GuiCommand>()
                     + self.gui_cache.bytes(),
             ),
@@ -81,7 +92,10 @@ impl Renderer {
                         .map(mesh::DrawBatch::bytes)
                         .sum::<usize>()
                     + self.index_scratch.bytes()
-                    + self.solid_cache.bytes(),
+                    + self.solid_cache.bytes()
+                    + self.translucent_scratch.bytes()
+                    + self.translucent_sorter.bytes()
+                    + self.translucent_vertices.capacity() * size_of::<dx::Vertex>(),
             ),
         ]
     }

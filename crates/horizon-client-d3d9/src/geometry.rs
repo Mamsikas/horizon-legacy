@@ -124,12 +124,28 @@ pub struct IndexBatch {
     indices: Vec<u16>,
     end: u32,
     start: u32,
+    windows: Vec<IndexWindow>,
+    window_at: usize,
+    window_start: u32,
+    window_end: u32,
+}
+#[derive(Clone)]
+#[cfg_attr(not(windows), allow(dead_code))] // Native draws consume the recorded bounds.
+pub(crate) struct IndexWindow {
+    pub first: u32,
+    pub count: u32,
+    pub start: u32,
+    pub end: u32,
 }
 impl IndexBatch {
     pub fn clear(&mut self) {
         self.indices.clear();
         self.end = 0;
         self.start = 0;
+        self.windows.clear();
+        self.window_at = 0;
+        self.window_start = 0;
+        self.window_end = 0;
     }
     pub fn append(&mut self, first: u32, count: u32) -> Result<(), String> {
         let end = first
@@ -148,6 +164,12 @@ impl IndexBatch {
         if count == 0 {
             return Ok(());
         }
+        self.window_start = if self.indices.len() == self.window_at {
+            first
+        } else {
+            self.window_start.min(first)
+        };
+        self.window_end = self.window_end.max(end);
         for base in (first..end).step_by(4) {
             let b = base as u16;
             self.indices
@@ -159,6 +181,33 @@ impl IndexBatch {
     pub fn indices(&self) -> &[u16] {
         &self.indices
     }
+    /// Close one ordered draw range without allocating another index buffer.
+    /// Quad order inside a range is retained, including back-to-front sorting.
+    pub fn finish_group(&mut self) -> Option<u32> {
+        let count = self.indices.len() - self.window_at;
+        if count == 0 {
+            return None;
+        }
+        let id = self.windows.len() as u32;
+        self.windows.push(IndexWindow {
+            first: self.window_at as u32,
+            count: count as u32,
+            start: self.window_start,
+            end: self.window_end,
+        });
+        self.window_at = self.indices.len();
+        self.window_start = 0;
+        self.window_end = 0;
+        Some(id)
+    }
+    #[cfg(any(windows, test))]
+    pub(crate) fn windows(&self) -> &[IndexWindow] {
+        &self.windows
+    }
+    #[cfg(any(windows, test))]
+    pub(crate) fn groups_complete(&self) -> bool {
+        self.windows.is_empty() || self.window_at == self.indices.len()
+    }
     pub fn start_vertex(&self) -> u32 {
         self.start
     }
@@ -166,7 +215,7 @@ impl IndexBatch {
         self.end
     }
     pub fn bytes(&self) -> usize {
-        self.indices.capacity() * 2
+        self.indices.capacity() * 2 + self.windows.capacity() * size_of::<IndexWindow>()
     }
 }
 
@@ -203,6 +252,36 @@ pub fn fog_interval(environment: (f32, f32), distance: (f32, f32)) -> (f32, f32)
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordered_groups_preserve_quad_order_and_tight_per_draw_vertex_bounds() {
+        let mut batch = IndexBatch::default();
+        batch.append(20, 4).unwrap();
+        batch.append(8, 4).unwrap();
+        assert_eq!(batch.finish_group(), Some(0));
+        batch.append(100, 4).unwrap();
+        assert!(!batch.groups_complete());
+        assert_eq!(batch.finish_group(), Some(1));
+        assert!(batch.groups_complete());
+        assert_eq!(
+            batch.indices(),
+            &[
+                20, 21, 22, 20, 22, 23, 8, 9, 10, 8, 10, 11, 100, 101, 102, 100, 102, 103
+            ]
+        );
+        assert_eq!(
+            batch
+                .windows()
+                .iter()
+                .map(|w| (w.first, w.count, w.start, w.end))
+                .collect::<Vec<_>>(),
+            [(0, 12, 8, 24), (12, 6, 100, 104)]
+        );
+        batch.clear();
+        batch.append(4, 4).unwrap();
+        assert_eq!(batch.finish_group(), Some(0));
+        let w = &batch.windows()[0];
+        assert_eq!((w.first, w.count, w.start, w.end), (0, 6, 4, 8));
+    }
     #[test]
     fn shadows_preserve_every_vertex_bit_and_reuse_decode_storage() {
         let vertices: Vec<_> = (0..4096)

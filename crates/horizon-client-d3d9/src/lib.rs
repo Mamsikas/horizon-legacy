@@ -13,6 +13,8 @@ pub mod clipboard;
 
 mod geometry;
 pub use geometry::{IndexBatch, MeshData, PaintWindow, Ring, Vertex, fog_interval};
+mod screen;
+pub use screen::ScreenVertex;
 mod fog;
 pub use fog::Fog;
 mod tiles;

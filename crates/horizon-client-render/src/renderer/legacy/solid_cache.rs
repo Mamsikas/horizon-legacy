@@ -25,13 +25,8 @@ impl SolidCache {
         visible: &[gfx::resident::Visible],
         generation: (u64, u64),
         sides: bool,
-        hardware: bool,
     ) -> bool {
         self.probe.clear();
-        if !hardware {
-            self.generation = None;
-            return false;
-        }
         for v in visible {
             let section = sections.at(v.slot);
             if section.solid.is_empty() {
