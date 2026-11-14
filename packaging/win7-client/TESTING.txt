@@ -1,0 +1,99 @@
+Horizon Direct3D9 preview - Windows 7 SP1 x64
+
+Requires prepared legal Horizon resources for Minecraft 26.3, a D3D9 HAL driver,
+and an N455-compatible x64 CPU (SSE3/SSSE3). No Java or shader compiler is needed
+in game. The owner ran the preceding build on real N455/GMA3150: about 50 FPS in
+a flat world and 30 in a normal world at two chunks, roughly 500-750 MiB memory.
+RTX3050: about 950 FPS / 1.1 GiB at 16 chunks, 135 FPS / about 4 GiB at 48 settled.
+Those are the good baseline, before build 7ce2bb42c8 regressed GMA transparency
+from 23 to 5 FPS in the owner's control scene. This update fixes the thousands
+of tiny draw calls that caused that regression. New hardware FPS/memory and
+HD4570 results are not claimed before retesting.
+
+Launch:
+1. Extract this ZIP once; horizon-client.exe is directly inside. Select that EXE
+   as the native client in your launcher. This package uses DX9 by default.
+2. Keep the same resources, save copy and graphics settings for comparisons.
+   No low preset, render-distance change or fixed 128 MiB cap is installed.
+   Default window size is now 854x480 as requested; explicit --width/--height
+   and fullscreen still take precedence.
+3. For a profile WITHOUT changing launcher arguments, type these in game chat:
+     /profiler start client
+   Perform the slow action (load/move, F3+A or open inventory), then:
+     /profiler stop client
+   The chat's Folder link/latest.log gives the .hzperf path. Send that file and
+   latest.log. Use no gpu/gpu_detail suffix: DX9 GPU pass timers are unavailable.
+   Detailed timeline is capped at 60 seconds; use separate segments of a long
+   loading test. Captures stay local unless you explicitly use share/upload.
+
+The GMA log's VP=software means CPU vertex processing with hardware HAL
+rasterization. Its actual caps report PS2 and no hardware VS/T&L. Forcing hardware
+VP cannot add that capability. This update automatically uses projected XYZRHW
+GUI on software-VP HALs; world vertices keep FFP. F3 no longer shows the unrelated
+Noop metadata backend label. This is not a CPU rasterizer.
+
+Short GMA retest:
+First compare the same ice scene, resolution and two-chunk distance against the
+23 FPS baseline. Then compare HUD on/off (F1) and inventory,
+then walk over/around ice and water, including looking from below/above. Try F3+A,
+F5, chat, resize/Alt+Tab/fullscreen and save/reopen. F2 saves screenshots. A plain
+run without profiling is best for FPS comparison; periodic memory diagnostics
+can themselves add pauses. Send latest.log and build-info.txt with any problem.
+
+What changed:
+- Full staging queues leave bulk meshes in the existing nearest-first backlog,
+  instead of converting them on the render thread. Edits have priority and stay
+  immediate. Queue memory stays bounded; oversized/unsupported jobs can progress.
+- FFP reuses solid visibility plans and groups texture/state changes, retaining
+  tight contiguous transformed ranges. SWVP input VBs use SYSTEMMEM; hardware
+  input still uses DEFAULT. Both remain hardware HAL rasterization.
+- Basic transparency packs each texture page into a tight vertex range, with
+  far-to-near sections/pages and back-face culling. Depth testing remains;
+  transparent batches do not write depth. There is no per-quad sorting/index
+  allocation or per-quad draw fragmentation. This deliberately does not match
+  Improved Transparency. The log reports its draws, binds and page ranges.
+- Resident buffer merging can run during bulk loading, rather than waiting
+  for the upload queue to become empty. One bounded merge shares the existing
+  worker; speculative prefetch waits. No world/mesher settings are changed.
+- GUI reuses alpha and depth/scissor inventory geometry. Depth clears remain
+  barriers for overlapping models; disjoint inventory slots share depth and
+  compatible adjacent draws. Pixel-only patches keep mappings cached; newly present sparse tiles
+  invalidate them. SWVP GUI uses a 28-byte projected stream, with ordinary FFP
+  fallback if that optional stream cannot be allocated. Hardware GUI is unchanged.
+- Offline profiles finish encryption and let the server decide admission rather
+  than being rejected locally first. Real online servers still enforce their
+  own authentication; signed-in session-service authentication is unchanged.
+
+Offline-server retest:
+Connect with the same offline account to the same server. If refused, send the
+new latest.log plus the server version/core and its matching login-log lines.
+The client now preserves the server's actual refusal instead of guessing online
+mode from an encryption request. The launcher needs no change for this fix.
+
+Optional external reports require --control on the GAME executable, for example
+in PowerShell from this extracted folder (replace both paths):
+  .\horizon-client.exe --control --resources "C:\path\to\26.3" --game-dir "C:\path\to\test-game"
+Then from a SECOND PowerShell in this extracted folder:
+  .\horizon-ctl.exe bench 20 > frame-stats.json
+  .\horizon-ctl.exe memory > memory.json
+  .\horizon-ctl.exe profile client start --seconds 60 --timeline --no-samples
+If the launcher sets HORIZON_HOME, use the same home in that terminal. These
+commands need not be used for a chat profile. Keep memory reports separate from
+plain FPS tests. Windows stack/heap sampling and DX9 GPU timestamps are unavailable.
+
+Log counters: CPU elapsed phases (including driver waits), Present, draws/binds,
+mesh/GUI/index uploads, requested/live terrain storage, compressed CPU shadows,
+GUI locks/cache hits, depth_clears/depth_reused, vertex layouts and staging/arrival counts. Requested buffer
+storage is not measured physical VRAM; SWVP buffers now live in system memory.
+Other backends' GPU timestamps are not directly comparable to DX9 CPU phases.
+
+Remove old HORIZON_D3D9_MESH_MIB / HORIZON_D3D9_TEXTURE_MIB overrides for ordinary
+tests. Automatic advisory targets use driver/system-memory hints up to 2 GiB.
+Allocation pressure retains drawable shadows/managed paging. User quality and
+render distance remain unchanged. The native SM2 shader programs are unchanged.
+
+Limitations: SDR, simplified End portal, no fancy clouds/star field, enchantment
+foil, shader packs, PBR, post chains, LOD, GPU occlusion/skinning, frame generation
+or split-screen compositor. Base terrain/models, entities/hand, menus/HUD/chat,
+weather and overlays remain. This package contains DX9 only. XP/x86 are not
+implemented or shipped by this update.

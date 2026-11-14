@@ -3,7 +3,7 @@
 
 use horizon_client::autotune::GpuCullingAuto;
 use horizon_client::dynamic_resolution::{DynamicResolution, Pace};
-use horizon_client::gfx::Renderer;
+use horizon_client::renderer::Renderer;
 use horizon_client::graphics::{GpuCullingMode, Graphics};
 use horizon_client::perf_overlay::FrameGraph;
 

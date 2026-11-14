@@ -9,7 +9,7 @@ pub mod wayland;
 /// Opens a Vulkan device with `VK_EXT_hdr_metadata` too, when the GPU offers
 /// it, so [`set_metadata`] can tell the compositor the real peak brightness.
 /// `None` leaves opening to wgpu.
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_vendor = "win7")))]
 pub fn open_vulkan_device(
     adapter: &wgpu::Adapter,
     desc: &wgpu::DeviceDescriptor<'_>,
@@ -60,7 +60,7 @@ pub fn experimental_features() -> wgpu::ExperimentalFeatures {
 /// content is BT.709, peaks at `peak` nits and is no darker than `black`. Needs a
 /// device from `open_vulkan_device` and a configured surface; does nothing otherwise.
 pub fn set_metadata(device: &wgpu::Device, surface: &wgpu::Surface<'_>, peak: f32, black: f32) {
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(all(not(target_os = "macos"), not(target_vendor = "win7")))]
     {
         use wgpu::hal::api::Vulkan;
         // Safety: read-only access to handles wgpu keeps alive while these guards live.
@@ -87,11 +87,11 @@ pub fn set_metadata(device: &wgpu::Device, surface: &wgpu::Surface<'_>, peak: f3
         // Safety: a live swapchain of this device, one metadata entry for it.
         unsafe { loader.set_hdr_metadata(&[swapchain], &[metadata(peak, black)]) };
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_vendor = "win7"))]
     let _ = (device, surface, peak, black);
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(all(not(target_os = "macos"), not(target_vendor = "win7")))]
 fn metadata(peak: f32, black: f32) -> ash::vk::HdrMetadataEXT<'static> {
     let xy = |x, y| ash::vk::XYColorEXT { x, y };
     ash::vk::HdrMetadataEXT::default()
@@ -117,4 +117,13 @@ mod tests {
         assert_eq!(m.max_luminance, 1000.0);
         assert_eq!(m.min_luminance, 0.05);
     }
+}
+
+/// The Win7 ABI never opens a Vulkan device; the client uses its separate DX9 HAL.
+#[cfg(target_vendor = "win7")]
+pub fn open_vulkan_device(
+    _adapter: &wgpu::Adapter,
+    _desc: &wgpu::DeviceDescriptor<'_>,
+) -> Option<Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError>> {
+    None
 }

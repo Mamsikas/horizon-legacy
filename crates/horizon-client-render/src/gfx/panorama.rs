@@ -169,7 +169,7 @@ fn load_face(
     Err(tried.join("; ").into())
 }
 
-fn projection(width: u32, height: u32, yaw: f32, pitch: f32) -> Mat4 {
+pub(crate) fn projection(width: u32, height: u32, yaw: f32, pitch: f32) -> Mat4 {
     // CubeMap.render: 85-degree FOV, near/far 0.05/10, rotationX(PI), rotateX, rotateY.
     Mat4::perspective_rh(
         85.0f32.to_radians(),

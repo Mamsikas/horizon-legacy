@@ -1,6 +1,10 @@
 //! Everything that is not UI: GitHub, installs, resource preparation, the game's processes and
 //! updates. The GUI, the CLI and the MCP server all go through this module. Functions here
 //! block; the GUI runs them on threads and reads their messages.
+mod checked_download;
+pub(crate) use checked_download::check_cancelled;
+use checked_download::write_checked;
+
 use crate::{account, mojang, sources};
 use horizon_platform::{prepare, prepared_files};
 use std::fs;
@@ -1155,33 +1159,7 @@ fn save_checked(
     saved
 }
 
-fn write_checked(
-    mut reader: impl Read,
-    size: u64,
-    name: &str,
-    sha256: &str,
-    to: &Path,
-    progress: &impl Fn(f32),
-) -> Result<(), String> {
-    let mut file = fs::File::create(to).map_err(|e| e.to_string())?;
-    let mut hash = horizon_release_sign::Sha256::default();
-    let (mut done, mut buf) = (0u64, vec![0u8; 1 << 16]);
-    loop {
-        let n = reader
-            .read(&mut buf)
-            .map_err(|e| format!("Download interrupted: {e}"))?;
-        if n == 0 {
-            break;
-        }
-        hash.update(&buf[..n]);
-        file.write_all(&buf[..n]).map_err(|e| e.to_string())?;
-        done += n as u64;
-        progress((done as f32 / size.max(1) as f32).min(1.0) * 0.9);
-    }
-    horizon_release_sign::check(name, sha256, &hash.hex())
-}
-
-fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
+pub(crate) fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
     let file = fs::File::open(archive).map_err(|e| e.to_string())?;
     if url.ends_with(".tar.gz") {
         tar::Archive::new(flate2::read::GzDecoder::new(file))

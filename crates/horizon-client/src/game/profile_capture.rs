@@ -308,7 +308,7 @@ pub(super) fn shown(path: &Path) -> String {
 
 fn gpu_readout(
     wanted: GpuSwitch,
-    renderer: Option<&horizon_client::gfx::Renderer>,
+    renderer: Option<&horizon_client::renderer::Renderer>,
 ) -> Option<horizon_client::gfx::pack_timing::GpuReadout> {
     renderer.filter(|_| wanted != GpuSwitch::Off)?.gpu_readout()
 }

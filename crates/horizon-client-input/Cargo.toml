@@ -10,7 +10,7 @@ description = "The client's input layer: key bindings and their names, mouse, co
 horizon-client-core = { path = "../horizon-client-core" }
 winit = "0.30.13"
 png = "0.18"
-arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+
 
 [dev-dependencies]
 # The window icon test decodes Horizon's icon.
@@ -21,3 +21,11 @@ controllers = []
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_vendor = "win7"))'.dependencies]
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
+
+# arboard's file-list support imports Win8 PathCchStripPrefix even for text-only users.
+# The Win7 presentation crate exposes a small UTF-16 clipboard without that API.
+[target.'cfg(all(windows, target_vendor = "win7"))'.dependencies]
+horizon-client-d3d9 = { path = "../horizon-client-d3d9" }

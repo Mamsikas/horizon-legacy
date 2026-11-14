@@ -3,6 +3,9 @@
 //! `isCopy`, `isPaste` and `isCut`, `StringUtil.filterText` and
 //! `ChatFormatting.stripFormatting`.
 
+#[cfg(all(windows, target_vendor = "win7"))]
+use horizon_client_d3d9::clipboard as arboard;
+
 use winit::keyboard::{Key, KeyCode, PhysicalKey};
 
 /// A text-editing shortcut (`InputWithModifiers.isSelectAll`, `isCopy`,

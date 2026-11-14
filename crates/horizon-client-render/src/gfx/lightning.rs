@@ -221,3 +221,8 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(windows, feature = "legacy-d3d9"))]
+pub(crate) fn legacy_geometry(seed: i64, uv: [f32; 2]) -> Vec<Vertex> {
+    geometry(seed, uv)
+}

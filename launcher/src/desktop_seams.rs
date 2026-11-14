@@ -37,6 +37,7 @@ pub fn to_folder(path: &Path, dir: &Path) -> Result<(), String> {
     std::fs::rename(path, &target).map_err(|e| e.to_string())
 }
 
+#[cfg(any(not(windows), feature = "gui"))]
 fn system_trash(path: &Path) -> Result<(), String> {
     // On Windows the crate starts COM on the calling thread and panics when that thread already
     // runs it in the other mode (RPC_E_CHANGED_MODE). A worker of GPUI's thread pool can, and a
@@ -56,6 +57,7 @@ fn system_trash(path: &Path) -> Result<(), String> {
 }
 
 /// Runs `f` on a new thread and waits for it; a panic there comes back as an error.
+#[cfg(any(not(windows), feature = "gui", test))]
 fn on_own_thread<T: Send>(f: impl FnOnce() -> Result<T, String> + Send) -> Result<T, String> {
     std::thread::scope(|s| s.spawn(f).join()).unwrap_or_else(|panic| {
         let why = panic
@@ -107,4 +109,9 @@ mod tests {
         let failed: Result<(), String> = on_own_thread(|| panic!("Call to CoInitializeEx failed"));
         assert_eq!(failed, Err("Call to CoInitializeEx failed".into()));
     }
+}
+
+#[cfg(all(windows, not(feature = "gui")))]
+fn system_trash(path: &Path) -> Result<(), String> {
+    crate::win7_shell::recycle(path)
 }

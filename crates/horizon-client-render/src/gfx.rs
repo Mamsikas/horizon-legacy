@@ -12,6 +12,8 @@ use crate::{
     section_mask::SectionMask,
     sprites::SpriteAnimation,
 };
+mod backend_order;
+use backend_order::backend_order;
 use glam::{DVec3, Mat4, Vec3, Vec4};
 use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Instant};
 use wgpu::util::DeviceExt;
@@ -232,7 +234,7 @@ mod native_post;
 pub mod native_render;
 mod native_shadow;
 mod native_sky;
-mod occlusion;
+pub(crate) mod occlusion;
 mod oit;
 mod oit_features;
 pub(crate) mod output;
@@ -256,7 +258,7 @@ use pass_timing_api::{after_culling_pass, pixel_count, world_pass_after_culling}
 mod page_runs;
 pub mod panorama;
 mod readback;
-mod resident;
+pub(crate) mod resident;
 mod reuse;
 mod screenshot_save;
 mod stars;
@@ -1939,7 +1941,7 @@ fn instance_descriptor(
     // FXC spends about 2.6 s on every start compiling the pipelines (DXC about
     // 1 s); what it compiled once is kept in the game folder and read back
     // after that (third_party/wgpu-hal/src/dx12/disk_cache.rs).
-    #[cfg(windows)]
+    #[cfg(all(windows, not(target_vendor = "win7")))]
     if dx12 {
         wgpu::hal::dx12::disk_cache::set_file(dx12_shader_cache(&crate::logging::game_home()));
     }
@@ -1975,39 +1977,6 @@ impl wgpu::rwh::HasDisplayHandle for WindowDisplay {
         &self,
     ) -> std::result::Result<wgpu::rwh::DisplayHandle<'_>, wgpu::rwh::HandleError> {
         wgpu::rwh::HasDisplayHandle::display_handle(&*self.0)
-    }
-}
-/// The backends to open a device on, each tried in turn until one gives a
-/// device. `api` is the player's choice (`GraphicsApi::with_env` applied);
-/// `os` is `std::env::consts::OS`; `arch` the machine's (`horizon_system::machine_arch`), not the
-/// build's; `wgpu_backend`: whether `WGPU_BACKEND` is set, which picks the backends itself.
-/// Auto tries DirectX 12 first on Windows ARM64, the x64 build emulated there included,
-/// then Vulkan, based on the device losses seen there (#7513). Other
-/// Windows systems try Vulkan, then DirectX 12, then OpenGL; Linux tries Vulkan then
-/// OpenGL. Each is tried when the one before has no surface, adapter or device. A native
-/// crash in the driver can't be
-/// caught in the game; the launcher switches the setting to DirectX 12 after one at
-/// the renderer's start (#746). macOS has Metal only.
-fn backend_order(
-    api: GraphicsApi,
-    os: &str,
-    arch: &str,
-    wgpu_backend: bool,
-) -> Vec<wgpu::Backends> {
-    use wgpu::Backends;
-    if os == "macos" || wgpu_backend {
-        return vec![Backends::default()];
-    }
-    let windows = os == "windows";
-    match api {
-        GraphicsApi::Auto if windows && arch == "aarch64" => {
-            vec![Backends::DX12, Backends::VULKAN, Backends::GL]
-        }
-        GraphicsApi::Auto if windows => vec![Backends::VULKAN, Backends::DX12, Backends::GL],
-        GraphicsApi::Auto => vec![Backends::VULKAN, Backends::GL],
-        GraphicsApi::Dx12 if windows => vec![Backends::DX12],
-        GraphicsApi::Vulkan | GraphicsApi::Dx12 => vec![Backends::VULKAN],
-        GraphicsApi::OpenGl => vec![Backends::GL],
     }
 }
 fn backends_name(backends: wgpu::Backends) -> &'static str {

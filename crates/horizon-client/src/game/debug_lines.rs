@@ -169,7 +169,14 @@ impl Game<'_> {
                     }
                     // Horizon's own passes, in a group of their own.
                     let own_lines = self.renderer.as_ref().map_or_else(Vec::new, |r| {
-                        overlay::labelled_pass_lines("Horizon GPU", &r.own_pass_times())
+                        #[cfg(all(windows, feature = "legacy-d3d9"))]
+                        {
+                            overlay::labelled_pass_lines("D3D9 CPU", &r.cpu_pass_times())
+                        }
+                        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+                        {
+                            overlay::labelled_pass_lines("Horizon GPU", &r.own_pass_times())
+                        }
                     });
                     if self.debug && !own_lines.is_empty() {
                         d.group("Horizon passes", own_lines);

@@ -22,7 +22,8 @@ impl Game<'_> {
         }
     }
     pub(super) fn prepare_lod(&mut self) {
-        let enabled = self.far_terrain_choice().0 > 0
+        let enabled = !cfg!(all(windows, feature = "legacy-d3d9"))
+            && self.far_terrain_choice().0 > 0
             && self.renderer.is_some()
             && self.player.is_some()
             && self.title.is_none();
@@ -328,7 +329,10 @@ impl Game<'_> {
             let g = &self.settings.horizon;
             let budgeted = g.chunk_updates > 0 || g.upload_budget_kib > 0;
             // The meshes, once copied, are freed by a worker (`Streaming::free`).
-            if !budgeted && self.pending_uploads.is_empty() && uploads.len() <= AUTO_UPLOADS_AT_ONCE
+            if !cfg!(all(windows, feature = "legacy-d3d9"))
+                && !budgeted
+                && self.pending_uploads.is_empty()
+                && uploads.len() <= AUTO_UPLOADS_AT_ONCE
             {
                 horizon_client::spans::time("upload", || {
                     for (key, mesh) in &uploads {
@@ -366,7 +370,12 @@ impl Game<'_> {
                 let far = |k: &(i32, i32, i32)| {
                     (k.0 - centre.0).pow(2) + (k.1 - cam_y).pow(2) + (k.2 - centre.1).pow(2)
                 };
+                #[cfg(not(all(windows, feature = "legacy-d3d9")))]
                 pending.sort_unstable_by_key(|(k, _)| std::cmp::Reverse(far(k)));
+                #[cfg(all(windows, feature = "legacy-d3d9"))]
+                pending.sort_unstable_by_key(|(k, _)| {
+                    (renderer.urgent_upload(*k), std::cmp::Reverse(far(k)))
+                });
                 let (limit, budget) = if budgeted {
                     (
                         g.chunk_updates as usize,
@@ -383,7 +392,11 @@ impl Game<'_> {
                 let auto = (!budgeted).then(|| self.upload_pace.budget(pending.len(), arriving));
                 let started = Instant::now();
                 let upload_span = horizon_client::spans::guard("upload_queue");
-                while let Some((_, mesh)) = pending.last() {
+                while let Some((_key, mesh)) = pending.last() {
+                    #[cfg(all(windows, feature = "legacy-d3d9"))]
+                    if !renderer.upload_room(*_key, mesh) {
+                        break;
+                    }
                     if auto.is_some_and(|time| count > 0 && started.elapsed() >= time) {
                         break;
                     }

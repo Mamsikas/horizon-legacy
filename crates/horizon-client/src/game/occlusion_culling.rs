@@ -3,9 +3,9 @@ use super::{Game, Vertex};
 use horizon_client::{
     blocks::{BlockFacts, RenderShape, StateFacts},
     chunk::Chunk,
-    gfx::Renderer,
     graphics::EntityCullingMode,
     mesher::SectionMesh,
+    renderer::Renderer,
     spans,
     streaming::Streaming,
     voxel_occlusion::Culler as OcclusionCuller,

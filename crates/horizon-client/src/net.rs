@@ -856,28 +856,36 @@ fn run(
                 let secret = generate_secret().map_err(e)?;
                 if hello.should_authenticate {
                     let signed_in = auth.is_some();
-                    let authenticated = auth
-                        .ok_or_else(|| Reason::keyed("horizon.multiplayer.not_signed_in", lang))
-                        .and_then(|account| {
-                            let hash = server_hash(&hello.server_id, &secret, &hello.public_key);
-                            // The session service's refusal: the wrapped
-                            // `disconnect.loginFailedInfo` text is shown, and
-                            // the inner key (the reason's own) classifies
-                            // (`reconnect::allowed`).
-                            crate::auth::join_server(account, &hash).map_err(|err| {
-                                let (reason, key) = match err.reason() {
-                                    Ok(key) => (tr(lang, key), Some(key.to_owned())),
-                                    Err(message) => (message.to_owned(), None),
-                                };
-                                Reason {
-                                    text: plain(
-                                        &translatable("disconnect.loginFailedInfo", &[&reason]),
-                                        lang,
-                                    ),
-                                    key,
-                                }
-                            })
-                        });
+                    // Encryption is not proof of online mode: LAN hosts and
+                    // offline proxies can negotiate it too. With no session
+                    // token, finish encryption and let the server admit/refuse
+                    // the offline profile. This cannot authenticate it to an
+                    // online server; no session-service join is fabricated.
+                    if !signed_in {
+                        log::info!(
+                            "Server requested session authentication; offline profile will complete encryption and the server decides admission"
+                        );
+                    }
+                    let authenticated = auth.map_or(Ok(()), |account| {
+                        let hash = server_hash(&hello.server_id, &secret, &hello.public_key);
+                        // The session service's refusal: the wrapped
+                        // `disconnect.loginFailedInfo` text is shown, and
+                        // the inner key (the reason's own) classifies
+                        // (`reconnect::allowed`).
+                        crate::auth::join_server(account, &hash).map_err(|err| {
+                            let (reason, key) = match err.reason() {
+                                Ok(key) => (tr(lang, key), Some(key.to_owned())),
+                                Err(message) => (message.to_owned(), None),
+                            };
+                            Reason {
+                                text: plain(
+                                    &translatable("disconnect.loginFailedInfo", &[&reason]),
+                                    lang,
+                                ),
+                                key,
+                            }
+                        })
+                    });
                     if let Err(reason) = authenticated {
                         if !continues_after_failed_join(lan, signed_in) {
                             return Err(reason);
@@ -1486,8 +1494,8 @@ pub fn ping_legacy(address: &str, timeout: Duration) -> Result<LegacyStatus, Str
 /// `ClientHandshakePacketListenerImpl.handleHello`: a failed session join goes
 /// on to encryption only for an entry picked from LAN discovery
 /// (`ServerData.isLan`), and the host decides. A vanilla client always has an
-/// account; Horizon without one never joins anything (Mojang's rules: no play
-/// without an account that owns the game), LAN included.
+/// account. An offline profile has no session-service join to fail: it finishes
+/// encryption separately and the server decides whether that profile may join.
 fn continues_after_failed_join(lan: bool, signed_in: bool) -> bool {
     lan && signed_in
 }
@@ -2128,8 +2136,9 @@ mod tests {
         receive_brand(&payload, &send);
         assert!(events.try_recv().is_err());
     }
-    /// No account never joins; the signed-in rule is compared with the real
-    /// client login listener by test_lan_auth_parity.py.
+    /// Offline profiles finish encryption, then preserve the server's decision.
+    /// The signed-in failure rule is also compared with the real client login
+    /// listener by test_lan_auth_parity.py.
     #[test]
     fn lan_login_continues_after_authentication_failure() {
         for lan in [true, false] {
@@ -2171,7 +2180,12 @@ mod tests {
                 server
                     .send(
                         &login::Clientbound::Disconnect(login::Disconnect {
-                            reason_json: r#"{"text":"LAN fixture accepted"}"#.into(),
+                            reason_json: if lan {
+                                r#"{"text":"LAN fixture accepted"}"#
+                            } else {
+                                r#"{"text":"Server refused offline profile"}"#
+                            }
+                            .into(),
                         })
                         .encode(),
                     )
@@ -2209,10 +2223,16 @@ mod tests {
                     break reason;
                 }
             };
-            // Without an account nothing joins, LAN or not.
             let sent_key = worker.join().unwrap();
-            assert!(!sent_key, "lan {lan}: joined without an account");
-            assert_eq!(reason, NOT_SIGNED_IN);
+            assert!(sent_key, "lan {lan}: encryption reply was not sent");
+            assert_eq!(
+                reason,
+                if lan {
+                    "LAN fixture accepted"
+                } else {
+                    "Server refused offline profile"
+                }
+            );
             // A signed-in account whose join the session service rejects:
             // the case vanilla's listener is run with.
             let goes_on = continues_after_failed_join(lan, true);

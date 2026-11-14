@@ -2,7 +2,9 @@
 //! Controls, Key Binds, Mouse Settings, Chat Settings, Accessibility,
 //! Language and Resource Packs, laid out like vanilla's HeaderAndFooter /
 //! OptionsList screens and drawn with the shared widgets.
+mod graphics_api;
 mod pack_drop;
+use graphics_api::graphics_api_tooltip;
 
 use std::time::Instant;
 
@@ -749,6 +751,11 @@ impl Opt {
                 "options.textureFiltering.rgss",
                 "options.textureFiltering.anisotropic",
             ][s.file.int("textureFiltering").clamp(0, 2) as usize]),
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            Opt::GraphicsBackend => {
+                Text::literal(lang::get_or("options.graphicsApi.legacyD3d9", "Direct3D 9"))
+            }
+            #[cfg(not(all(windows, feature = "legacy-d3d9")))]
             Opt::GraphicsBackend => tr(match s.horizon.api {
                 crate::graphics::GraphicsApi::OpenGl => "options.graphicsApi.opengl",
                 crate::graphics::GraphicsApi::Vulkan => "options.graphicsApi.vulkan",
@@ -1054,10 +1061,16 @@ impl Opt {
             Opt::GraphicsBackend => {
                 // PreferredGraphicsApi: Default, OpenGL, Vulkan; a platform lacking one skips it.
                 use crate::graphics::GraphicsApi::{Auto, OpenGl, Vulkan};
-                let offered: Vec<_> = [Auto, OpenGl, Vulkan]
-                    .into_iter()
-                    .filter(|a| crate::graphics::GraphicsApi::choices().contains(a))
-                    .collect();
+                let offered: Vec<_> = [
+                    Auto,
+                    OpenGl,
+                    Vulkan,
+                    #[cfg(all(windows, feature = "legacy-d3d9"))]
+                    crate::graphics::GraphicsApi::LegacyD3d9,
+                ]
+                .into_iter()
+                .filter(|a| crate::graphics::GraphicsApi::choices().contains(a))
+                .collect();
                 let at = offered
                     .iter()
                     .position(|a| *a == s.horizon.api)
@@ -1208,23 +1221,6 @@ impl Opt {
             s.graphics_preset = "custom".into();
         }
     }
-}
-
-/// `Options.preferredGraphicsBackend`'s tooltip: the restart note once the choice differs from
-/// the startup one, the description, and Vulkan's warning.
-fn graphics_api_tooltip(s: &Settings) -> Text {
-    let line = |key: &str| lang::get_or(key, key);
-    let mut lines = Vec::new();
-    if s.horizon.api != s.startup_api {
-        lines.push(line("options.needsRestart"));
-        lines.push(String::new());
-    }
-    lines.push(line("options.graphicsApi.tooltip"));
-    if s.horizon.api == crate::graphics::GraphicsApi::Vulkan {
-        lines.push(String::new());
-        lines.push(line("options.graphicsApi.tooltip.vulkan"));
-    }
-    Text::literal(lines.join("\n"))
 }
 
 /// `selected_key` while a native mod's key waits (`selected_native_key`).
@@ -6037,7 +6033,7 @@ mod tests {
         }
         // Dx12 is Horizon's own Graphics page's; this option has the three of vanilla.
         assert!(!seen.contains(&GraphicsApi::Dx12));
-        assert_eq!(seen[0], GraphicsApi::Auto);
+        assert_eq!(seen[0], GraphicsApi::default());
         if offered.len() == 3 {
             assert_eq!(seen[1..], [GraphicsApi::OpenGl, GraphicsApi::Vulkan]);
             assert_eq!(s.file.name("preferredGraphicsBackend"), "vulkan");
@@ -6099,15 +6095,30 @@ mod tests {
             "Exclusive Fullscreen Mode: 2560x1440@59.94 (24bit)"
         );
         s.horizon.api = GraphicsApi::Vulkan;
-        assert_eq!(
-            Opt::GraphicsBackend.label(&s).plain(),
-            "Graphics API: Prefer Vulkan (Experimental)"
-        );
-        assert!(
-            graphics_api_tooltip(&s)
-                .plain()
-                .starts_with("Requires a game restart to take effect.\n\n")
-        );
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        {
+            assert_eq!(
+                Opt::GraphicsBackend.label(&s).plain(),
+                "Graphics API: Direct3D 9"
+            );
+            assert!(
+                graphics_api_tooltip(&s)
+                    .plain()
+                    .starts_with("Which graphics API")
+            );
+        }
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+        {
+            assert_eq!(
+                Opt::GraphicsBackend.label(&s).plain(),
+                "Graphics API: Prefer Vulkan (Experimental)"
+            );
+            assert!(
+                graphics_api_tooltip(&s)
+                    .plain()
+                    .starts_with("Requires a game restart to take effect.\n\n")
+            );
+        }
         s.startup_api = GraphicsApi::Vulkan;
         assert!(
             graphics_api_tooltip(&s)

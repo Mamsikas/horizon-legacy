@@ -1,0 +1,366 @@
+//! DX9 fixed-function vertices consume the same Frame/SectionMesh/HudBatch as gfx.
+//! wgpu types below are CPU metadata only; this module never creates a wgpu device.
+use crate::{
+    Result,
+    block_entity_render::{StaticCacheFrameStats, StaticSectionRevision},
+    chunk::ColumnLayout,
+    fast_hash::{FxHashMap as HashMap, FxHashSet},
+    gfx::{self, *},
+    hud::Rect,
+    mesher::{SectionMesh, TerrainVertex, Vertex},
+    sprites::SpriteAnimation,
+};
+use glam::{DVec3, Mat4, Vec3};
+use horizon_client_d3d9 as dx;
+use std::{
+    collections::BTreeMap,
+    ops::Range,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use winit::window::Window;
+mod atlas;
+mod compat;
+mod frame;
+mod mesh;
+mod resident;
+mod solid_cache;
+use atlas::{Pixels, Sprites};
+use mesh::{Arena, Section};
+
+pub struct Hud {
+    pub sprite_animations: Vec<(Rect, SpriteAnimation, (usize, usize, u32))>,
+    atlas: Pixels,
+}
+pub struct Renderer {
+    device: dx::Device,
+    sprites: Sprites,
+    lightmap: dx::Texture,
+    panorama: Option<Pixels>,
+    panorama_faces: Arc<panorama::Faces>,
+    pictures: HashMap<u64, Pixels>,
+    lightning_cache: HashMap<i64, (Vec<Vertex>, [f32; 2])>,
+    white: dx::Texture,
+    forcefield: dx::Texture,
+    pub hud: Hud,
+    pub config: wgpu::SurfaceConfiguration,
+    pub info: wgpu::AdapterInfo,
+    pub suspended: bool,
+    pub paced_elsewhere: bool,
+    pub gpu_times: Vec<f32>,
+    pub lightmap_pixels: [u8; 1024],
+    pub last_wait: Duration,
+    pub last_encode: Duration,
+    pub multi_draw: bool,
+    pub separate_ao: bool,
+    pub drawn_sections: usize,
+    pub section_draws: usize,
+    pub section_draw_calls: usize,
+    pub uploaded_bytes: u64,
+    pub screenshot: Option<ScreenshotRequest>,
+    pub screenshot_result: Option<std::result::Result<[u32; 2], String>>,
+    pub screenshot_hdr: Option<std::path::PathBuf>,
+    pub saved_screenshots: Vec<SavedScreenshot>,
+    pub screenshot_quality: u32,
+    pub gamma: f32,
+    pub fullbright: bool,
+    pub improved_transparency: bool,
+    pub animated_textures: bool,
+    pub capture: Option<capture::Request>,
+    pub capture_result: Option<std::result::Result<serde_json::Value, String>>,
+    sections: resident::Sections,
+    occlusion: gfx::occlusion::Occlusion,
+    visible: Vec<gfx::resident::Visible>,
+    layout: ColumnLayout,
+    revision: u64,
+    mesh_bytes: u64,
+    mesh_budget: u64,
+    texture_budget: u64,
+    pending_error: Option<String>,
+    gpu_mesh_bytes: u64,
+    decoded_mesh_bytes: u64,
+    arenas: HashMap<u64, Arena>,
+    next_arena: u64,
+    compactor: Option<mesh::Compactor>,
+    pending_sections: HashMap<SectionKey, u64>,
+    upload_ticket: u64,
+    staged_sections: u64,
+    stage_profile: [f64; 5],
+    uncached_mesh_bytes: u64,
+    compact_scan: u64,
+    compactions: u64,
+    prefetch_scan: u64,
+    eager_sections: u64,
+    arrival_pages: u64,
+    arrival_sections: u64,
+    arrival_max_sections: usize,
+    pending_mesh_uploads: u64,
+    seen_resets: u64,
+    decode_scratch: Vec<dx::Vertex>,
+    convert_scratch: mesh::convert::Scratch,
+    solid_batches: BTreeMap<(usize, bool, u64), mesh::DrawBatch>,
+    solid_cache: solid_cache::SolidCache,
+    solid_reused: bool,
+    translucent_stats: [u64; 3],
+    index_scratch: dx::IndexBatch,
+    gui_batches: frame::GuiBatches,
+    gui_cache: frame::gui_cache::GuiCache,
+    gui_vertices: Vec<dx::Vertex>,
+    gui_screen: Vec<dx::ScreenVertex>,
+    gui_projected: bool,
+    gui_depth: dx::GuiDepth,
+    gui_commands: Vec<frame::GuiCommand>,
+    gui_stats: [u64; 4],
+    upload_cpu: Duration,
+    timings: Vec<(&'static str, f32)>,
+    profile_laps: crate::spans::Laps,
+    texture_target_warned: bool,
+    cache_warning: bool,
+    dropped: bool,
+    sides: bool,
+    linear: bool,
+    mipmaps: bool,
+    custom_sky_draws: Vec<crate::custom_sky::Draw>,
+    last_log: Instant,
+    frames: u64,
+    profile_window: (u64, f64, f64),
+    worst_stages: Vec<(&'static str, f32)>,
+    stage_times: Vec<(String, f32)>,
+    hold: WorldHold,
+    shader_refusal: Option<(i32, String, Instant)>,
+}
+impl Renderer {
+    pub async fn new(
+        window: Arc<Window>,
+        _offscreen: bool,
+        sprite_pixels: &[u8],
+        sprite_size: u32,
+        _sprite_minimum_size: u32,
+        layers: u32,
+        sprite_mips: &[crate::mipmap::Settings],
+        animations: &[SpriteAnimation],
+        hud_atlas: (&[u8], u32, u32),
+        _glint: (&[u8], u32, u32),
+        _glint_armor: (&[u8], u32, u32),
+        forcefield: (&[u8], u32),
+        panorama_faces: Arc<panorama::Faces>,
+        _prepared: Option<PreparedTextures>,
+        previous: Option<&Self>,
+        _api: crate::graphics::GraphicsApi,
+        _translucent_batching: bool,
+        _shader_pack: bool,
+        _settings: &crate::graphics::Graphics,
+        _request: output::FrameRequest,
+        _display: output::DisplayReading,
+    ) -> Result<Self> {
+        let size = window.inner_size();
+        let mut device = match previous {
+            Some(r) => r.device.reuse(),
+            None => dx::Device::new(window, true)?,
+        };
+        let advisory = u64::from(device.caps.available_texture_bytes);
+        let default_budget = if advisory == 0 {
+            64 << 20
+        } else {
+            (advisory / 3)
+                .min(horizon_threads::process_memory::usage().map_or(1 << 30, |m| m[2] / 8))
+                .clamp(16 << 20, 2 << 30)
+        };
+        let mesh_budget = budget("HORIZON_D3D9_MESH_MIB", default_budget)?;
+        let texture_budget = budget("HORIZON_D3D9_TEXTURE_MIB", default_budget)?;
+        let sprites = Sprites::new(
+            &mut device,
+            sprite_pixels,
+            sprite_size,
+            layers,
+            sprite_mips,
+            animations,
+        )?;
+        let atlas = Pixels::new(
+            &mut device,
+            hud_atlas.0,
+            hud_atlas.1,
+            hud_atlas.2,
+            texture_budget / 4,
+        )?;
+        let white = device.texture(1, 1, 1, &[255; 4])?;
+        let forcefield = device.texture(forcefield.1, forcefield.1, 1, forcefield.0)?;
+        let lightmap = device.texture(16, 16, 1, &[255; 1024])?;
+        let texture_bytes = sprites.layout.bytes() + atlas.bytes() + lightmap.bytes;
+        if texture_bytes > texture_budget {
+            log::warn!(
+                "D3D9 textures exceed the advisory target ({} / {} MiB); the driver's managed residency will page them as needed",
+                texture_bytes >> 20,
+                texture_budget >> 20
+            );
+        }
+        crate::mesher::packed::pack_quads(false);
+        crate::mesher::group_parts(false);
+        log::info!(
+            "Direct3D9 legacy: HAL, caps-selected FFP/VS2 vertices, optional ps_2_0 fog; no shader compiler, mandatory hardware VS, wgpu device or GPU compute. mesh_budget={} texture_budget={}",
+            mesh_budget,
+            texture_budget
+        );
+        log::warn!(
+            "Direct3D9 limitations: SDR; no shader packs, distant LOD, GPU occlusion/skinning, HDR, TAA/FXAA, frame generation, PBR, post chains or fancy clouds. Stored graphics options remain unchanged."
+        );
+        let info = wgpu::AdapterInfo {
+            name: format!("Direct3D9 HAL: {}", device.caps.name),
+            vendor: device.caps.vendor,
+            device: device.caps.device,
+            device_type: wgpu::DeviceType::Other,
+            driver: "Direct3D9 HAL".into(),
+            driver_info: format!(
+                "VP={}",
+                if device.caps.software_vertices {
+                    "software"
+                } else {
+                    "hardware"
+                }
+            ),
+            ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Noop)
+        };
+        let compactor = mesh::Compactor::new(sprites.layout.clone(), device.compact_vertices());
+        Ok(Self {
+            device,
+            sprites,
+            lightmap,
+            panorama: None,
+            panorama_faces,
+            pictures: HashMap::default(),
+            lightning_cache: HashMap::default(),
+            white,
+            forcefield,
+            hud: Hud {
+                atlas,
+                sprite_animations: Vec::new(),
+            },
+            config: wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: wgpu::TextureFormat::Bgra8Unorm,
+                width: size.width.max(1),
+                height: size.height.max(1),
+                present_mode: wgpu::PresentMode::Fifo,
+                desired_maximum_frame_latency: 2,
+                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                color_space: wgpu::SurfaceColorSpace::default(),
+                view_formats: Vec::new(),
+            },
+            info,
+            suspended: false,
+            paced_elsewhere: false,
+            gpu_times: Vec::new(),
+            lightmap_pixels: [0; 1024],
+            last_wait: Duration::ZERO,
+            last_encode: Duration::ZERO,
+            multi_draw: false,
+            separate_ao: false,
+            drawn_sections: 0,
+            section_draws: 0,
+            section_draw_calls: 0,
+            uploaded_bytes: 0,
+            screenshot: None,
+            screenshot_result: None,
+            screenshot_hdr: None,
+            saved_screenshots: Vec::new(),
+            screenshot_quality: 1,
+            gamma: 0.0,
+            fullbright: false,
+            improved_transparency: false,
+            animated_textures: true,
+            capture: None,
+            capture_result: None,
+            sections: resident::Sections::default(),
+            occlusion: gfx::occlusion::Occlusion::new(
+                ColumnLayout::default().min_y(),
+                ColumnLayout::default().sections() as i32,
+            ),
+            visible: Vec::new(),
+            layout: ColumnLayout::default(),
+            revision: 0,
+            mesh_bytes: 0,
+            mesh_budget,
+            texture_budget,
+            pending_error: None,
+            gpu_mesh_bytes: 0,
+            decoded_mesh_bytes: 0,
+            arenas: HashMap::default(),
+            next_arena: 0,
+            compactor,
+            pending_sections: HashMap::default(),
+            upload_ticket: 0,
+            staged_sections: 0,
+            stage_profile: [0.0; 5],
+            uncached_mesh_bytes: 0,
+            compact_scan: 0,
+            compactions: 0,
+            prefetch_scan: 0,
+            eager_sections: 0,
+            arrival_pages: 0,
+            arrival_sections: 0,
+            arrival_max_sections: 0,
+            pending_mesh_uploads: 0,
+            seen_resets: 0,
+            decode_scratch: Vec::new(),
+            convert_scratch: mesh::convert::Scratch::default(),
+            solid_batches: BTreeMap::new(),
+            solid_cache: solid_cache::SolidCache::default(),
+            solid_reused: false,
+            translucent_stats: [0; 3],
+            index_scratch: dx::IndexBatch::default(),
+            gui_batches: frame::GuiBatches::new(dx::DrawState::default()),
+            gui_cache: frame::gui_cache::GuiCache::default(),
+            gui_vertices: Vec::new(),
+            gui_screen: Vec::new(),
+            gui_projected: true,
+            gui_depth: dx::GuiDepth::default(),
+            gui_commands: Vec::new(),
+            gui_stats: [0; 4],
+            upload_cpu: Duration::ZERO,
+            timings: Vec::new(),
+            profile_laps: crate::spans::laps(),
+            texture_target_warned: false,
+            cache_warning: false,
+            dropped: false,
+            sides: true,
+            linear: false,
+            mipmaps: true,
+            custom_sky_draws: Vec::new(),
+            last_log: Instant::now(),
+            frames: 0,
+            profile_window: (0, 0.0, 0.0),
+            worst_stages: Vec::new(),
+            stage_times: Vec::new(),
+            hold: WorldHold::default(),
+            shader_refusal: None,
+        })
+    }
+}
+fn budget(name: &str, default: u64) -> Result<u64> {
+    match std::env::var(name) {
+        Err(_) => Ok(default),
+        Ok(s) => {
+            let mib: u64 = s
+                .parse()
+                .map_err(|_| format!("{name} must be an integer MiB budget"))?;
+            if !(4..=4096).contains(&mib) {
+                return Err(format!("{name} must be between 4 and 4096 MiB").into());
+            }
+            Ok(mib << 20)
+        }
+    }
+}
+fn light_uv(light: u32) -> [f32; 2] {
+    [
+        ((light >> 8 & 255) as f32 / 256.0 + 0.5 / 16.0).min(15.5 / 16.0),
+        ((light & 255) as f32 / 256.0 + 0.5 / 16.0).min(15.5 / 16.0),
+    ]
+}
+fn vertex(v: &Vertex) -> dx::Vertex {
+    dx::Vertex {
+        pos: v.pos,
+        uv: v.uv,
+        color: dx::rgba_to_argb(v.color),
+        light: light_uv(v.light),
+    }
+}

@@ -87,8 +87,8 @@ impl Frustum {
         }
         Frustum { planes }
     }
-    /// The frustum of a camera-relative `view_proj`, for tests outside this module.
-    #[cfg(test)]
+    /// The frustum of a camera-relative `view_proj`, shared with the legacy renderer.
+    #[cfg(any(test, all(windows, feature = "legacy-d3d9")))]
     pub(crate) fn from_view_projection(view_proj: glam::Mat4) -> Frustum {
         Frustum {
             planes: super::frustum(view_proj),

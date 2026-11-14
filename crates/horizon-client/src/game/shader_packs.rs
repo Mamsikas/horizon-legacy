@@ -85,6 +85,9 @@ pub(super) fn dev_pack() -> Option<&'static str> {
 }
 
 pub(super) fn picked_pack(settings: &horizon_client::settings::Settings) -> &str {
+    if cfg!(all(windows, feature = "legacy-d3d9")) {
+        return "";
+    }
     active_pack(
         dev_pack().unwrap_or(&settings.horizon.shader_pack),
         &settings.mods,
