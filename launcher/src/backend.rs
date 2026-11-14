@@ -1926,6 +1926,38 @@ const COMPLETIONS: [Completion; 5] = [
     ("The sounds", "sounds", prepare::sounds),
 ];
 
+/// Finish an in-process installation using the same asset importers as the modern UI.
+/// Recheck every group on a retry: an interrupted copy may already have published sounds.json.
+#[cfg(feature = "win7")]
+pub(crate) fn complete_preparation_assets(
+    root: &Path,
+    minecraft: &Path,
+    log: &dyn Fn(String),
+    progress: &dyn Fn(f32),
+) -> Result<(), String> {
+    for (index, (label, _, copy)) in COMPLETIONS.iter().enumerate() {
+        check_cancelled()?;
+        log(crate::i18n::trf(
+            "Copying {assets} from Minecraft…",
+            &[("assets", label)],
+        ));
+        progress(index as f32 / COMPLETIONS.len() as f32);
+        copy(root, Some(minecraft), &|line| log(line.to_string())).map_err(|error| {
+            crate::i18n::trf(
+                "Could not copy {assets} from {path}: {error}",
+                &[
+                    ("assets", label),
+                    ("path", &minecraft.display().to_string()),
+                    ("error", &error),
+                ],
+            )
+        })?;
+    }
+    check_cancelled()?;
+    progress(1.0);
+    Ok(())
+}
+
 /// Adds what a prepared version lacks of `COMPLETIONS`: a new version reuses the resources of the
 /// one before (`reuse_prepared`), which may come from a preparer that left them out. Without them
 /// in any Minecraft folder, one line each in the log, once per launcher run, and the version plays

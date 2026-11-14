@@ -286,7 +286,7 @@ fn resources(chosen: &Path, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
     let resources = prepare::resources_dir(&root, horizon_platform::version::VANILLA_VERSION, None);
     emit(Event::Status(tr("Checking game files…").into()));
     let log = |s: String| emit(Event::Log(s));
-    if prepare::check(&root, &resources).is_ok_and(|missing| missing.is_empty()) {
+    if resources_ready(&root, &resources) {
         return Ok(resources);
     }
     let pins: Value = serde_json::from_slice(
@@ -315,6 +315,10 @@ fn resources(chosen: &Path, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
         }
     };
     backend::check_cancelled()?;
+    if finish_prepared_resources(&root, &minecraft, &resources, emit)? {
+        log(tr("Using prepared resources; Java export is not needed.").into());
+        return Ok(resources);
+    }
     let manifest_path = minecraft
         .join("versions")
         .join(&source_pins.version)
@@ -360,7 +364,7 @@ fn resources(chosen: &Path, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
         &prepare::Options {
             root: root.clone(),
             import: true,
-            minecraft_dir: Some(minecraft),
+            minecraft_dir: Some(minecraft.clone()),
             server_jar: Some(server),
             java_home: Some(java),
             inputs: Default::default(),
@@ -370,11 +374,45 @@ fn resources(chosen: &Path, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
         &|p| emit(Event::Progress(p)),
     )?;
     backend::check_cancelled()?;
-    let missing = prepare::check(&root, &resources)?;
-    if !missing.is_empty() {
-        return Err(missing.join("\n"));
+    if !finish_prepared_resources(&root, &minecraft, &resources, emit)? {
+        return Err(prepare::check(&root, &resources)?.join("\n"));
     }
     Ok(resources)
+}
+
+const ASSETS_PENDING: &str = ".win7-assets-pending";
+
+fn resources_ready(root: &Path, resources: &Path) -> bool {
+    !resources.join(ASSETS_PENDING).exists()
+        && prepare::check(root, resources).is_ok_and(|missing| missing.is_empty())
+}
+
+/// Complete existing exports before considering Java/server installation. This also handles
+/// a fresh prepare: the core's default export intentionally leaves the large sound store out.
+fn finish_prepared_resources(
+    root: &Path,
+    minecraft: &Path,
+    resources: &Path,
+    emit: &dyn Fn(Event),
+) -> Result<bool, String> {
+    if !resources.join("horizon-resources.json").is_file() {
+        return Ok(false);
+    }
+    backend::check_cancelled()?;
+    let pending = resources.join(ASSETS_PENDING);
+    fs::write(&pending, b"asset completion in progress").map_err(|e| e.to_string())?;
+    emit(Event::Status(
+        tr("Completing Minecraft assets, including sounds…").into(),
+    ));
+    backend::complete_preparation_assets(root, minecraft, &|line| emit(Event::Log(line)), &|p| {
+        emit(Event::Progress(p))
+    })?;
+    if !prepare::check(root, resources)?.is_empty() {
+        return Ok(false);
+    }
+    backend::check_cancelled()?;
+    fs::remove_file(pending).map_err(|e| e.to_string())?;
+    Ok(true)
 }
 
 fn download_server(
@@ -432,6 +470,176 @@ fn download_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    struct AssetFixture {
+        base: PathBuf,
+        root: PathBuf,
+        minecraft: PathBuf,
+        resources: PathBuf,
+        sound: Vec<u8>,
+        sound_object: PathBuf,
+    }
+
+    impl AssetFixture {
+        fn new(name: &str) -> Self {
+            let base =
+                std::env::temp_dir().join(format!("win7-assets-{name}-{}", std::process::id()));
+            let root = base.join("prepared");
+            let minecraft = base.join("minecraft");
+            let resources = prepare::resources_dir(&root, "26.3", None);
+            fs::create_dir_all(&resources).unwrap();
+            let mut objects: Vec<(String, Vec<u8>)> = vec![
+                (
+                    "minecraft/sounds.json".into(),
+                    b"{\"demo\": {\"sounds\": [\"demo\"]}}".to_vec(),
+                ),
+                (
+                    "minecraft/sounds/demo.ogg".into(),
+                    b"OggS original fixture".to_vec(),
+                ),
+                ("minecraft/font/include/unifont.json".into(), b"{}".to_vec()),
+                (
+                    "minecraft/font/unifont.zip".into(),
+                    b"PK original font fixture".to_vec(),
+                ),
+                ("pack.mcmeta".into(), b"{\"language\": {}}".to_vec()),
+                ("minecraft/lang/en_us.json".into(), b"{}".to_vec()),
+                (
+                    "minecraft/textures/gui/title/background/panorama_overlay.png".into(),
+                    b"original overlay fixture".to_vec(),
+                ),
+            ];
+            for name in prepare::BUILT_IN_PACKS {
+                objects.push((name.into(), b"PK original pack fixture".to_vec()));
+            }
+            for face in 0..6 {
+                let mut bytes = b"\x89PNG\r\n\x1a\n\0\0\0\x0dIHDR".to_vec();
+                bytes.extend(2u32.to_be_bytes());
+                bytes.extend(2u32.to_be_bytes());
+                objects.push((
+                    format!("minecraft/textures/gui/title/background/panorama_{face}.png"),
+                    bytes,
+                ));
+            }
+            let mut index = serde_json::Map::new();
+            let mut sound_object = PathBuf::new();
+            let mut sound = Vec::new();
+            for (name, data) in &objects {
+                let hash = format!("{:x}", Sha1::digest(data));
+                let file = minecraft
+                    .join("assets/objects")
+                    .join(&hash[..2])
+                    .join(&hash);
+                fs::create_dir_all(file.parent().unwrap()).unwrap();
+                fs::write(&file, data).unwrap();
+                index.insert(
+                    name.clone(),
+                    serde_json::json!({"hash": hash, "size": data.len()}),
+                );
+                if name.ends_with("demo.ogg") {
+                    sound = data.clone();
+                    sound_object = file;
+                }
+            }
+            let index = serde_json::to_vec(&serde_json::json!({"objects": index})).unwrap();
+            fs::create_dir_all(minecraft.join("assets/indexes")).unwrap();
+            fs::write(minecraft.join("assets/indexes/demo.json"), &index).unwrap();
+            let manifest = serde_json::to_vec(&serde_json::json!({
+                "id": "26.3", "javaVersion": {"majorVersion": 25},
+                "assetIndex": {"id": "demo", "sha1": format!("{:x}", Sha1::digest(&index))},
+                "downloads": {"client": {"sha1": "c"}, "server": {"sha1": "s"}},
+            }))
+            .unwrap();
+            let version = minecraft.join("versions/26.3");
+            fs::create_dir_all(&version).unwrap();
+            fs::write(version.join("26.3.json"), &manifest).unwrap();
+            fs::write(root.join("research-lock.json"), serde_json::to_vec(&serde_json::json!({
+                "minecraft": {"version": "26.3", "java_major": 25, "client_sha1": "c", "server_sha1": "s",
+                    "manifest_sha1": format!("{:x}", Sha1::digest(&manifest))},
+            })).unwrap()).unwrap();
+            fs::write(
+                resources.join("horizon-resources.json"),
+                serde_json::to_vec(&serde_json::json!({
+                    "schema": prepare::SCHEMA, "minecraft": "26.3",
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                resources.join(prepare::STAMP),
+                serde_json::to_vec(&serde_json::json!({
+                    "output_version": prepare::OUTPUT_VERSION,
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            fs::write(
+                resources.join("already-exported.bin"),
+                b"keep completed Java output",
+            )
+            .unwrap();
+            Self {
+                base,
+                root,
+                minecraft,
+                resources,
+                sound,
+                sound_object,
+            }
+        }
+
+        fn finish(&self) -> Result<bool, String> {
+            finish_prepared_resources(&self.root, &self.minecraft, &self.resources, &|_| {})
+        }
+    }
+
+    impl Drop for AssetFixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.base);
+        }
+    }
+
+    #[test]
+    fn completed_java_exports_get_all_assets_without_another_export() {
+        let fixture = AssetFixture::new("complete");
+        assert!(!resources_ready(&fixture.root, &fixture.resources));
+        assert!(fixture.finish().unwrap());
+        assert!(resources_ready(&fixture.root, &fixture.resources));
+        assert_eq!(
+            fs::read(fixture.resources.join("assets/minecraft/sounds/demo.ogg")).unwrap(),
+            fixture.sound
+        );
+        assert_eq!(
+            fs::read(fixture.resources.join("already-exported.bin")).unwrap(),
+            b"keep completed Java output"
+        );
+        assert!(prepare::missing_extras(&fixture.resources).is_empty());
+    }
+
+    #[test]
+    fn failed_asset_copy_is_retried_even_when_sounds_json_already_exists() {
+        let fixture = AssetFixture::new("retry");
+        fs::create_dir_all(fixture.resources.join("assets/minecraft")).unwrap();
+        fs::write(
+            fixture.resources.join("assets/minecraft/sounds.json"),
+            b"{}",
+        )
+        .unwrap();
+        fs::remove_file(&fixture.sound_object).unwrap();
+        let error = fixture.finish().unwrap_err();
+        assert!(error.contains("Missing asset object"), "{error}");
+        assert!(prepare::check(&fixture.root, &fixture.resources)
+            .unwrap()
+            .is_empty());
+        assert!(!resources_ready(&fixture.root, &fixture.resources));
+        fs::write(&fixture.sound_object, &fixture.sound).unwrap();
+        assert!(fixture.finish().unwrap());
+        assert!(resources_ready(&fixture.root, &fixture.resources));
+        assert_eq!(
+            fs::read(fixture.resources.join("assets/minecraft/sounds/demo.ogg")).unwrap(),
+            fixture.sound
+        );
+    }
+
     #[test]
     fn bundled_exporters_include_every_compiler_input() {
         for name in prepare::exporters::source_files() {
