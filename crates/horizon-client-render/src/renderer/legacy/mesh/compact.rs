@@ -1,11 +1,8 @@
 //! Consolidate small immutable VBs without decoding them on the render thread.
 //! One bounded CPU job/result, no GPU objects or gameplay state cross the thread.
 use super::*;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
-use std::sync::{
-    Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
 type Snapshot = (SectionKey, u64, Arc<dx::MeshData>);
 pub(super) struct Job {
     region: RegionKey,
@@ -15,9 +12,8 @@ pub(super) struct Job {
 struct Prepared {
     region: RegionKey,
     sections: Vec<(SectionKey, u64, Range<u32>)>,
-    vertices: Vec<dx::Vertex>,
     resident: bool,
-    encoded: Option<dx::EncodedVertices>,
+    encoded: dx::EncodedVertices,
 }
 pub(super) enum Work {
     Compact(Job),
@@ -29,39 +25,27 @@ pub(in super::super) struct Compactor {
     pub(super) upload_done: Receiver<upload::Ready>,
     pub(super) upload_quota: Arc<AtomicUsize>,
     pub(super) upload_epoch: Arc<AtomicUsize>,
-    pub(super) recycled: Arc<Mutex<Option<Vec<dx::Vertex>>>>,
     busy: bool,
 }
 impl Compactor {
-    pub(in super::super) fn new(
-        layout: Arc<dx::AtlasSet>,
-        hardware: bool,
-        limit: usize,
-    ) -> Option<Self> {
+    pub(in super::super) fn new(layout: Arc<dx::AtlasSet>, hardware: bool) -> Option<Self> {
         let (jobs, input) = mpsc::sync_channel::<Work>(64);
         let (output, done) = mpsc::sync_channel(1);
         let (uploads, upload_done) = mpsc::sync_channel(64);
         let upload_quota = Arc::new(AtomicUsize::new(0));
         let upload_epoch = Arc::new(AtomicUsize::new(0));
         let epoch = upload_epoch.clone();
-        let recycled = Arc::new(Mutex::new(None));
-        let spare = recycled.clone();
         std::thread::Builder::new()
             .name("d3d9 section staging".into())
             .spawn(move || {
                 let mut scratch = convert::Scratch::default();
+                let mut combined = Vec::<dx::Vertex>::new();
+                let mut decoded = Vec::new();
                 while let Ok(work) = input.recv() {
                     let job = match work {
                         Work::Upload(job) => {
-                            let ready = upload::prepare(
-                                job,
-                                &layout,
-                                &mut scratch,
-                                &spare,
-                                &epoch,
-                                hardware,
-                                limit,
-                            );
+                            let ready =
+                                upload::prepare(job, &layout, &mut scratch, &epoch, hardware);
                             if uploads.send(ready).is_err() {
                                 break;
                             }
@@ -70,31 +54,25 @@ impl Compactor {
                         Work::Compact(job) => job,
                     };
                     let prepare = || -> std::result::Result<Prepared, String> {
-                        let mut prepared = Prepared {
-                            region: job.region,
-                            sections: Vec::new(),
-                            vertices: Vec::new(),
-                            resident: job.resident,
-                            encoded: None,
-                        };
-                        let mut decoded = Vec::new();
+                        let _span = crate::spans::guard("d3d9_mesh_compact");
+                        let mut sections = Vec::new();
+                        combined.clear();
                         for (key, revision, data) in job.sections {
                             data.decode(&mut decoded)?;
-                            let first = prepared.vertices.len() as u32;
-                            prepared.vertices.extend_from_slice(&decoded);
-                            prepared.sections.push((
-                                key,
-                                revision,
-                                first..prepared.vertices.len() as u32,
-                            ));
+                            let first = combined.len() as u32;
+                            combined.extend_from_slice(&decoded);
+                            sections.push((key, revision, first..combined.len() as u32));
                         }
-                        if hardware {
-                            prepared.encoded =
-                                Some(dx::EncodedVertices::new(&prepared.vertices, true));
-                        }
-                        Ok(prepared)
+                        Ok(Prepared {
+                            region: job.region,
+                            sections,
+                            resident: job.resident,
+                            encoded: dx::EncodedVertices::new(&combined, hardware),
+                        })
                     };
-                    if output.send(prepare()).is_err() {
+                    let prepared = prepare();
+                    let _ = crate::spans::take_raw();
+                    if output.send(prepared).is_err() {
                         break;
                     }
                 }
@@ -106,7 +84,6 @@ impl Compactor {
             upload_done,
             upload_quota,
             upload_epoch,
-            recycled,
             busy: false,
         })
     }
@@ -135,14 +112,7 @@ impl Renderer {
             return Ok(());
         }
         if !prepared.resident
-            && (self.gpu_mesh_bytes
-                + prepared
-                    .encoded
-                    .as_ref()
-                    .map_or(std::mem::size_of_val(prepared.vertices.as_slice()), |v| {
-                        v.bytes().len()
-                    }) as u64
-                > self.mesh_budget
+            && (self.gpu_mesh_bytes + prepared.encoded.bytes().len() as u64 > self.mesh_budget
                 || prepared
                     .sections
                     .iter()
@@ -151,11 +121,7 @@ impl Renderer {
             return Ok(());
         }
         // Allocate first: a failed optimization must keep the old scene drawable.
-        let uploaded = if let Some(v) = &prepared.encoded {
-            self.device.mesh_encoded(v)
-        } else {
-            self.device.mesh(&prepared.vertices)
-        };
+        let uploaded = self.device.mesh_encoded(&prepared.encoded);
         let mesh = match uploaded {
             Ok(mesh) => mesh,
             Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
@@ -184,7 +150,7 @@ impl Renderer {
             Arena {
                 mesh,
                 region: prepared.region,
-                live: prepared.vertices.len() as u32,
+                live: prepared.encoded.len() as u32,
                 last_used: self.frames + 1,
                 sections: keys,
             },

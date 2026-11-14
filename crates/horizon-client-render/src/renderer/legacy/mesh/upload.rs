@@ -1,10 +1,7 @@
 //! Bulk sections share the compaction thread. A charged permit bounds queued
 //! input/results; edits to present/pending sections use the synchronous path.
 use super::*;
-use std::sync::{
-    Mutex,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicUsize, Ordering};
 const LIMIT: usize = 8 << 20;
 pub(super) struct Job {
     key: SectionKey,
@@ -36,29 +33,22 @@ pub(super) fn prepare(
     job: Job,
     layout: &dx::AtlasSet,
     scratch: &mut convert::Scratch,
-    recycled: &Mutex<Option<Vec<dx::Vertex>>>,
     epoch: &AtomicUsize,
     hardware: bool,
-    limit: usize,
 ) -> Ready {
-    if let Some(vertices) = recycled.lock().unwrap_or_else(|p| p.into_inner()).take() {
-        scratch.vertices = vertices;
-    }
     let queue = job.submitted.elapsed();
     crate::spans::record_here(job.recording);
     let started = Instant::now();
     let result = {
         let _span = crate::spans::guard("d3d9_section_convert");
         if job.epoch == epoch.load(Ordering::Relaxed) {
-            scratch.prepare(layout, job.key, &job.mesh, hardware, limit)
+            scratch.prepare(layout, job.key, &job.mesh, hardware)
         } else {
             Err("discarded section from the preceding world".into())
         }
     };
     let conversion = started.elapsed();
-    if job.recording {
-        let _ = crate::spans::take_raw();
-    }
+    let _ = crate::spans::take_raw();
     crate::spans::record_here(false);
     Ready {
         key: job.key,
@@ -140,18 +130,5 @@ impl Compactor {
     }
     pub(in super::super) fn cancel_uploads(&self) {
         self.upload_epoch.fetch_add(1, Ordering::Relaxed);
-    }
-    pub(in super::super) fn recycle(&self, mut vertices: Vec<dx::Vertex>) {
-        if vertices.capacity() * size_of::<dx::Vertex>() > 2 << 20 {
-            return;
-        }
-        vertices.clear();
-        let mut slot = self.recycled.lock().unwrap_or_else(|p| p.into_inner());
-        if slot
-            .as_ref()
-            .is_none_or(|old| old.capacity() < vertices.capacity())
-        {
-            *slot = Some(vertices);
-        }
     }
 }

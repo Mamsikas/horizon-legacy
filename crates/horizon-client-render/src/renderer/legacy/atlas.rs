@@ -239,6 +239,7 @@ pub(super) struct Pixels {
     pub width: u32,
     pub height: u32,
     side: u32,
+    revision: u64,
     state: std::cell::RefCell<PixelCache>,
 }
 struct PixelCache {
@@ -282,6 +283,7 @@ impl Pixels {
             width,
             height,
             side,
+            revision: 0,
             state: std::cell::RefCell::new(PixelCache {
                 image,
                 locations: vec![None; len],
@@ -362,7 +364,11 @@ impl Pixels {
                 s.pending.push(id);
             }
         }
+        self.revision = self.revision.wrapping_add(1);
         Ok(())
+    }
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
     pub fn polygon(&self, input: &[dx::Vertex], mut emit: impl FnMut(usize, &[dx::Vertex])) {
         if input.is_empty() {

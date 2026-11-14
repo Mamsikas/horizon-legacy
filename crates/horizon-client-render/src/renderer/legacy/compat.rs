@@ -66,7 +66,8 @@ impl Renderer {
                     + self.pictures.values().map(Pixels::cpu_bytes).sum::<usize>()
                     + self.gui_batches.bytes()
                     + self.gui_vertices.capacity() * size_of::<dx::Vertex>()
-                    + self.gui_commands.capacity() * size_of::<frame::GuiCommand>(),
+                    + self.gui_commands.capacity() * size_of::<frame::GuiCommand>()
+                    + self.gui_cache.bytes(),
             ),
             ("D3D9 retained CPU geometry", self.mesh_bytes as usize),
             ("D3D9 animation cache/scratch", self.sprites.cpu_bytes()),

@@ -91,6 +91,9 @@ pub struct Renderer {
     compactions: u64,
     prefetch_scan: u64,
     eager_sections: u64,
+    arrival_pages: u64,
+    arrival_sections: u64,
+    arrival_max_sections: usize,
     pending_mesh_uploads: u64,
     seen_resets: u64,
     decode_scratch: Vec<dx::Vertex>,
@@ -100,6 +103,7 @@ pub struct Renderer {
     solid_reused: bool,
     index_scratch: dx::IndexBatch,
     gui_batches: frame::GuiBatches,
+    gui_cache: frame::gui_cache::GuiCache,
     gui_vertices: Vec<dx::Vertex>,
     gui_commands: Vec<frame::GuiCommand>,
     gui_stats: [u64; 4],
@@ -212,11 +216,7 @@ impl Renderer {
             ),
             ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Noop)
         };
-        let compactor = mesh::Compactor::new(
-            sprites.layout.clone(),
-            device.compact_vertices(),
-            device.max_vertices(),
-        );
+        let compactor = mesh::Compactor::new(sprites.layout.clone(), device.compact_vertices());
         Ok(Self {
             device,
             sprites,
@@ -292,6 +292,9 @@ impl Renderer {
             compactions: 0,
             prefetch_scan: 0,
             eager_sections: 0,
+            arrival_pages: 0,
+            arrival_sections: 0,
+            arrival_max_sections: 0,
             pending_mesh_uploads: 0,
             seen_resets: 0,
             decode_scratch: Vec::new(),
@@ -301,6 +304,7 @@ impl Renderer {
             solid_reused: false,
             index_scratch: dx::IndexBatch::default(),
             gui_batches: frame::GuiBatches::new(dx::DrawState::default()),
+            gui_cache: frame::gui_cache::GuiCache::default(),
             gui_vertices: Vec::new(),
             gui_commands: Vec::new(),
             gui_stats: [0; 4],

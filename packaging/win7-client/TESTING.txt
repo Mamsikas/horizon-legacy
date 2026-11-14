@@ -4,7 +4,8 @@ Requires prepared legal Horizon resources for Minecraft 26.3, the manufacturer's
 GPU driver, and an N455-compatible x64 CPU (SSE3/SSSE3). No Java or shader compiler
 is needed during play. GMA3150 smoke passed according to the owner; the full game
 on GMA3150/HD4570 remains unverified. This update merges fork main 298c01b0206d.
-The previous RTX3050 build reached 580+ FPS at 16 chunks, but only 80 at 48 chunks.
+The previous RTX3050 build reached about 800 FPS at 16 chunks and 120 at 48.
+The remaining issue is loading/rebuild stutter, including thousands of tiny VBs.
 This update needs a repeat of that comparison; no new FPS/RAM result is claimed.
 
 Launch:
@@ -43,18 +44,37 @@ phases, including the DX9 section worker. Windows CPU stack/heap sampling and
 DX9 GPU timestamps are unavailable. No capture is uploaded automatically.
 The older trace command also writes .hzperf now, not browser-trace JSON.
 
-What changed:
-- Dense shared column storage and cheap presence keys for empty sections.
-- Exact reuse of unchanged solid draw plans and visibility indices.
-- Hardware-only VS2: exact 20/28-byte vertices and smaller CPU shadows; arbitrary
-  model precision falls back safely. GMA/software vertex processing keeps FFP
-  and 32-byte vertices; no hardware VS2 requirement has been added.
-- Initial section conversion/encoding on one CPU worker shared with compaction.
-  A conservative 8 MiB charge bounds queued inputs/results; edits and overflow
-  stay synchronous. COM uploads stay on the render thread. This is a queue
-  bound, not an 8 MiB cap on all worker scratch or the terrain GPU cache.
-- Prepared animation mip/extrusion pixels cached up to 4 MiB payload.
-- F3 axis crosshair rendering from the existing CPU frame.
+What changed in this update:
+- New section arrivals share caps-sized immutable VBs by region/encoding on their
+  first upload. CPU workers still prepare sections; only the render thread uses
+  D3D9. There is no extra batching timer, reserved GPU slack or per-frame remeshing.
+- Worker scratch stays on its worker and is reused. Only encoded bytes/shadows
+  cross back; compaction also reuses its CPU scratch. The 8 MiB queue charge is
+  separate from reusable scratch.
+- Resident frames skip unnecessary eviction sorting. Ordinary alpha HUD ranges
+  reuse exact prepared data; atlas patches invalidate it. Depth/scissor inventory
+  models, pictures and invert blending keep their normal preparation. The cache
+  retains at most 2 MiB of buffers plus 128 headers; overflow still draws normally.
+- FFP/software vertex processing retains its narrow draw ranges and Full32 data.
+  Hardware devices still select exact Compact20/Wide28/Full32 through caps.
+- Logs add arrival page/section totals and GUI reused/rebuilt chunk counts. Profile
+  spans separate atlas conversion, packing, shadow compression, arrival uploads
+  and GUI prepare/textures/upload/submit.
+
+First GMA3150 game test:
+Use the manufacturer's driver and your existing prepared resources. Start with
+ordinary F3/latest.log, without a profiler or memory query during the initial
+loading test. Confirm HAL + software vertex processing in the log, title/menu,
+world, F3 axes, inventory/chat, hand/F5, resize/Alt+Tab, and save/reopen. Render
+settings remain yours. Send latest.log and build-info.txt if it fails; no smoke
+program or extra DLL installation is part of this package. A GMA game result is
+not established by the earlier smoke result.
+
+For an RTX retest, compare the same 16/48-chunk views and F3+A. For a loading
+.hzperf, start the capture just before F3+A or movement; a settled-scene capture
+does not contain that workload. Diagnostic memory reports themselves can add
+stalls (about 43 ms in the supplied RTX capture); keep them separate from a plain
+FPS comparison. An ordinary F3+A log is useful even without a capture.
 
 The five-second log reports CPU elapsed phases (including driver waits), draws,
 binds, uploads, requested/live terrain storage, compressed CPU shadows, GUI

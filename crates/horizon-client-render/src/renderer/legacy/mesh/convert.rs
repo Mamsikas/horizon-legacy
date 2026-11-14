@@ -3,19 +3,18 @@ use super::*;
 #[derive(Default)]
 pub(in super::super) struct Scratch {
     groups: Vec<Vec<dx::Vertex>>,
-    pub vertices: Vec<dx::Vertex>,
+    vertices: Vec<dx::Vertex>,
     shadow: Vec<u8>,
 }
 pub(in super::super) struct Converted {
     pub solid: Vec<Packet>,
     pub translucent: Vec<Packet>,
-    pub vertices: Vec<dx::Vertex>,
     pub shadow: Arc<dx::MeshData>,
     pub sides: crate::mesher::Sides,
     pub blocks: Vec<([i32; 3], u32)>,
     pub bounds: Option<[Vec3; 2]>,
     pub visibility: u64,
-    pub gpu: Option<dx::EncodedVertices>,
+    pub gpu: dx::EncodedVertices,
 }
 impl Scratch {
     pub fn bytes(&self) -> usize {
@@ -32,8 +31,8 @@ impl Scratch {
         key: SectionKey,
         mesh: &SectionMesh,
         hardware: bool,
-        _limit: usize,
     ) -> std::result::Result<Converted, String> {
+        let mut phases = crate::spans::laps();
         // Bucket/page/alpha indices are dense and fixed by this resource set.
         // Reuse their vectors instead of allocating tree nodes and buffers per section.
         let pages = layout
@@ -69,7 +68,7 @@ impl Scratch {
             )
             .map_err(|e| e.to_string())?;
         }
-        let mut vertices = std::mem::take(&mut self.vertices);
+        let vertices = &mut self.vertices;
         vertices.clear();
         vertices.reserve(mesh.solid.len() + mesh.translucent.len());
         let mut solid = Vec::new();
@@ -114,7 +113,7 @@ impl Scratch {
                         });
                     }
                     let before = vertices.len();
-                    atlas::quads(poly, &mut vertices);
+                    atlas::quads(poly, vertices);
                     translucent.last_mut().unwrap().count += (vertices.len() - before) as u32;
                 },
             )
@@ -125,21 +124,19 @@ impl Scratch {
             (key.1.rem_euclid(8) * 16) as f32,
             (key.2.rem_euclid(8) * 16) as f32,
         ];
-        for v in &mut vertices {
+        for v in vertices.iter_mut() {
             for axis in 0..3 {
                 v.pos[axis] += offset[axis];
             }
         }
-        let gpu = hardware.then(|| dx::EncodedVertices::new(&vertices, true));
-        let shadow = Arc::new(if let Some(encoded) = &gpu {
-            dx::MeshData::from_encoded(encoded, &mut self.shadow)
-        } else {
-            dx::MeshData::with_scratch(&vertices, &mut self.shadow)
-        });
+        phases.lap("d3d9_mesh_atlas");
+        let gpu = dx::EncodedVertices::new(vertices, hardware);
+        phases.lap("d3d9_mesh_pack");
+        let shadow = Arc::new(dx::MeshData::from_encoded(&gpu, &mut self.shadow));
+        phases.lap("d3d9_mesh_shadow");
         Ok(Converted {
             solid,
             translucent,
-            vertices,
             shadow,
             sides,
             blocks: mesh.block_entities.clone(),

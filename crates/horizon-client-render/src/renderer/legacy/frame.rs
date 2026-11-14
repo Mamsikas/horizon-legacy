@@ -1,11 +1,13 @@
 use super::*;
 use dx::{Blend, DrawState};
+pub(super) mod gui_cache;
 
 struct Batch {
     page: usize,
     state: DrawState,
     vertices: Vec<dx::Vertex>,
 }
+#[derive(Clone)]
 pub(super) enum GuiCommand {
     ClearDepth,
     Draw {
@@ -240,7 +242,7 @@ impl Renderer {
                 .map(|(name, ms)| (format!("D3D9 {name}"), *ms)),
         );
         self.stage_times.push((
-            "D3D9 section conversion (outside frame)".into(),
+            "D3D9 section uploads (outside frame)".into(),
             self.upload_cpu.as_secs_f32() * 1000.0,
         ));
         self.stage_times
@@ -283,6 +285,18 @@ impl Renderer {
                 self.gui_stats[1],
                 self.gui_stats[2],
                 self.gui_stats[3]
+            );
+            log::info!(
+                "D3D9 GUI cache reused_chunks={} rebuilt_chunks={} cpu_bytes={}",
+                self.gui_cache.hits,
+                self.gui_cache.misses,
+                self.gui_cache.bytes()
+            );
+            log::info!(
+                "D3D9 arrival pages_total={} sections_total={} max_sections_per_page={}",
+                self.arrival_pages,
+                self.arrival_sections,
+                self.arrival_max_sections
             );
             log::info!(
                 "D3D9 solid_plan_reused={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
@@ -479,6 +493,8 @@ impl Renderer {
             let mut decoded = std::mem::take(&mut self.decode_scratch);
             let before = self.device.draws;
             if !self.solid_reused {
+                self.solid_batches
+                    .retain(|(_, _, id), _| self.arenas.contains_key(id));
                 for batch in self.solid_batches.values_mut() {
                     batch.next.clear();
                 }
@@ -895,6 +911,7 @@ impl Renderer {
         draw_pixels(&mut self.device, panorama, &self.lightmap, &batches, false)
     }
     fn draw_gui(&mut self, frame: &Frame) -> Result<()> {
+        let mut phases = crate::spans::laps();
         let before = [
             self.device.draws,
             self.device.binds,
@@ -979,6 +996,7 @@ impl Renderer {
             .transform(identity, identity, projection.to_cols_array())?;
         self.gui_vertices.clear();
         self.gui_commands.clear();
+        self.gui_cache.begin();
         for (range, blend) in h.runs() {
             let (scissor, depth) = match blend {
                 crate::hud::Blend::Depth(r) | crate::hud::Blend::DepthGlint(r) => (Some(r), true),
@@ -1007,43 +1025,35 @@ impl Renderer {
                 scissor,
                 ..Default::default()
             };
-            self.gui_batches.begin(state);
             let input = &h.vertices[range.start as usize..range.end as usize];
-            let pixels = if let crate::hud::Blend::Picture(id) = blend {
-                self.pictures.get(&id).unwrap_or(&self.hud.atlas)
+            let picture = if let crate::hud::Blend::Picture(id) = blend {
+                Some(id)
             } else {
-                &self.hud.atlas
+                None
             };
-            for tri in input.chunks_exact(3) {
-                // Foil overlays are optional; their base item's geometry was already emitted.
-                if tri[0].uv[0] >= 2.0 {
-                    continue;
-                }
-                let vertices: [dx::Vertex; 3] = std::array::from_fn(|i| {
-                    let v = &tri[i];
-                    dx::Vertex {
-                        pos: [v.pos[0], v.pos[1], v.depth],
-                        uv: v.uv,
-                        color: dx::rgba_to_argb(v.color),
-                        light: [0.0; 2],
-                    }
-                });
-                pixels.polygon(&vertices, |page, p| self.gui_batches.push(page, p));
-            }
-            self.gui_batches.finish(
+            let pixels = picture
+                .and_then(|id| self.pictures.get(&id))
+                .unwrap_or(&self.hud.atlas);
+            self.gui_cache.append(
+                gui_cache::GuiRun {
+                    source: input,
+                    pixels,
+                    state,
+                    picture,
+                    cache: matches!(blend, crate::hud::Blend::Alpha),
+                },
+                &mut self.gui_batches,
                 &mut self.gui_vertices,
                 &mut self.gui_commands,
-                if let crate::hud::Blend::Picture(id) = blend {
-                    Some(id)
-                } else {
-                    None
-                },
             );
         }
+        self.gui_cache.finish();
+        phases.lap("d3d9_gui_prepare");
         self.hud.atlas.prepare(&mut self.device)?;
         for picture in self.pictures.values() {
             picture.prepare(&mut self.device)?;
         }
+        phases.lap("d3d9_gui_textures");
         let staged = if !self.gui_vertices.is_empty()
             && self.gui_vertices.len() <= self.device.max_vertices()
         {
@@ -1051,6 +1061,7 @@ impl Renderer {
         } else {
             None
         };
+        phases.lap("d3d9_gui_upload");
         for command in &self.gui_commands {
             let GuiCommand::Draw {
                 page,
@@ -1077,6 +1088,7 @@ impl Renderer {
                     .draw_triangles(&self.gui_vertices[range.start as usize..range.end as usize])?;
             }
         }
+        phases.lap("d3d9_gui_submit");
         let after = [
             self.device.draws,
             self.device.binds,

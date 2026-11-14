@@ -21,3 +21,5 @@ mod terrain;
 pub use terrain::{EncodedVertices, VertexEncoding};
 mod animation;
 pub use animation::AnimationCache;
+mod upload_batch;
+pub use upload_batch::{UploadBatch, UploadPage, UploadPart};

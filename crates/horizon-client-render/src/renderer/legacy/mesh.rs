@@ -1,4 +1,5 @@
 use super::*;
+mod arrival;
 mod compact;
 pub(super) mod convert;
 mod upload;
@@ -147,6 +148,8 @@ impl Renderer {
         self.upload_cpu += started.elapsed();
     }
     pub(super) fn drain_uploads(&mut self) -> Result<()> {
+        let _span = crate::spans::guard("d3d9_arrival_uploads");
+        let mut batch = dx::UploadBatch::new(self.device.max_vertices())?;
         loop {
             let Some(ready) = self.compactor.as_ref().and_then(Compactor::take_upload) else {
                 break;
@@ -166,13 +169,14 @@ impl Renderer {
             let converted = ready
                 .result
                 .map_err(|e| format!("D3D9 staged section {:?}: {e}", ready.key))?;
-            let vertices = self.apply_converted(ready.key, converted)?;
-            if let Some(worker) = &self.compactor {
-                worker.recycle(vertices);
-            }
+            let gpu = self.apply_converted(ready.key, converted);
+            self.queue_arrival(&mut batch, ready.key, &gpu)?;
             self.staged_sections += 1;
             self.upload_cpu += started.elapsed();
         }
+        let started = Instant::now();
+        self.commit_arrivals(batch);
+        self.upload_cpu += started.elapsed();
         Ok(())
     }
     fn upload_section(&mut self, key: SectionKey, mesh: &SectionMesh) -> Result<()> {
@@ -193,21 +197,21 @@ impl Renderer {
             key,
             mesh,
             self.device.compact_vertices(),
-            self.device.max_vertices(),
         )?;
-        let vertices = self.apply_converted(key, ready)?;
-        self.convert_scratch.vertices = vertices;
+        let gpu = self.apply_converted(key, ready);
+        let mut batch = dx::UploadBatch::new(self.device.max_vertices())?;
+        self.queue_arrival(&mut batch, key, &gpu)?;
+        self.commit_arrivals(batch);
         Ok(())
     }
     fn apply_converted(
         &mut self,
         key: SectionKey,
         ready: convert::Converted,
-    ) -> Result<Vec<dx::Vertex>> {
+    ) -> dx::EncodedVertices {
         let convert::Converted {
             solid,
             translucent,
-            vertices,
             shadow,
             sides,
             blocks,
@@ -216,7 +220,7 @@ impl Renderer {
             gpu,
         } = ready;
         let bytes = shadow.bytes();
-        let decoded_bytes = vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
+        let decoded_bytes = gpu.len() as u64 * size_of::<dx::Vertex>() as u64;
         self.release_gpu_section(key);
         if let Some(old) = self.sections.remove(&key) {
             self.mesh_bytes -= old.bytes;
@@ -241,73 +245,7 @@ impl Renderer {
         self.mesh_bytes += bytes;
         self.decoded_mesh_bytes += decoded_bytes;
         self.occlusion.set(key, visibility);
-        self.prefetch_ready_section(key, &vertices, gpu.as_ref());
-        Ok(vertices)
-    }
-    fn prefetch_ready_section(
-        &mut self,
-        key: SectionKey,
-        vertices: &[dx::Vertex],
-        encoded: Option<&dx::EncodedVertices>,
-    ) {
-        let bytes = encoded.map_or(std::mem::size_of_val(vertices), |v| v.bytes().len()) as u64;
-        if vertices.is_empty()
-            || self.device.lost()
-            || self.occlusion.reach().is_some() && !self.occlusion.contains(key)
-            || self.gpu_mesh_bytes + bytes > self.mesh_budget
-        {
-            return;
-        }
-        // The expanded vertices already exist at a section update. Upload now,
-        // including behind the camera, instead of decompressing them on first view.
-        let mut pages = Vec::new();
-        for (i, part) in vertices.chunks(self.device.max_vertices()).enumerate() {
-            let uploaded = if let Some(v) = encoded {
-                let first = i * self.device.max_vertices();
-                self.device.mesh_encoded_range(v, first..first + part.len())
-            } else {
-                self.device.mesh(part)
-            };
-            match uploaded {
-                Ok(mesh) => {
-                    self.pending_mesh_uploads += mesh.bytes();
-                    let first = (i * self.device.max_vertices()) as u32;
-                    pages.push((mesh, first..first + part.len() as u32));
-                }
-                Err(error) => {
-                    if dx::is_device_lost(error.as_ref()) {
-                        self.device.mark_lost();
-                    } else if !self.cache_warning {
-                        log::warn!(
-                            "D3D9 eager upload: {error}; keeping CPU shadow for demand loading"
-                        );
-                        self.cache_warning = true;
-                    }
-                    return;
-                }
-            }
-        }
-        for (mesh, source) in pages {
-            self.next_arena += 1;
-            let id = self.next_arena;
-            self.gpu_mesh_bytes += mesh.bytes();
-            self.arenas.insert(
-                id,
-                Arena {
-                    mesh,
-                    region: region_key(key),
-                    live: source.end - source.start,
-                    last_used: self.frames,
-                    sections: vec![key],
-                },
-            );
-            self.sections.get_mut(&key).unwrap().gpu.push(GpuSlice {
-                arena: id,
-                first: 0,
-                source,
-            });
-        }
-        self.eager_sections += 1;
+        gpu
     }
     pub(super) fn release_gpu_section(&mut self, key: SectionKey) {
         let Some(section) = self.sections.get_mut(&key) else {
@@ -452,10 +390,19 @@ impl Renderer {
             }
         }
         self.collect_compaction()?;
+        let mut missing = false;
         for v in visible {
-            for slice in &self.sections.at(v.slot).gpu {
+            let section = self.sections.at(v.slot);
+            missing |= section.gpu.is_empty()
+                && !section.vertices.is_empty()
+                && self.frames >= section.retry_after;
+            for slice in &section.gpu {
                 self.arenas.get_mut(&slice.arena).unwrap().last_used = self.frames + 1;
             }
+        }
+        if !missing {
+            self.schedule_compaction();
+            return Ok(());
         }
         let mut stale: Vec<_> = self
             .arenas
@@ -548,8 +495,6 @@ impl Renderer {
                 }
             }
         }
-        self.solid_batches
-            .retain(|(_, _, id), _| self.arenas.contains_key(id));
         self.schedule_compaction();
         Ok(())
     }

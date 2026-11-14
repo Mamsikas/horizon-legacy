@@ -93,6 +93,38 @@ pub struct EncodedVertices {
     count: usize,
 }
 impl EncodedVertices {
+    pub fn empty(encoding: VertexEncoding) -> Self {
+        Self {
+            bytes: Vec::new(),
+            encoding,
+            count: 0,
+        }
+    }
+    /// Join complete quad ranges without decoding or changing their layout.
+    pub fn append_range(
+        &mut self,
+        source: &Self,
+        range: std::ops::Range<usize>,
+    ) -> Result<(), String> {
+        if self.encoding != source.encoding
+            || range.start > range.end
+            || range.end > source.count
+            || range.start % 4 != 0
+            || range.end % 4 != 0
+        {
+            return Err("D3D9 incompatible encoded quad range".into());
+        }
+        let count = self
+            .count
+            .checked_add(range.len())
+            .filter(|&n| n <= u32::MAX as usize)
+            .ok_or("D3D9 combined vertex count overflow")?;
+        let stride = self.encoding.stride();
+        self.bytes
+            .extend_from_slice(&source.bytes[range.start * stride..range.end * stride]);
+        self.count = count;
+        Ok(())
+    }
     pub fn new(vertices: &[Vertex], hardware_compact: bool) -> Self {
         let mut bytes = Vec::new();
         let mut encoding = VertexEncoding::Full;

@@ -124,71 +124,67 @@ A/B testing remain performance follow-ups requiring hardware evidence.
 
 ## Current optimization and profiling pass
 
-The owner reports 580+ FPS at 16 chunks. Their attached 20-second capture contains
-507.09 average FPS, frame p50/p95/p99 1.833/2.633/4.262 ms, and maximum 71.243 ms.
-Average DX9 CPU frame time is 1.746 ms. A separate stage snapshot shows GUI 0.345 ms
-(one draw, one texture bind, one vertex-buffer lock), terrain plan preparation
-0.326 ms, solid draws 0.254 ms, translucent draws 0.131 ms and visibility 0.102 ms.
-Memory capture: 1116.4 MiB process resident; 261.6 MiB requested terrain GPU storage,
-238.5 MiB live vertices; 68.2 MiB compressed CPU shadows. Requested GPU storage is
-not a measurement of physical VRAM, and allocator commit is not process resident.
-DX9's elapsed CPU stages must not be compared directly to the other backends' GPU
-timestamp labels.
+The owner reports about 800 FPS at 16 chunks and 120 FPS at 48, with more
+acceptable memory use, but large loading/rebuild stalls. The new 16-chunk bench
+contains 727.82 average FPS, frame p50/p95/p99 1.306/1.771/2.187 ms, maximum
+5.337 ms; average DX9 CPU frame 1.149 ms. Memory snapshot: 1108.3 MiB resident,
+227.1 MiB requested terrain storage, 207.3 MiB live vertices and 68.7 MiB compressed
+CPU shadows. Requested GPU storage, allocator commit and resident memory differ.
+Most observed GPU vertices use the exact Wide28 layout; Compact20 is not universal.
 
-The owner's separate 48-chunk comparison is DX9 80 FPS/3240 MB, DX12 244/1570,
-Vulkan 415/1350, OpenGL 201/1480. The attached capture is at 16 chunks; it does not
-establish the cause of the 48-chunk gap. None of these numbers measures this update.
+The separate 20-second .hzperf capture is a settled 16-chunk scene: 681.5 average
+FPS, about 0.327 ms/frame GUI, 0.180 ms solid terrain, 0.120 ms translucent terrain,
+0.118 ms solid-plan work and 0.091 ms visibility. Its two roughly 43 ms control
+spans are diagnostic-report work. This is not a chunk-loading capture. The supplied
+render-trace.json belongs to the preceding build and is kept separate in analysis.
+These are all preceding-build measurements, not results of this update.
 
-The shared wgpu renderer backs Vulkan, DX12 and OpenGL. Reused mechanisms are its
-CPU column/frustum/portal culling, dense Resident storage, model data and mip generator.
-Its compute/indirect draw and shader-expanded packed quads cannot run on baseline
-D3D9/SM2. This update therefore adds compatible storage and submission paths:
+The new log does include heavy loading/rebuild periods: up to 10,435 draw calls
+and about 9,200 terrain arenas, versus roughly 560 draws/260 arenas in the settled
+16-chunk view. At 12:11:59 it records 27.1 ms DX9 CPU, 9,986 draws and 9,202 arenas.
+The five-second windows reach 124.8 ms including section uploads outside the draw
+phases. Background conversion alone did not prevent GPU buffer fragmentation:
+new sections each created their own VB, with compaction catching up afterwards.
 
-- One dense Resident<Section> replaces a second section hash store. Empty sections
-  retain only a presence key; block-entity-only sections retain their CPU data.
-  Visible slots access the draw data directly.
-- An exact solid-plan cache compares section identities, revisions and camera-facing
-  ranges. Unchanged plans reuse their cached indices; resource/page/reset changes
-  invalidate them. There is no lossy fingerprint or stale-frustum shortcut.
-- Hardware VS2 devices can use exact 20-byte terrain vertices or 28-byte vertices
-  for models with arbitrary floating-point position/UV. Unrepresentable values
-  retain the 32-byte format. CPU shadows encode the same smaller layout and expand
-  losslessly for fallback/recovery. The SDK-generated vs_2_0 program uses 12
-  arithmetic slots. Shader/declaration creation must succeed, and PS2 fog must be
-  available. GMA/software vertex processing keeps the original FFP format, with
-  no software vertex-shader requirement.
-- Initial section conversion and shadow/vertex encoding share the existing single
-  compaction worker. A conservative 8 MiB charge bounds pending source/results;
-  overflow and replacements/edits use the synchronous path. COM uploads stay on
-  the render thread. Tickets and a world epoch reject obsolete results. Reusable
-  scratch is separate from that charge; one recycled vertex vector is capped at
-  2 MiB. This does not change the shared streaming worker policy.
-- Animation mip/extrusion pixels have a 4 MiB payload LRU cache. Misses use the
-  existing mip generator; hits preserve its bytes and avoid regenerating them.
-  Atlas placement is resolved once per terrain quad instead of once per vertex.
-- The F3 axis crosshair consumes the existing debug_crosshair frame data after
-  screen overlays and before the HUD, using the hand projection without bob/fog.
+This pass changes submission and preparation without changing meshing or settings:
 
-Logs distinguish compact20/wide28/ffp32 bytes, uncached_visible_bytes,
-solid_plan_reused, staging queue/conversion wall time and animation-cache hits.
-These counters permit diagnosis of budget fallback, upload pressure and cold work
-without attributing all delay to drawing. Cache targets are advisory; allocation
-failures keep the existing drawable fallback. Settings files are not rewritten.
+- Converted arrivals of the same 128-block region and vertex encoding share
+  immutable VBs immediately. Pages contain only used vertices, stay within the
+  driver's quad/index caps, and do not reserve a large GPU arena. Section source
+  ranges preserve individual culling, removal, transparency order and narrow
+  software-vertex draws. No existing GPU data is overwritten.
+- Uploads remain on the render thread. New arrivals are grouped within their
+  current drain; no additional timer/warmup delay is introduced. Block edits stay
+  synchronous. Epoch/ticket/revision checks, device loss and drawable CPU shadows
+  remain. Arrival page/section counts show the actual batching ratio.
+- The CPU worker retains its expanded-vertex scratch directly and sends encoded
+  bytes/shadows. It no longer transfers/recycles that scratch through a mutex or
+  sends an unnecessary second full vertex copy. Compaction also reuses decode and
+  collection buffers. The conservative 8 MiB charge still bounds queued inputs
+  and results, separately from reusable scratch.
+- A fully resident frame skips building/sorting the stale-arena eviction list.
+  Obsolete solid batches are pruned when rebuilding their draw plan.
+- Ordinary alpha GUI runs reuse exact, small prepared ranges. Keys compare every
+  source byte, draw state and HUD patch revision. Patched glyphs/maps/skins invalidate
+  the mapping cache; pictures, depth/scissor models and invert runs use normal
+  preparation. Cached command ranges retain painter order and merge compatible
+  adjacent draws. Retained buffers are capped at 2 MiB plus at most 128 headers;
+  overflow still draws normally. This is a CPU geometry cache, not stale GPU data.
 
-The upstream .hzperf profiler is useful here: DX9 phases and section-worker spans
-now feed its timeline. Windows supports frame/timeline/memory capture; the CPU
-stack/heap sampler currently exists only on Linux. DX9 GPU timestamps remain
-explicitly unavailable, rather than being populated with CPU milliseconds. Use
-`horizon-ctl profile client start --seconds 20 --timeline --no-samples`, and use the capture path from the start reply/log. `status` describes an active
-capture; `stop` can end it before the automatic 20-second stop. Capture
-is opt-in and nothing is shared automatically. The old trace command now also
-writes .hzperf, not Chrome JSON. See TESTING.txt for complete launch commands.
+Existing shared Resident/column/frustum/portal culling, model data, mip generation,
+exact solid-plan reuse, 20/28/32-byte hardware/FFP layouts and 4 MiB animation-pixel
+cache remain. GMA software vertex processing uses Full32 and does not require a
+hardware vertex shader. It benefits from pooled arrivals and GUI reuse too.
+The shared wgpu compute/indirect/shader-expanded quad implementation cannot be
+transplanted directly to baseline SM2; this path uses compatible CPU mechanisms.
 
-The supplied RTX log confirms acceptance of the SDK-compiled ps_2_0 fog program.
-F5 skin depth and fast-leaf colour fixes are in the preceding iteration. Common
-resource preparation before device creation remains outside this work. Remaining
-work includes real 48-chunk measurements, transparency draw overhead and further
-GUI CPU preparation reductions; parity with OpenGL has not been established.
+The opt-in .hzperf timeline now also splits atlas conversion, vertex packing,
+shadow compression, arrival uploads, GUI preparation, textures, upload and submit.
+Windows frame/timeline/memory capture is available; stack/heap sampling remains
+Linux-only and DX9 GPU timestamps are explicitly unavailable. Nothing is uploaded
+automatically. Diagnostic memory captures have measurable cost; start with ordinary
+logs/F3 for the first GMA game run. Common pre-device resource preparation is outside
+this work. No post-update FPS, OpenGL parity or physical GMA/HD4570 result is claimed.
 
 ## Build, package and test
 
@@ -210,8 +206,8 @@ The Actions artifact ZIP directly contains `horizon-client.exe`, `horizon-ctl.ex
 setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
 Resources and saves are never distributed in this archive.
 
-This iteration has fifteen CPU tests (including tile seams/placement, executable SM2 arithmetic,
-all vertex layouts/partial codec blocks and animation-cache eviction) and eleven PE policy/parser tests. The packaging workflow builds
+This iteration has sixteen CPU tests (including tile seams/placement, executable SM2 arithmetic,
+all vertex layouts/partial codec blocks, animation-cache eviction and shared-page source indices) and eleven PE policy/parser tests. The packaging workflow builds
 the client/control ZIP and audits static/delay imports,
 architecture and subsystem version. Compiler warnings inherited from the current
 nightly/native dependencies are separate from a successful check. Full parity harnesses
@@ -226,8 +222,8 @@ virtual atlas tiles; `atlas.rs` preserves transparent RGB. The optional developm
 smoke example remains in source but is no longer built/shipped by the client package. In `horizon-client-render`, only
 `gfx.rs` helper visibility changes for normal builds. The legacy renderer and its
 `atlas`, `compat`, `frame`, `resident`, `solid_cache`, `mesh` and its
-`compact`, `convert`, `upload` helpers own culling, cached plans, shared mips, sky
-and bounded CPU staging/compaction. Cargo only adds the already-used
+`compact`, `convert`, `upload`, `arrival` helpers own culling, cached plans, shared mips, sky
+and bounded CPU staging/compaction; `frame/gui_cache.rs` reuses prepared HUD ranges. Cargo only adds the already-used
 glam dependency to the DX9 crate. CI and TESTING.txt carry reproducible checks. Small backend-selection, API-tooltip
 and checked-download helpers moved to sibling modules to satisfy the new upstream
 file-size guard without expanding already oversized files; their behavior is unchanged.
