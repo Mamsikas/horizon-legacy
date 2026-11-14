@@ -173,6 +173,8 @@ This pass makes two bounded renderer changes:
   distance-only (17), unfogged (5) or fully fogged (4, one texture read). Unknown
   bounds or a rejected optional program retain the dual path. Camera-position
   texture generation is disabled when the selected program does not read it.
+  Inactive draw buckets release their cached IBs rather than retaining duplicate
+  visibility plans after a fog-program change; CPU range storage stays reusable.
   This also removes wasted work with the owner's Fog OFF preset. Fog ranges,
   colors, alpha, gameplay-significant fluid/effect fog and stored options stay
   intact. CPU execution of the bytecode checks colors/alpha across the selected

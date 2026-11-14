@@ -624,6 +624,10 @@ impl Renderer {
             self.stamp("terrain indices/cold draws", &mut clock);
             for (&(page, cutout, id, fog_program), batch) in &mut self.solid_batches {
                 if batch.next.is_empty() {
+                    // A changed fog class must not retain another copy of the
+                    // old visible index plan in each inactive program bucket.
+                    // Keep small CPU vectors reusable; SWVP has no cached IB.
+                    batch.release_indices();
                     continue;
                 }
                 let arena = &self.arenas[&id];

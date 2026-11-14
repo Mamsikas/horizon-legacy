@@ -79,6 +79,10 @@ impl DrawBatch {
     pub fn gpu_bytes(&self) -> u64 {
         self.indices.as_ref().map_or(0, dx::Indices::bytes)
     }
+    pub fn release_indices(&mut self) {
+        self.indices = None;
+        self.ranges.clear();
+    }
     pub fn draw(
         &mut self,
         device: &mut dx::Device,
