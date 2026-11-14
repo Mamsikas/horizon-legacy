@@ -13,8 +13,8 @@ pub(super) struct Packet {
 }
 pub(super) struct Section {
     pub solid: Vec<Packet>,
-    pub translucent: Vec<Packet>,
-    pub sorted: Option<std::cell::RefCell<translucent::Sorted>>,
+    pub translucent: Vec<dx::TextureRange>,
+    pub translucent_order: std::cell::RefCell<dx::PageOrder>,
     pub vertices: Arc<dx::MeshData>,
     pub gpu: Vec<GpuSlice>,
     pub retry_after: u64,
@@ -232,8 +232,6 @@ impl Renderer {
         let convert::Converted {
             solid,
             translucent,
-            centers,
-            translucent_pages,
             shadow,
             sides,
             blocks,
@@ -252,13 +250,7 @@ impl Renderer {
         self.sections.insert(
             key,
             Section {
-                sorted: translucent.first().map(|p| {
-                    std::cell::RefCell::new(translucent::Sorted::new(
-                        p.first,
-                        centers,
-                        translucent_pages,
-                    ))
-                }),
+                translucent_order: Default::default(),
                 solid,
                 translucent,
                 vertices: shadow,
@@ -655,19 +647,28 @@ pub(super) fn draw_packet(
     packet: &Packet,
     decoded: &[dx::Vertex],
 ) -> Result<()> {
+    draw_range(device, arenas, section, packet.first, packet.count, decoded)
+}
+
+pub(super) fn draw_range(
+    device: &mut dx::Device,
+    arenas: &HashMap<u64, Arena>,
+    section: &Section,
+    first: u32,
+    count: u32,
+    decoded: &[dx::Vertex],
+) -> Result<()> {
     if section.gpu.is_empty() {
-        return device.draw_transient(
-            &decoded[packet.first as usize..(packet.first + packet.count) as usize],
-        );
+        return device.draw_transient(&decoded[first as usize..(first + count) as usize]);
     }
     for slice in &section.gpu {
-        let first = packet.first.max(slice.source.start);
-        let end = (packet.first + packet.count).min(slice.source.end);
-        if first < end {
+        let start = first.max(slice.source.start);
+        let end = (first + count).min(slice.source.end);
+        if start < end {
             device.draw(
                 &arenas[&slice.arena].mesh,
-                slice.first + first - slice.source.start,
-                end - first,
+                slice.first + start - slice.source.start,
+                end - start,
             )?;
         }
     }

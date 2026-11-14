@@ -8,9 +8,7 @@ pub(in super::super) struct Scratch {
 }
 pub(in super::super) struct Converted {
     pub solid: Vec<Packet>,
-    pub translucent: Vec<Packet>,
-    pub centers: Vec<[f32; 3]>,
-    pub translucent_pages: Vec<u32>,
+    pub translucent: Vec<dx::TextureRange>,
     pub shadow: Arc<dx::MeshData>,
     pub sides: crate::mesher::Sides,
     pub blocks: Vec<([i32; 3], u32)>,
@@ -98,38 +96,21 @@ impl Scratch {
             });
             vertices.extend_from_slice(part);
         }
-        let first_translucent = vertices.len();
-        let mut translucent = Vec::<Packet>::new();
+        for group in &mut self.groups {
+            group.clear();
+        }
         for input in mesh.translucent.chunks_exact(4) {
             atlas::sprite_quad(
                 layout,
                 u32::from(input[0].layer & !crate::mesher::OPAQUE_LAYER),
                 &terrain_quad(input),
                 |page, poly| {
-                    if translucent.last().is_none_or(|p| p.page != page) {
-                        translucent.push(Packet {
-                            page,
-                            opaque: false,
-                            first: vertices.len() as u32,
-                            count: 0,
-                            source: 0..u32::MAX,
-                        });
-                    }
-                    let before = vertices.len();
-                    atlas::quads(poly, vertices);
-                    translucent.last_mut().unwrap().count += (vertices.len() - before) as u32;
+                    atlas::quads(poly, &mut self.groups[page]);
                 },
             )
             .map_err(|e| e.to_string())?;
         }
-        let centers = vertices[first_translucent..]
-            .chunks_exact(4)
-            .map(|q| gfx::translucency::quad_center(q[0].pos, q[2].pos))
-            .collect();
-        let translucent_pages = translucent
-            .iter()
-            .flat_map(|p| std::iter::repeat_n(p.page as u32, p.count as usize / 4))
-            .collect();
+        let translucent = dx::append_texture_pages(&self.groups[..pages], vertices)?;
         let offset = [
             (key.0.rem_euclid(8) * 16) as f32,
             (key.1.rem_euclid(8) * 16) as f32,
@@ -148,8 +129,6 @@ impl Scratch {
         Ok(Converted {
             solid,
             translucent,
-            centers,
-            translucent_pages,
             shadow,
             sides,
             blocks: mesh.block_entities.clone(),

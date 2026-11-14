@@ -163,14 +163,19 @@ impl Renderer {
         Ok(())
     }
     pub(in super::super) fn schedule_compaction(&mut self) {
+        if self.compactor.as_ref().is_none_or(|w| w.busy) {
+            return;
+        }
+        // Interleave one bounded resident merge with bulk conversion. Waiting
+        // for an entirely empty upload queue left thousands of small VBs live
+        // during loading, followed by minutes of draw-call warmup. Demand-only
+        // prefetch can wait; it must not displace incoming visible sections.
         if self
             .compactor
             .as_ref()
-            .is_none_or(|w| w.busy || w.upload_quota.load(Ordering::Relaxed) != 0)
+            .is_some_and(|w| w.upload_quota.load(Ordering::Relaxed) == 0)
+            && self.schedule_prefetch()
         {
-            return;
-        }
-        if self.schedule_prefetch() {
             return;
         }
         if self.frames < self.compact_scan + 8 {

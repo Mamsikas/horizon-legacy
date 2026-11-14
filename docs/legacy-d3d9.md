@@ -80,11 +80,14 @@ The memory pool changes input placement, not HAL rasterization.
 On hardware vertex processing, visible solid quad ranges from multiple sections
 become one indexed batch per arena/page/alpha mode. The existing CPU column/frustum walk, vanilla portal visibility graph and Sides culling select geometry; spectator bypass is preserved. Visibility index buffers are retained until their canonical quad ranges change, with one bounded index scratch instead of permanent per-batch CPU index arrays. On software vertex processing, narrow direct draws
 avoid transforming holes between sparse index ranges; its visibility plan is
-cached too. Translucent sections draw far-to-near, with Horizon's existing
-SortState/Sorter ordering quads inside a section. Vertex order remains immutable;
-cached grouped indices change only when the viewpoint or GPU slices change.
-Per-draw software-VP spans stay within twice the selected vertex count. Terrain
-uses the same back-face culling and depth writes as the ordinary renderer.
+cached too. Translucent sections draw far-to-near. Within each section, vertices
+are packed by texture page at upload; the few page ranges are ordered by bounds
+when the camera crosses a block boundary. Each resident draw uses a tight
+contiguous range and the shared quad IB, including on software VP. Alpha blends
+keep depth testing and back-face culling, but do not write depth between the
+approximately ordered batches. This is basic transparency, not Improved
+Transparency or exact interleaved-quad ordering. Camera motion never reuploads
+terrain vertices or allocates translucent index buffers.
 Dynamic index and transient vertex rings use
 NOOVERWRITE on append and DISCARD only on wrap, rather than renaming a full buffer
 for every small draw. Terrain GPU residency is bounded, with offscreen pages evicted
@@ -135,7 +138,7 @@ remain errors, not accepted wildcards.
 | Split-screen compositor / GPU render capture | Explicitly unavailable; screenshots and DX9 log counters remain |
 
 Static block-entity snapshots currently use the dynamic entity draw path. GPU caching
-of those optional snapshots, finer transparent-quad sorting and CPU-transformed vertex
+of those optional snapshots and CPU-transformed vertex
 A/B testing remain performance follow-ups requiring hardware evidence.
 
 ## Current optimization and profiling pass
@@ -146,17 +149,21 @@ The attached 48-chunk memory snapshot reports 3613.2 MiB resident, 1364.8 MiB
 requested terrain storage and 559.4 MiB CPU shadows. These counters are not
 physical VRAM. Most hardware vertices remain Wide28, not Compact20.
 
-The new 60-second RTX loading capture averages 71 FPS: renderer 11.0 ms/frame,
-solid 5.9, solid plans/cold draws 1.9, translucency 1.0, terrain cache 0.8,
-arrival uploads 0.4 and synchronous section uploads 1.3. Shadow encoding accounts
-for about 0.6 ms/frame on that main-thread upload path. Periodic diagnostic
-control work adds roughly 92–110 ms pauses; those are not normal frame costs.
+Build `7ce2bb42c8` regressed transparency badly. The owner's GMA comparison
+dropped from 23 to 5 FPS. Its 18.2-second capture averages 6.6 FPS with 124.5 ms
+in translucent submission, 9.5 ms solid and 3.1 ms GUI. The static scene has only
+20 visible sections but about 3790 draws and 1994 texture binds per frame, with
+zero terrain index uploads. Per-quad sorting alternated texture pages; bounding
+software-VP index spans split those runs still further. Cached indices avoided
+uploads but did not make thousands of driver calls cheap.
 
-The 53.7-second GMA capture is valid, averaging 24.4 FPS under profiling. Its
-renderer averages 34.9 ms: solid FFP draws (under the old cold-draw label) 14.8,
-translucency 14.3 and GUI 3.6. GUI preparation/submit are about 1.6/1.7 ms.
-The GPU-timing warning is expected: DX9 has no capture GPU-pass timestamps.
-The owner separately reports approximately 50 FPS flat / 30 normal, two chunks.
+The latest 68.8-second RTX loading capture averages 58.3 FPS, with renderer
+14.0 ms, solid 6.7, translucent 2.5, plans/cold draws 2.4 and synchronous uploads
+0.1 ms. The settled capture averages 105.1 FPS, renderer 7.8 ms, translucent 2.6
+and solid 2.3 ms. These are measurements of the regressed build, not this fix.
+The log shows over 8300 small terrain buffers decreasing toward 1700 after
+loading; merging only when the upload quota was completely empty delayed that
+work. Periodic memory/control reports add roughly 100 ms pauses of their own.
 
 This update targets costs relevant to low render distances too:
 
@@ -170,12 +177,18 @@ This update targets costs relevant to low render distances too:
   Adjacent ranges merge; software VP still transforms only tight contiguous
   ranges rather than sparse whole-page spans. Its immutable input VBs use
   SYSTEMMEM; hardware-VP buffers still use DEFAULT.
-- Translucent geometry uses the existing Horizon viewpoint sort and stable tie
-  order, plus its back-face culling/depth-write policy. Cached indices change
-  with the section viewpoint or residency, not every frame. Multiple ordered
-  texture runs share an IB per section/arena; SWVP draw spans are bounded to
-  twice their selected vertex count. Allocation pressure retains ordered CPU
-  fallback geometry. This addresses the previously unsorted/double-sided ice.
+- Basic translucent batches now use one contiguous range per texture page,
+  split only at native VB boundaries. The CPU check packs 4096 alternating
+  quads into three ranges, or 19 draws with deliberately tiny 1024-vertex VBs,
+  without changing vertex attributes or winding. Back-face culling addresses
+  double-sided ice. Exact overlapping-glass/water order is not promised; the
+  owner explicitly prefers basic transparency and speed. No per-quad centers,
+  sorting state, cached translucent IBs or scratch buffers remain.
+- The same bounded worker can merge resident VBs during bulk loading rather
+  than waiting for an empty upload quota. Only one merge is outstanding, capped
+  at 2 MiB; speculative nonresident prefetch waits for bulk work to finish.
+  Old buffers stay drawable until the replacement succeeds. This reduces a
+  source of post-load warmup; it does not change world generation or meshing.
 - Alpha GUI and depth/scissor inventory models reuse byte-exact prepared ranges;
   the first model clears depth, then overlapping model pixel bounds or a bounded
   coverage-window reset require another clear. Disjoint slots share depth and
@@ -209,8 +222,10 @@ automatically. Diagnostic memory captures have measurable cost; start with ordin
 logs/F3 for plain FPS comparisons. `/profiler start client` and `/profiler stop client`
 work through chat without --control or a launcher change. Do not request GPU timing
 on DX9. Detailed timeline stops after 60 seconds; take separate loading segments.
-Common pre-device resource preparation is outside this work. No FPS improvement
-for this update, OpenGL parity or physical HD4570 result is claimed.
+Common pre-device resource preparation is outside this work. The new log separates
+basic-transparency draws, texture binds and page ranges. No FPS improvement for
+this fix, OpenGL parity or physical HD4570 result is claimed before the owner's
+hardware retest.
 
 ## Build, package and test
 
@@ -232,7 +247,8 @@ The Actions artifact ZIP directly contains `horizon-client.exe`, `horizon-ctl.ex
 setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
 Resources and saves are never distributed in this archive.
 
-This iteration has twenty CPU tests (including projected GUI coordinates, depth-clear reuse equivalence, ordered index windows,
+This iteration has twenty-one CPU tests (including bounded texture-page ranges,
+projected GUI coordinates, depth-clear reuse equivalence, ordered index windows,
 sparse-tile invalidation, tile seams/placement, executable SM2 arithmetic,
 all vertex layouts/partial codec blocks, animation-cache eviction and shared-page source indices) and eleven PE policy/parser tests. The packaging workflow builds
 the client/control ZIP and audits static/delay imports,
@@ -247,11 +263,12 @@ cached IBs and shader state; `screen.rs`/`gui_device.rs` own the projected GUI s
 `fog.rs`/`fog_program.rs` contain the
 SDK-generated fog program; `terrain.rs`, `terrain_device.rs`, `terrain_program.rs`
 implement hardware-only compact vertices; `animation.rs` caches prepared pixels;
-`geometry.rs` compresses CPU shadows; `tiles.rs` stores
+`geometry.rs` compresses CPU shadows; `texture_pages.rs` packs basic alpha ranges
+and caches page order; `tiles.rs` stores
 virtual atlas tiles; `atlas.rs` preserves transparent RGB. The optional development
 smoke example remains in source but is no longer built/shipped by the client package. In `horizon-client-render`, only
 `gfx.rs` helper visibility changes for normal builds. The legacy renderer and its
-`atlas`, `compat`, `frame`, `resident`, `solid_cache`, `translucent`, `mesh` and its
+`atlas`, `compat`, `frame`, `resident`, `solid_cache`, `mesh` and its
 `compact`, `convert`, `upload`, `arrival` helpers own culling, cached plans, shared mips, sky
 and bounded CPU staging/compaction; `frame/gui_cache.rs` reuses prepared HUD ranges. Cargo only adds the already-used
 glam dependency to the DX9 crate. CI and TESTING.txt carry reproducible checks. Small backend-selection, API-tooltip

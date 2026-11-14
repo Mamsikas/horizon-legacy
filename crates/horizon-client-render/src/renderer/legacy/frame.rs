@@ -290,6 +290,12 @@ impl Renderer {
                 self.gui_depth.reused
             );
             log::info!(
+                "D3D9 basic transparency draws={} texture_binds={} page_ranges={}",
+                self.translucent_stats[0],
+                self.translucent_stats[1],
+                self.translucent_stats[2]
+            );
+            log::info!(
                 "D3D9 GUI cache reused_chunks={} rebuilt_chunks={} cpu_bytes={}",
                 self.gui_cache.hits,
                 self.gui_cache.misses,
@@ -374,6 +380,7 @@ impl Renderer {
             + self.lightmap.bytes
     }
     fn draw_frame(&mut self, frame: &Frame) -> Result<()> {
+        self.translucent_stats = [0; 3];
         let mut clock = Instant::now();
         self.update_lightmap(frame)?;
         self.stamp("lightmap", &mut clock);
@@ -637,6 +644,7 @@ impl Renderer {
             }
             self.stamp("entities", &mut clock);
             let before_translucent = self.device.draws;
+            let before_translucent_binds = self.device.binds;
             for v in visible.iter().rev() {
                 let key = &v.key;
                 if self.sections.at(v.slot).translucent.is_empty() {
@@ -653,20 +661,19 @@ impl Renderer {
                     projection.to_cols_array(),
                 )?;
                 let section = self.sections.at(v.slot);
-                let mut sorted = section
-                    .sorted
-                    .as_ref()
-                    .expect("translucent sort state")
-                    .borrow_mut();
-                sorted.update(
-                    frame.camera,
+                self.translucent_stats[2] += section.translucent.len() as u64;
+                let mut order = section.translucent_order.borrow_mut();
+                let order = order.update(
+                    &section.translucent,
+                    frame.camera.to_array(),
                     [key.0 * 16, self.layout.min_y() + key.1 * 16, key.2 * 16],
-                    &mut self.translucent_sorter,
                 );
                 let state = DrawState {
                     blend: Blend::Alpha,
-                    // Match Horizon's terrain pass: back faces culled, sorted
-                    // front faces blended back-to-front with real depth writes.
+                    // Basic transparency: far sections/pages first, no depth
+                    // writes between approximate alpha batches. Cull back faces
+                    // to avoid double-blending ice without per-quad draw calls.
+                    depth_write: false,
                     cull: true,
                     alpha_test: false,
                     fog,
@@ -674,66 +681,30 @@ impl Renderer {
                     mipmaps: self.mipmaps,
                     ..Default::default()
                 };
-                let cached = if section.gpu.is_empty() {
-                    false
-                } else {
-                    match sorted.prepare(&mut self.device, section, &mut self.translucent_scratch) {
-                        Ok(()) => true,
-                        Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
-                        Err(error) => {
-                            if !self.cache_warning {
-                                log::warn!(
-                                    "D3D9 sorted index allocation failed ({error}); keeping ordered transient geometry"
-                                );
-                                self.cache_warning = true;
-                            }
-                            false
-                        }
-                    }
-                };
-                if cached {
-                    for draw in &sorted.draws {
-                        self.device.state(
-                            state,
-                            &self.sprites.pages[draw.page],
-                            Some(&self.lightmap),
-                        )?;
-                        sorted.draw(&mut self.device, &self.arenas, draw)?;
-                    }
-                } else {
+                if section.gpu.is_empty() {
                     section.vertices.decode(&mut self.decode_scratch)?;
-                    self.translucent_vertices.clear();
-                    let mut page = None;
-                    for &first in &sorted.order {
-                        let next = sorted.page(first);
-                        if let Some(old) = page
-                            && old != next
-                        {
-                            self.device.state(
-                                state,
-                                &self.sprites.pages[old],
-                                Some(&self.lightmap),
-                            )?;
-                            self.device.draw_transient(&self.translucent_vertices)?;
-                            self.translucent_vertices.clear();
-                        }
-                        page = Some(next);
-                        self.translucent_vertices.extend_from_slice(
-                            &self.decode_scratch[first as usize..first as usize + 4],
-                        );
-                    }
-                    if let Some(page) = page {
-                        self.device.state(
-                            state,
-                            &self.sprites.pages[page],
-                            Some(&self.lightmap),
-                        )?;
-                        self.device.draw_transient(&self.translucent_vertices)?;
-                    }
+                }
+                for &at in order {
+                    let packet = &section.translucent[at];
+                    self.device.state(
+                        state,
+                        &self.sprites.pages[packet.page],
+                        Some(&self.lightmap),
+                    )?;
+                    mesh::draw_range(
+                        &mut self.device,
+                        &self.arenas,
+                        section,
+                        packet.first,
+                        packet.count,
+                        &self.decode_scratch,
+                    )?;
                 }
             }
             self.visible = visible;
             self.stamp("terrain translucent", &mut clock);
+            self.translucent_stats[0] = self.device.draws - before_translucent;
+            self.translucent_stats[1] = self.device.binds - before_translucent_binds;
             self.section_draws += (self.device.draws - before_translucent) as usize;
             self.section_draw_calls = self.section_draws;
             self.device.transform(

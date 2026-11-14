@@ -25,3 +25,5 @@ mod animation;
 pub use animation::AnimationCache;
 mod upload_batch;
 pub use upload_batch::{UploadBatch, UploadPage, UploadPart};
+mod texture_pages;
+pub use texture_pages::{PageOrder, TextureRange, append_texture_pages};

@@ -5,7 +5,10 @@ and an N455-compatible x64 CPU (SSE3/SSSE3). No Java or shader compiler is neede
 in game. The owner ran the preceding build on real N455/GMA3150: about 50 FPS in
 a flat world and 30 in a normal world at two chunks, roughly 500-750 MiB memory.
 RTX3050: about 950 FPS / 1.1 GiB at 16 chunks, 135 FPS / about 4 GiB at 48 settled.
-These are BEFORE this update; new FPS/memory and HD4570 results are not claimed.
+Those are the good baseline, before build 7ce2bb42c8 regressed GMA transparency
+from 23 to 5 FPS in the owner's control scene. This update fixes the thousands
+of tiny draw calls that caused that regression. New hardware FPS/memory and
+HD4570 results are not claimed before retesting.
 
 Launch:
 1. Extract this ZIP once; horizon-client.exe is directly inside. Select that EXE
@@ -30,7 +33,8 @@ GUI on software-VP HALs; world vertices keep FFP. F3 no longer shows the unrelat
 Noop metadata backend label. This is not a CPU rasterizer.
 
 Short GMA retest:
-Use the same flat/normal worlds and distance. Compare HUD on/off (F1) and inventory,
+First compare the same ice scene, resolution and two-chunk distance against the
+23 FPS baseline. Then compare HUD on/off (F1) and inventory,
 then walk over/around ice and water, including looking from below/above. Try F3+A,
 F5, chat, resize/Alt+Tab/fullscreen and save/reopen. F2 saves screenshots. A plain
 run without profiling is best for FPS comparison; periodic memory diagnostics
@@ -43,9 +47,14 @@ What changed:
 - FFP reuses solid visibility plans and groups texture/state changes, retaining
   tight contiguous transformed ranges. SWVP input VBs use SYSTEMMEM; hardware
   input still uses DEFAULT. Both remain hardware HAL rasterization.
-- Translucent quads use Horizon's existing viewpoint sort, correct back-face
-  culling/depth writes and cached grouped indices. Vertices are not re-uploaded
-  on camera movement. Ordered CPU fallback remains for allocation pressure.
+- Basic transparency packs each texture page into a tight vertex range, with
+  far-to-near sections/pages and back-face culling. Depth testing remains;
+  transparent batches do not write depth. There is no per-quad sorting/index
+  allocation or per-quad draw fragmentation. This deliberately does not match
+  Improved Transparency. The log reports its draws, binds and page ranges.
+- Resident buffer merging can run during bulk loading, rather than waiting
+  for the upload queue to become empty. One bounded merge shares the existing
+  worker; speculative prefetch waits. No world/mesher settings are changed.
 - GUI reuses alpha and depth/scissor inventory geometry. Depth clears remain
   barriers for overlapping models; disjoint inventory slots share depth and
   compatible adjacent draws. Pixel-only patches keep mappings cached; newly present sparse tiles

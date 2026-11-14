@@ -34,13 +34,7 @@ impl Renderer {
                 self.solid_batches
                     .values()
                     .map(mesh::DrawBatch::gpu_bytes)
-                    .sum::<u64>()
-                    + self
-                        .sections
-                        .values()
-                        .filter_map(|s| s.sorted.as_ref())
-                        .map(|s| s.borrow().gpu_bytes())
-                        .sum::<u64>(),
+                    .sum::<u64>(),
             ),
             ("D3D9 sprite pages (managed)", self.sprites.layout.bytes()),
             ("D3D9 GUI pages (managed)", self.hud.atlas.bytes()),
@@ -60,10 +54,10 @@ impl Renderer {
                         .map(|s| {
                             size_of::<dx::MeshData>()
                                 + 2 * size_of::<usize>()
-                                + (s.solid.capacity() + s.translucent.capacity())
-                                    * size_of::<mesh::Packet>()
+                                + s.solid.capacity() * size_of::<mesh::Packet>()
+                                + s.translucent.capacity() * size_of::<dx::TextureRange>()
                                 + s.gpu.capacity() * size_of::<mesh::GpuSlice>()
-                                + s.sorted.as_ref().map_or(0, |s| s.borrow().bytes())
+                                + s.translucent_order.borrow().bytes()
                         })
                         .sum::<usize>(),
             ),
@@ -93,10 +87,7 @@ impl Renderer {
                         .map(mesh::DrawBatch::bytes)
                         .sum::<usize>()
                     + self.index_scratch.bytes()
-                    + self.solid_cache.bytes()
-                    + self.translucent_scratch.bytes()
-                    + self.translucent_sorter.bytes()
-                    + self.translucent_vertices.capacity() * size_of::<dx::Vertex>(),
+                    + self.solid_cache.bytes(),
             ),
         ]
     }
