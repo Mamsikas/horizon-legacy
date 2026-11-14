@@ -93,7 +93,7 @@ impl Loading {
         let size = self
             .options
             .as_ref()
-            .map_or([1280, 720], |o| o.window_size)
+            .map_or(Options::DEFAULT_WINDOW_SIZE, |o| o.window_size)
             .map(f64::from);
         self.fullscreen = horizon_client::window::FullscreenState::new(fullscreen);
         let attributes =
