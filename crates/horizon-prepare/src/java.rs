@@ -3,7 +3,7 @@
 
 use std::ffi::OsStr;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -22,6 +22,73 @@ const TIMEOUT: Duration = Duration::from_secs(3600);
 /// output; the serial collector was as fast as the parallel one and its JVMs together took
 /// 1.25 GB instead of 2 GB.
 pub(crate) const BATCH_OPTIONS: [&str; 2] = ["-XX:TieredStopAtLevel=1", "-XX:+UseSerialGC"];
+
+/// An explicit preparation-only cap, in MiB. Absent it, the modern launcher's JVM arguments
+/// remain unchanged. Legacy workers opt in; this never changes the game's heap or options.
+fn heap_limit() -> Result<Option<u32>, String> {
+    match std::env::var("HORIZON_PREPARE_MAX_HEAP_MIB") {
+        Ok(value) => value
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .filter(|n| *n >= 64)
+            .map(Some)
+            .ok_or_else(|| {
+                "HORIZON_PREPARE_MAX_HEAP_MIB must be a whole number of at least 64 MiB".into()
+            }),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(error) => Err(format!("HORIZON_PREPARE_MAX_HEAP_MIB: {error}")),
+    }
+}
+
+pub(crate) fn bounded_args(args: &[String]) -> Result<Vec<String>, String> {
+    Ok(bounded_args_with(args, heap_limit()?))
+}
+
+fn bounded_args_with(args: &[String], limit: Option<u32>) -> Vec<String> {
+    let Some(limit) = limit else {
+        return args.to_vec();
+    };
+    let capped = format!("-Xmx{limit}m");
+    // These are the preparer's own arguments, before a class or -jar; keep their other values.
+    // A cap replaces every larger Xmx, since HotSpot accepts the last repeated heap option.
+    let mut found = false;
+    let mut bounded: Vec<String> = args
+        .iter()
+        .map(|arg| {
+            let Some(heap) = arg.strip_prefix("-Xmx") else {
+                return arg.clone();
+            };
+            found = true;
+            let (number, unit) = match heap.as_bytes().last().copied() {
+                Some(b'k' | b'K') => (&heap[..heap.len() - 1], 1024u64),
+                Some(b'm' | b'M') => (&heap[..heap.len() - 1], 1024u64 * 1024),
+                Some(b'g' | b'G') => (&heap[..heap.len() - 1], 1024u64 * 1024 * 1024),
+                _ => (heap, 1),
+            };
+            let bytes = number.parse::<u64>().ok().and_then(|n| n.checked_mul(unit));
+            if bytes.is_some_and(|n| n <= u64::from(limit) * 1024 * 1024) {
+                arg.clone()
+            } else {
+                capped.clone()
+            }
+        })
+        .collect();
+    if !found {
+        bounded.insert(0, capped);
+    }
+    bounded
+}
+
+/// An optional caller-owned cancellation flag. Interrupted output is not stamped current,
+/// so the existing incremental preparer can safely resume it on the next run.
+pub(crate) fn cancelled() -> Result<(), String> {
+    if std::env::var_os("HORIZON_PREPARE_CANCEL_FILE").is_some_and(|p| Path::new(&p).exists()) {
+        Err("Operation cancelled.".into())
+    } else {
+        Ok(())
+    }
+}
 
 /// The variables a JVM reads extra options from. A collector chosen there, such as a player's
 /// global `-XX:+UseZGC`, stops a JVM started with [`BATCH_OPTIONS`]: "Multiple garbage collectors
@@ -341,33 +408,79 @@ fn find_tools(major: i64, more: &[PathBuf], compiler: bool) -> Result<Jdk, Strin
 
 /// Add a repair hint only for a failure the exporter actually reported.
 pub(crate) fn export_failure(error: String, java: &Path, log: &Path) -> String {
-    // An incomplete JDK can still pass `java -version`. Diagnose its actual failure,
-    // rather than requiring one vendor's runtime layout from every Java installation.
-    let mut bytes = Vec::new();
-    let read = fs::File::open(log).and_then(|file| file.take(64 * 1024).read_to_end(&mut bytes));
-    if read.is_ok()
-        && String::from_utf8_lossy(&bytes).lines().any(|line| {
-            let missing = [
-                "java.io.FileNotFoundException: ",
-                "java.nio.file.NoSuchFileException: ",
-            ]
-            .into_iter()
-            .find_map(|exception| line.split_once(exception).map(|(_, path)| path));
-            missing.is_some_and(|path| {
-                ["/lib/tzdb.dat", r"\lib\tzdb.dat"]
-                    .into_iter()
-                    .filter_map(|name| path.split_once(name).map(|(_, rest)| rest))
-                    .any(|rest| rest.is_empty() || rest.starts_with(" ("))
-            })
+    // Keep failure messages useful without loading an unbounded JVM output file into RAM.
+    let output = process_output(log);
+    let reported = format!("{error}\n{output}");
+    let mut result = error;
+    // An incomplete JDK can still pass java -version; only diagnose what it reported.
+    if reported.lines().any(|line| {
+        let missing = [
+            "java.io.FileNotFoundException: ",
+            "java.nio.file.NoSuchFileException: ",
+        ]
+        .into_iter()
+        .find_map(|exception| line.split_once(exception).map(|(_, path)| path));
+        missing.is_some_and(|path| {
+            ["/lib/tzdb.dat", r"\lib\tzdb.dat"]
+                .into_iter()
+                .filter_map(|name| path.split_once(name).map(|(_, rest)| rest))
+                .any(|rest| rest.is_empty() || rest.starts_with(" ("))
         })
-    {
-        return format!(
-            "{error}\nJava at {} cannot load its timezone data (lib/tzdb.dat). \
+    }) {
+        result.push_str(&format!(
+            "\nJava at {} cannot load its timezone data (lib/tzdb.dat). \
              Repair that Java installation or select another compatible Java runtime.",
             java.display()
+        ));
+    }
+    // javac often prints deprecation warnings before the actual error. Put its first
+    // error ahead of that preamble so the native dialog's short view stays useful.
+    if let Some(index) = output.lines().position(|line| {
+        line.contains(": error:")
+            || line.starts_with("error:")
+            || line.starts_with("Exception in thread")
+    }) {
+        result.push_str("\nFirst error:\n");
+        result.push_str(
+            &output
+                .lines()
+                .skip(index)
+                .take(5)
+                .collect::<Vec<_>>()
+                .join("\n"),
         );
     }
-    error
+    if log.is_file() {
+        result.push_str(&format!("\nProcess log: {}", log.display()));
+    }
+    if !output.trim().is_empty() {
+        result.push_str("\nProcess output:\n");
+        result.push_str(output.trim());
+    }
+    result
+}
+
+fn process_output(path: &Path) -> String {
+    fn read(path: &Path) -> std::io::Result<String> {
+        const PART: u64 = 8 * 1024;
+        let mut file = fs::File::open(path)?;
+        let size = file.metadata()?.len();
+        let mut first = Vec::new();
+        (&mut file).take(PART).read_to_end(&mut first)?;
+        let mut output = String::from_utf8_lossy(&first).into_owned();
+        if size > PART {
+            let tail = (size - PART).min(PART);
+            if size > PART * 2 {
+                output.push_str("\n[... output omitted; see full process log ...]\n");
+            }
+            file.seek(SeekFrom::End(-(tail as i64)))?;
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            output.push_str(&String::from_utf8_lossy(&bytes));
+        }
+        Ok(output)
+    }
+    read(path).unwrap_or_default()
 }
 
 /// A classpath with the platform's separator.
@@ -396,6 +509,7 @@ impl Jdk {
         let mut command = command(&self.javac);
         command
             .args(BATCH_OPTIONS.map(|option| format!("-J{option}")))
+            .args(heap_limit()?.map(|limit| format!("-J-Xmx{limit}m")))
             .args(["--release", &major.to_string(), "-proc:none"])
             .args(args);
         run(command, log)
@@ -403,7 +517,7 @@ impl Jdk {
 
     pub fn java(&self, args: &[String], cwd: Option<&Path>, log: &fs::File) -> Result<(), String> {
         let mut command = command(&self.java);
-        command.args(BATCH_OPTIONS).args(args);
+        command.args(BATCH_OPTIONS).args(bounded_args(args)?);
         if let Some(dir) = cwd {
             command.current_dir(dir);
         }
@@ -412,6 +526,7 @@ impl Jdk {
 }
 
 fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
+    cancelled()?;
     let out = log.try_clone().map_err(|e| e.to_string())?;
     let err = log.try_clone().map_err(|e| e.to_string())?;
     let program = Path::new(command.get_program())
@@ -427,6 +542,11 @@ fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
         .map_err(|e| format!("Cannot start {program}: {e}"))?;
     let start = Instant::now();
     loop {
+        if let Err(error) = cancelled() {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             return if status.success() {
                 Ok(())
@@ -446,6 +566,51 @@ fn run(mut command: Command, log: &fs::File) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn compiler_failure_preserves_output_without_inventing_a_memory_error() {
+        let root = std::env::temp_dir().join(format!("prepare-javac-error-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let path = root.join("server.log");
+        let log = fs::File::create(&path).unwrap();
+        let mut command = Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "printf 'error: file not found: PrepareWorker.java\n' >&2; exit 2",
+        ]);
+        let failure = run(command, &log).unwrap_err();
+        let error = export_failure(failure, Path::new("javac"), &path);
+        assert!(error.contains("2"), "{error}");
+        assert!(
+            error.contains("error: file not found: PrepareWorker.java"),
+            "{error}"
+        );
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        assert!(!error.contains("OutOfMemoryError"), "{error}");
+        assert!(!error.contains("increase HORIZON_PREPARE"), "{error}");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn compiler_errors_precede_warning_preambles_in_the_short_diagnostic() {
+        let root = std::env::temp_dir().join(format!("prepare-error-order-{}", std::process::id()));
+        fs::create_dir_all(&root).unwrap();
+        let log = root.join("server.log");
+        fs::write(&log, "Example.java:1: warning: deprecated API\nExample.java:2: error: cannot find symbol\n  symbol: class Helper\n1 error\n").unwrap();
+        let error = export_failure(
+            "javac failed (exit code: 1)".into(),
+            Path::new("javac"),
+            &log,
+        );
+        assert!(
+            error.find("error: cannot find symbol").unwrap()
+                < error.find("warning: deprecated API").unwrap()
+        );
+        assert!(error.contains("symbol: class Helper"));
+        assert!(error.contains("Process output:"));
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn missing_timezone_data_explains_which_java_to_repair() {
@@ -481,10 +646,11 @@ mod tests {
             "java.io.FileNotFoundException: /pack/tzdb.dat (missing)",
         ] {
             fs::write(&log, text).unwrap();
-            assert_eq!(
-                export_failure("java failed (-1)".into(), Path::new("java"), &log),
-                "java failed (-1)"
-            );
+            let error = export_failure("java failed (-1)".into(), Path::new("java"), &log);
+            assert!(error.starts_with("java failed (-1)"));
+            assert!(error.contains(text));
+            assert!(!error.contains("Repair"));
+            assert!(!error.contains("OutOfMemoryError"));
         }
         fs::remove_file(&log).unwrap();
         assert_eq!(
@@ -492,6 +658,26 @@ mod tests {
             "java failed (-1)"
         );
         fs::remove_dir(dir).unwrap();
+    }
+
+    #[test]
+    fn preparation_heap_cap_covers_workers_datagen_and_preserves_smaller_heaps() {
+        let args = |values: &[&str]| values.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            bounded_args_with(
+                &args(&["-Xmx2G", "-cp", "classes", "PrepareWorker"]),
+                Some(512)
+            ),
+            args(&["-Xmx512m", "-cp", "classes", "PrepareWorker"])
+        );
+        assert_eq!(
+            bounded_args_with(&args(&["-jar", "server.jar", "--reports"]), Some(512)),
+            args(&["-Xmx512m", "-jar", "server.jar", "--reports"])
+        );
+        let smaller = args(&["-Xmx256M", "Exporter"]);
+        assert_eq!(bounded_args_with(&smaller, Some(512)), smaller);
+        let modern = args(&["-Xmx2G", "PrepareWorker"]);
+        assert_eq!(bounded_args_with(&modern, None), modern);
     }
 
     #[test]

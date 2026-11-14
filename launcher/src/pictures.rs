@@ -41,7 +41,7 @@ pub fn gpu_limit() -> u32 {
 /// GPUI asks wgpu for a Vulkan or GL adapter and uses its `max_texture_dimension_2d`: this takes
 /// the smallest over all of them, whichever GPUI picks.
 pub fn probe_gpu_limit() {
-    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    #[cfg(all(feature = "gui", any(target_os = "linux", target_os = "freebsd")))]
     std::thread::spawn(|| {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::VULKAN | wgpu::Backends::GL,

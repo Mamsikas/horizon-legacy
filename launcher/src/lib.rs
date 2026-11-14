@@ -61,3 +61,10 @@ pub mod wardrobe;
 #[cfg(windows)]
 mod windows_runtime;
 pub mod worlds;
+
+#[cfg(feature = "win7")]
+mod legacy_java;
+#[cfg(feature = "win7")]
+pub mod win7;
+#[cfg(all(windows, not(feature = "gui")))]
+mod win7_shell;

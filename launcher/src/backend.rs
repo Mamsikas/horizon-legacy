@@ -1167,6 +1167,7 @@ fn write_checked(
     let mut hash = horizon_release_sign::Sha256::default();
     let (mut done, mut buf) = (0u64, vec![0u8; 1 << 16]);
     loop {
+        check_cancelled()?;
         let n = reader
             .read(&mut buf)
             .map_err(|e| format!("Download interrupted: {e}"))?;
@@ -1181,7 +1182,7 @@ fn write_checked(
     horizon_release_sign::check(name, sha256, &hash.hex())
 }
 
-fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
+pub(crate) fn unpack(archive: &Path, url: &str, to: &Path) -> Result<(), String> {
     let file = fs::File::open(archive).map_err(|e| e.to_string())?;
     if url.ends_with(".tar.gz") {
         tar::Archive::new(flate2::read::GzDecoder::new(file))
@@ -1924,6 +1925,38 @@ const COMPLETIONS: [Completion; 5] = [
     ("The languages", "languages", prepare::languages),
     ("The sounds", "sounds", prepare::sounds),
 ];
+
+/// Finish an in-process installation using the same asset importers as the modern UI.
+/// Recheck every group on a retry: an interrupted copy may already have published sounds.json.
+#[cfg(feature = "win7")]
+pub(crate) fn complete_preparation_assets(
+    root: &Path,
+    minecraft: &Path,
+    log: &dyn Fn(String),
+    progress: &dyn Fn(f32),
+) -> Result<(), String> {
+    for (index, (label, _, copy)) in COMPLETIONS.iter().enumerate() {
+        check_cancelled()?;
+        log(crate::i18n::trf(
+            "Copying {assets} from Minecraft…",
+            &[("assets", label)],
+        ));
+        progress(index as f32 / COMPLETIONS.len() as f32);
+        copy(root, Some(minecraft), &|line| log(line.to_string())).map_err(|error| {
+            crate::i18n::trf(
+                "Could not copy {assets} from {path}: {error}",
+                &[
+                    ("assets", label),
+                    ("path", &minecraft.display().to_string()),
+                    ("error", &error),
+                ],
+            )
+        })?;
+    }
+    check_cancelled()?;
+    progress(1.0);
+    Ok(())
+}
 
 /// Adds what a prepared version lacks of `COMPLETIONS`: a new version reuses the resources of the
 /// one before (`reuse_prepared`), which may come from a preparer that left them out. Without them
@@ -7205,4 +7238,14 @@ pub fn {f}("
             Some(&Some(OsStr::new("kept")))
         );
     }
+}
+
+/// A cooperative download boundary used by the native launcher worker.
+pub(crate) fn check_cancelled() -> Result<(), String> {
+    if cfg!(feature = "win7")
+        && std::env::var_os("HORIZON_LAUNCHER_CANCEL_FILE").is_some_and(|p| Path::new(&p).exists())
+    {
+        return Err(crate::i18n::tr("Operation cancelled.").into());
+    }
+    Ok(())
 }
