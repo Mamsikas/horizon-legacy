@@ -89,6 +89,9 @@ SAFE_IMPORTS = {
         CopyFileExW CreateToolhelp32Snapshot CreateWaitableTimerExW DeleteProcThreadAttributeList
         GetShortPathNameW InitializeProcThreadAttributeList IsThreadAFiber Module32FirstW
         Module32NextW SetThreadStackGuarantee UpdateProcThreadAttribute __C_specific_handler
+        CreateSemaphoreA GetCurrentProcessorNumber GetHandleInformation GetModuleHandleExA
+        GetProcessAffinityMask GetThreadPriority K32GetProcessMemoryInfo QueryThreadCycleTime
+        SuspendThread
     """,
     "advapi32.dll": """
         CredDeleteW CredFree CredReadW CredWriteW CryptAcquireContextW CryptGenRandom
@@ -97,7 +100,7 @@ SAFE_IMPORTS = {
         RegEnumValueW RegFlushKey RegGetValueW RegOpenKeyExW RegQueryInfoKeyW
         RegQueryValueExW RegSetValueExW SystemFunction036
         ConvertStringSecurityDescriptorToSecurityDescriptorW GetFileSecurityW RegDeleteKeyExW
-        SetFileSecurityW
+        SetFileSecurityW AdjustTokenPrivileges LookupPrivilegeValueA
     """,
     "bcrypt.dll": """
         BCryptCloseAlgorithmProvider BCryptCreateHash BCryptDestroyHash BCryptFinishHash
@@ -132,9 +135,9 @@ SAFE_IMPORTS = {
         BitBlt CreateCompatibleBitmap CreateCompatibleDC CreateFontIndirectW CreateFontW
         CreatePen CreateSolidBrush DeleteDC DeleteObject GetDeviceCaps GetObjectW GetStockObject
         GetTextExtentPoint32W GetTextMetricsW PatBlt Rectangle SelectObject SetBkColor
-        SetBkMode SetTextColor StretchBlt TextOutW
+        SetBkMode SetTextColor StretchBlt TextOutW AddFontMemResourceEx
     """,
-    "comctl32.dll": "InitCommonControls InitCommonControlsEx ImageList_Destroy",
+    "comctl32.dll": "InitCommonControls InitCommonControlsEx ImageList_Destroy DefSubclassProc SetWindowSubclass",
     "comdlg32.dll": "GetOpenFileNameW GetSaveFileNameW",
     "shell32.dll": """
         CommandLineToArgvW DragFinish DragQueryFileW SHBrowseForFolderW SHCreateItemFromParsingName
@@ -175,8 +178,15 @@ SAFE_IMPORTS = {
         localeconv malloc memcmp memcpy memmove memset realloc setlocale signal strchr strcmp
         strlen strncmp strtol strtoul vfprintf wcslen wcscmp
         acos asin atan cosh frexp ldexp sinh tan tanh
+        _beginthreadex _endthreadex _setjmp _strdup _vscprintf _vsnprintf _wgetenv
+        fputs getenv longjmp printf
     """,
 }
+# Additional imports reached after the main sync: Microsoft SDK docs put the token,
+# semaphore, thread/handle, subclass and font APIs at XP/Vista or earlier (subclass:
+# Comctl32 >=5.8). K32GetProcessMemoryInfo is exported by Kernel32 starting with Win7
+# (sdk-api/psapi/nf-psapi-getprocessmemoryinfo.md). The added CRT names are legacy
+# MSVCRT C/runtime entrypoints, not UCRT/API-set contracts. Keep the forbidden list strict.
 SAFE_IMPORTS = {dll: frozenset(names.split()) for dll, names in SAFE_IMPORTS.items()}
 FORBIDDEN_APIS = frozenset("""
     CreateDXGIFactory2 GetDpiForWindow GetDpiForMonitor GetSystemTimePreciseAsFileTime
