@@ -78,7 +78,8 @@ impl Renderer {
                     + self.gui_vertices.capacity() * size_of::<dx::Vertex>()
                     + self.gui_screen.capacity() * size_of::<dx::ScreenVertex>()
                     + self.gui_commands.capacity() * size_of::<frame::GuiCommand>()
-                    + self.gui_cache.bytes(),
+                    + self.gui_cache.bytes()
+                    + self.gui_depth.bytes(),
             ),
             ("D3D9 retained CPU geometry", self.mesh_bytes as usize),
             ("D3D9 animation cache/scratch", self.sprites.cpu_bytes()),

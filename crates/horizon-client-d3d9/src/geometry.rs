@@ -376,6 +376,9 @@ pub struct PaintWindow {
     bounds: Vec<(usize, [f32; 4])>,
 }
 impl PaintWindow {
+    pub fn bytes(&self) -> usize {
+        self.bounds.capacity() * size_of::<(usize, [f32; 4])>()
+    }
     pub fn clear(&mut self) {
         self.bounds.clear();
     }

@@ -47,7 +47,8 @@ What changed:
   culling/depth writes and cached grouped indices. Vertices are not re-uploaded
   on camera movement. Ordered CPU fallback remains for allocation pressure.
 - GUI reuses alpha and depth/scissor inventory geometry. Depth clears remain
-  barriers. Pixel-only patches keep mappings cached; newly present sparse tiles
+  barriers for overlapping models; disjoint inventory slots share depth and
+  compatible adjacent draws. Pixel-only patches keep mappings cached; newly present sparse tiles
   invalidate them. SWVP GUI uses a 28-byte projected stream, with ordinary FFP
   fallback if that optional stream cannot be allocated. Hardware GUI is unchanged.
 - Offline profiles finish encryption and let the server decide admission rather
@@ -73,7 +74,7 @@ plain FPS tests. Windows stack/heap sampling and DX9 GPU timestamps are unavaila
 
 Log counters: CPU elapsed phases (including driver waits), Present, draws/binds,
 mesh/GUI/index uploads, requested/live terrain storage, compressed CPU shadows,
-GUI locks/cache hits, vertex layouts and staging/arrival counts. Requested buffer
+GUI locks/cache hits, depth_clears/depth_reused, vertex layouts and staging/arrival counts. Requested buffer
 storage is not measured physical VRAM; SWVP buffers now live in system memory.
 Other backends' GPU timestamps are not directly comparable to DX9 CPU phases.
 

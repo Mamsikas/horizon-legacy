@@ -280,12 +280,14 @@ impl Renderer {
                 horizon_threads::process_memory::usage()
             );
             log::info!(
-                "D3D9 GUI draws={} texture_binds={} vertex_uploads={} buffer_locks={} projected={}",
+                "D3D9 GUI draws={} texture_binds={} vertex_uploads={} buffer_locks={} projected={} depth_clears={} depth_reused={}",
                 self.gui_stats[0],
                 self.gui_stats[1],
                 self.gui_stats[2],
                 self.gui_stats[3],
-                !self.gui_screen.is_empty()
+                !self.gui_screen.is_empty(),
+                self.gui_depth.clears,
+                self.gui_depth.reused
             );
             log::info!(
                 "D3D9 GUI cache reused_chunks={} rebuilt_chunks={} cpu_bytes={}",
@@ -1053,12 +1055,17 @@ impl Renderer {
         self.gui_vertices.clear();
         self.gui_commands.clear();
         self.gui_cache.begin();
+        self.gui_depth.begin();
         for (range, blend) in h.runs() {
+            let input = &h.vertices[range.start as usize..range.end as usize];
             let (scissor, depth) = match blend {
                 crate::hud::Blend::Depth(r) | crate::hud::Blend::DepthGlint(r) => (Some(r), true),
                 _ => (None, false),
             };
-            if depth && !matches!(blend, crate::hud::Blend::DepthGlint(_)) {
+            if depth
+                && !matches!(blend, crate::hud::Blend::DepthGlint(_))
+                && self.gui_depth.clear_for(input.iter().map(|v| v.pos), scale)
+            {
                 self.gui_commands.push(GuiCommand::ClearDepth);
             }
             let state = DrawState {
@@ -1081,7 +1088,6 @@ impl Renderer {
                 scissor,
                 ..Default::default()
             };
-            let input = &h.vertices[range.start as usize..range.end as usize];
             let picture = if let crate::hud::Blend::Picture(id) = blend {
                 Some(id)
             } else {

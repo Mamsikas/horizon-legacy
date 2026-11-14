@@ -177,7 +177,9 @@ This update targets costs relevant to low render distances too:
   twice their selected vertex count. Allocation pressure retains ordered CPU
   fallback geometry. This addresses the previously unsorted/double-sided ice.
 - Alpha GUI and depth/scissor inventory models reuse byte-exact prepared ranges;
-  depth clears remain explicit barriers. Only newly present sparse atlas tiles
+  the first model clears depth, then overlapping model pixel bounds or a bounded
+  coverage-window reset require another clear. Disjoint slots share depth and
+  compatible adjacent draws; necessary clears remain explicit barriers. Only newly present sparse atlas tiles
   invalidate geometry. Pixel-only animation/glyph/map/skin patches keep their UV
   mappings, avoiding global cache rebuilds each animation tick. Pictures, foil
   and invert runs keep ordinary preparation; the existing 2 MiB/128-slot bound stays.
@@ -230,7 +232,7 @@ The Actions artifact ZIP directly contains `horizon-client.exe`, `horizon-ctl.ex
 setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
 Resources and saves are never distributed in this archive.
 
-This iteration has nineteen CPU tests (including projected GUI coordinates, ordered index windows,
+This iteration has twenty CPU tests (including projected GUI coordinates, depth-clear reuse equivalence, ordered index windows,
 sparse-tile invalidation, tile seams/placement, executable SM2 arithmetic,
 all vertex layouts/partial codec blocks, animation-cache eviction and shared-page source indices) and eleven PE policy/parser tests. The packaging workflow builds
 the client/control ZIP and audits static/delay imports,
