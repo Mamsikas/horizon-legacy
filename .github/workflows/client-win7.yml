@@ -24,6 +24,12 @@ concurrency:
 jobs:
   package:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, x86]
+    env:
+      WIN7_ARCH: ${{ matrix.architecture }}
     permissions:
       contents: read
     steps:
@@ -35,10 +41,10 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ". -> work/win7-client/target"
-          shared-key: win7-d3d9-nov11
+          shared-key: win7-d3d9-nov11-${{ matrix.architecture }}
           cache-on-failure: true
       - name: Install pinned cross compiler
-        run: tools/bootstrap_win7_cross.sh "$RUNNER_TEMP/win7-client/cross"
+        run: tools/bootstrap_win7_cross.sh "$RUNNER_TEMP/win7-client/cross" "$WIN7_ARCH"
       - name: Build DX9 client and audit Win7 imports
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/work/win7-client/target
@@ -53,5 +59,5 @@ jobs:
         run: cargo +nightly-2026-11-11 test --locked -p horizon-client-d3d9 --lib
       - uses: actions/upload-artifact@v4
         with:
-          name: horizon-client-win7-x64
+          name: horizon-client-win7-${{ matrix.architecture }}
           path: ${{ runner.temp }}/win7-client/artifacts/package/*

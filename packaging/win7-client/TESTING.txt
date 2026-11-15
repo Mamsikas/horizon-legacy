@@ -1,8 +1,12 @@
-Horizon Direct3D9 preview - Windows 7 SP1 x64
+Horizon Direct3D9 preview - Windows 7 SP1 (architecture in build-info.txt)
 
 Requires prepared legal Horizon resources for Minecraft 26.3, a D3D9 HAL driver,
-and an N455-compatible x64 CPU (SSE3/SSSE3). No Java or shader compiler is needed
-in game. Tested baseline 4b6f861fd3 reached about 42 FPS on the owner's same
+and an SSE2-capable x86 CPU for the x86 package, or an N455-compatible x64 CPU
+(SSE3/SSSE3) for x64. Both packages use Win7 APIs and a 6.1 PE subsystem, not an
+XP port. XP with OneCoreAPI is an unverified user experiment. The x86 executable
+is large-address-aware; available address space still depends on the OS.
+No Java or shader compiler is needed in game. Tested baseline 4b6f861fd3 reached
+about 42 FPS on the owner's same
 GMA two-chunk ice scene, versus 23 before / 5 during the transparency regression.
 RTX settled performance returned to its earlier level. New performance and
 HD4570 results for THIS update are not claimed before retesting.

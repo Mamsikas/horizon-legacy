@@ -236,6 +236,20 @@ tools/bootstrap_win7_cross.sh "$PWD/work/win7-client/cross"
 tools/build_win7_client.sh
 ```
 
+The owner's optional 32-bit experiment uses the same source and DX9 path:
+
+```sh
+tools/bootstrap_win7_cross.sh "$PWD/work/win7-client-x86/cross" x86
+WIN7_ARCH=x86 tools/build_win7_client.sh
+```
+
+This builds `i686-win7-windows-gnu` with the SSE2/Pentium 4 CPU baseline, static
+native support and large-address-aware PE32 executables. The default remains
+x64; x86 does not require SSSE3. CI produces separate flat x86/x64 archives and
+checks each architecture's imports. Both still target Win7 APIs and PE subsystem
+6.1. Running the x86 package on XP with OneCoreAPI is an unverified owner
+experiment, not an XP compatibility claim or a separate renderer implementation.
+
 The Actions artifact ZIP directly contains `horizon-client.exe`, `horizon-ctl.exe`,
 `TESTING.txt`, checksums, import reports and exact build information; no inner ZIP. Select the client exe in the existing Win7 launcher's native-client
 setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
