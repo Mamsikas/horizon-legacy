@@ -1,7 +1,7 @@
 Horizon Direct3D9 preview - Windows 7 SP1 (architecture in build-info.txt)
 
 Requires prepared legal Horizon resources for Minecraft 26.3, a D3D9 HAL driver,
-and an SSE2-capable x86 CPU for the x86 package, or an N455-compatible x64 CPU
+and an SSE3-capable x86 CPU for the x86 package, or an N455-compatible x64 CPU
 (SSE3/SSSE3) for x64. Both packages use Win7 APIs and a 6.1 PE subsystem, not an
 XP port. XP with OneCoreAPI is an unverified user experiment. The x86 executable
 is large-address-aware; available address space still depends on the OS.

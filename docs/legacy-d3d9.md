@@ -243,9 +243,9 @@ tools/bootstrap_win7_cross.sh "$PWD/work/win7-client-x86/cross" x86
 WIN7_ARCH=x86 tools/build_win7_client.sh
 ```
 
-This builds `i686-win7-windows-gnu` with the SSE2/Pentium 4 CPU baseline, static
+This builds `i686-win7-windows-gnu` with SSE3 enabled on the Pentium 4 target, static
 native support and large-address-aware PE32 executables. The default remains
-x64; x86 does not require SSSE3. CI produces separate flat x86/x64 archives and
+x64; the owner permits SSE3 for x86, without requiring SSSE3. CI produces separate flat x86/x64 archives and
 checks each architecture's imports. Both still target Win7 APIs and PE subsystem
 6.1. Running the x86 package on XP with OneCoreAPI is an unverified owner
 experiment, not an XP compatibility claim or a separate renderer implementation.

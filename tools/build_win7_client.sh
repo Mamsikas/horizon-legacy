@@ -16,7 +16,7 @@ case "$architecture" in
         target=i686-win7-windows-gnu
         prefix=i686-w64-mingw32
         import_package=windows_i686_gnu
-        cpu_flags='-C target-cpu=pentium4 -C target-feature=+crt-static -C link-arg=-Wl,--large-address-aware'
+        cpu_flags='-C target-cpu=pentium4 -C target-feature=+sse3,+crt-static -C link-arg=-Wl,--large-address-aware'
         default_work="$repo/work/win7-client-x86"
         ;;
     *) echo 'WIN7_ARCH must be x64 or x86.' >&2; exit 2 ;;
@@ -41,7 +41,7 @@ export "CC_$target_key=$cc"
 export "AR_$target_key=$prefix-ar"
 export WINDRES="$cross/usr/bin/$prefix-windres"
 unset CARGO_ENCODED_RUSTFLAGS
-# x64 retains N455's SSE3/SSSE3; x86 uses the Rust target's SSE2 baseline.
+# x64 retains N455's SSE3/SSSE3; x86 permits SSE3 as requested by the owner.
 # Neither inherits the build host's SSE4/POPCNT/AVX.
 export RUSTFLAGS="--cfg windows_slim_errors $cpu_flags -C panic=abort -C link-arg=-Wl,--major-subsystem-version,6 -C link-arg=-Wl,--minor-subsystem-version,1 -C link-arg=-static"
 cd -- "$repo"
