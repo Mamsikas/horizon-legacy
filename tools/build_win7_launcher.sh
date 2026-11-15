@@ -24,6 +24,10 @@ rustup toolchain install "$toolchain" --profile minimal --component rust-src
 # The source packager must follow helper dependencies before producing a player archive.
 rustc "+$toolchain" --edition=2021 --test "$repo/launcher/build_support.rs" -o "$work/source-bundle-check"
 "$work/source-bundle-check"
+if [[ "$arch" != x64 ]]; then
+    rustc "+$toolchain" --edition=2021 --test "$repo/launcher/src/win7/resource_search.rs" -o "$work/resource-search-check"
+    "$work/resource-search-check"
+fi
 cd -- "$repo"
 out=${1:-"$work/artifacts"}
 mkdir -p "$out"

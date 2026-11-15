@@ -323,12 +323,12 @@ impl App {
         self.title = self.label("Horizon");
         send(self.title, 0x30, self.heading_font as usize, 1);
         self.intro = self.label(if cfg!(target_arch = "x86") {
-            "Your installed Horizon. Your nickname. Ready to play."
+            "Your Horizon files. Your nickname. Ready to play."
         } else {
             "Your Minecraft files. Your nickname. Ready to play."
         });
         self.mc_label = self.label(if cfg!(target_arch = "x86") {
-            "Installed Horizon folder"
+            "Horizon resources or horizon-launcher folder"
         } else {
             "Minecraft 26.3 folder"
         });
@@ -347,7 +347,7 @@ impl App {
         self.choose_client = self.button("Choose…", CLIENT);
         self.automatic = self.button("Automatic", AUTOMATIC);
         self.status = self.label(if cfg!(target_arch = "x86") {
-            "Choose your installed Horizon folder and a 32-bit client, then press Play."
+            "Choose your horizon-launcher folder, then press Play."
         } else {
             "Choose your Minecraft 26.3 folder, then press Play."
         });
@@ -707,7 +707,7 @@ unsafe extern "system" fn folder_init(hwnd: Handle, message: u32, _: isize, path
 }
 fn browse(owner: Handle, initial: &str) -> Option<PathBuf> {
     let title = wide(tr(if cfg!(target_arch = "x86") {
-        "Choose your installed Horizon folder or its prepared resources folder"
+        "Choose Horizon resources or the horizon-launcher folder"
     } else {
         "Choose the folder containing your Minecraft 26.3 installation"
     }));

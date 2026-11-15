@@ -367,36 +367,65 @@ fn installed_folders(chosen: &Path) -> Vec<PathBuf> {
 #[cfg(target_arch = "x86")]
 fn installed_resources(root: &Path, chosen: &Path) -> Result<PathBuf, String> {
     if chosen.as_os_str().is_empty() || !chosen.is_dir() {
-        return Err(tr("Choose an installed Horizon folder containing prepared resources. The x86 launcher does not need Minecraft files or Java.").into());
+        return Err(tr("Choose your Horizon resources or horizon-launcher folder. The x86 launcher does not need Minecraft files or Java.").into());
     }
-    let candidates = [
-        chosen.to_path_buf(),
-        prepare::resources_dir(chosen, horizon_platform::version::VANILLA_VERSION, None),
-        chosen.join("resources"),
-    ];
-    let resources = candidates.into_iter()
-        .find(|dir| dir.join("horizon-resources.json").is_file())
-        .ok_or_else(|| tr("Prepared Horizon resources were not found. Select the installation folder or the folder containing horizon-resources.json; a client EXE alone is not enough.").to_string())?;
-    if resources
-        .ancestors()
-        .any(|dir| dir.join(ASSETS_PENDING).exists())
-    {
-        return Err(tr("This Horizon installation has unfinished asset copying. Finish its preparation before using it in the x86 launcher.").into());
-    }
-    let missing = prepare::check(root, &resources)?;
-    if !missing.is_empty() {
-        return Err(trf(
-            "This Horizon installation is incomplete or incompatible:\n{details}",
-            &[("details", &missing.join("\n"))],
-        ));
-    }
+    let same_dir = |a: &Path, b: &Path| {
+        a == b
+            || fs::canonicalize(a)
+                .ok()
+                .zip(fs::canonicalize(b).ok())
+                .is_some_and(|(a, b)| a == b)
+    };
+    let is_launcher = same_dir(chosen, &backend::data_dir())
+        || chosen.join("horizon-launcher-win7.exe").is_file()
+        || std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| same_dir(chosen, p)))
+            == Some(true);
+    let alternate_cache = is_launcher.then(|| backend::build_dir().join("win7-prepare"));
+    let found = super::resource_search::find(
+        chosen,
+        horizon_platform::version::VANILLA_VERSION,
+        prepare::SOURCES_SHA256,
+        alternate_cache.as_deref(),
+        |resources| {
+            backend::check_cancelled()?;
+            if resources
+                .ancestors()
+                .any(|dir| dir.join(ASSETS_PENDING).exists())
+            {
+                return Err(tr("This Horizon installation has unfinished asset copying. Finish its preparation before using it in the x86 launcher.").into());
+            }
+            let missing = prepare::check(root, resources)?;
+            if missing.is_empty() {
+                Ok(())
+            } else {
+                Err(missing.join("\n"))
+            }
+        },
+    );
+    backend::check_cancelled()?;
+    let resources = found.map_err(|rejected| {
+        if rejected.is_empty() {
+            tr("Prepared Horizon resources were not found. Select the horizon-launcher data folder, its win7-prepare folder, or a prepared installation; a client EXE alone is not enough.").to_string()
+        } else {
+            let details = rejected.into_iter().map(|(path, error)| format!("{}: {error}", path.display()))
+                .collect::<Vec<_>>().join("\n");
+            trf("No complete compatible Horizon resources were found:\n{details}", &[("details", &details)])
+        }
+    })?;
     std::path::absolute(&resources).map_err(|e| e.to_string())
 }
 
 fn support_root() -> Result<PathBuf, String> {
-    let root = backend::build_dir()
-        .join("win7-prepare")
-        .join(prepare::SOURCES_SHA256);
+    let root = if cfg!(target_arch = "x86") {
+        // Verification pins do not need an otherwise empty preparation-cache directory.
+        backend::data_dir().join("win7-resource-check")
+    } else {
+        backend::build_dir()
+            .join("win7-prepare")
+            .join(prepare::SOURCES_SHA256)
+    };
     for &(name, bytes) in support::FILES {
         let file = root.join(name);
         if fs::read(&file).is_ok_and(|old| old == bytes) {
