@@ -1,8 +1,8 @@
 //! What a thread is working on, for the sampler: context stores on every platform (no-ops where it does not run) and the names behind its ids.
 
 use std::cell::Cell;
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering::*};
+use std::sync::Mutex;
 
 #[cfg(target_os = "linux")]
 mod cx {
@@ -94,7 +94,13 @@ fn id_of(space: Space, name: &str, verify: bool) -> u16 {
         return 0;
     }
     let (names, key) = (&NAMES[space as usize], name.as_ptr() as usize);
-    let slot = (key >> 3).wrapping_mul(0x9E37_79B9_7F4A_7C15) >> (usize::BITS - 10);
+    // Keep the existing 64-bit mix; the x86 launcher needs a pointer-width multiplier.
+    const MIX: usize = if usize::BITS == 64 {
+        0x9E37_79B9_7F4A_7C15u64 as usize
+    } else {
+        0x9E37_79B9
+    };
+    let slot = (key >> 3).wrapping_mul(MIX) >> (usize::BITS - 10);
     let hit = CACHE.with(|c| c[space as usize][slot].get());
     if hit.0 == key && hit.1 != 0 && (!verify || names.name(hit.1) == Some(name)) {
         return hit.1;
