@@ -17,6 +17,10 @@ pub mod clipboard;
 
 mod geometry;
 pub use geometry::{IndexBatch, MeshData, PaintWindow, Ring, Vertex, fog_interval};
+mod preferences;
+pub use preferences::{ColorDepth, Preferences, VertexProcessing};
+#[cfg(any(windows, test))]
+mod readback;
 mod screen;
 pub use screen::{GuiDepth, ScreenVertex};
 mod fog;

@@ -14,6 +14,8 @@ struct Missing {
     /// The pointer in physical pixels.
     pointer: (f64, f64),
     api: horizon_client::graphics::GraphicsApi,
+    #[cfg(all(windows, feature = "legacy-d3d9"))]
+    graphics: horizon_client::graphics::Graphics,
     error: Option<Box<dyn std::error::Error>>,
 }
 
@@ -34,6 +36,8 @@ pub(super) fn show(looked_in: &std::path::Path, settings: &Settings) -> Result<(
         screen: NoResources::new(looked_in, horizon_hooks::engine::get_the_game()),
         pointer: (0.0, 0.0),
         api: settings.horizon.api,
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        graphics: settings.horizon.clone(),
         error: None,
     };
     horizon_client::hud::GUI_SCALE.store(settings.gui_scale, Ordering::Relaxed);
@@ -113,6 +117,8 @@ impl ApplicationHandler for Missing {
                     Some(&self.gui.panorama),
                     None,
                     self.api,
+                    #[cfg(all(windows, feature = "legacy-d3d9"))]
+                    &self.graphics,
                 )?;
                 Ok((window, renderer))
             });

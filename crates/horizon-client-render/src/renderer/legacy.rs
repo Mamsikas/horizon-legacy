@@ -150,14 +150,14 @@ impl Renderer {
         _api: crate::graphics::GraphicsApi,
         _translucent_batching: bool,
         _shader_pack: bool,
-        _settings: &crate::graphics::Graphics,
+        settings: &crate::graphics::Graphics,
         _request: output::FrameRequest,
         _display: output::DisplayReading,
     ) -> Result<Self> {
         let size = window.inner_size();
         let mut device = match previous {
             Some(r) => r.device.reuse(),
-            None => dx::Device::new(window, true)?,
+            None => dx::Device::new_with_options(window, true, settings.d3d9)?,
         };
         let advisory = u64::from(device.caps.available_texture_bytes);
         let default_budget = if advisory == 0 {
@@ -212,12 +212,13 @@ impl Renderer {
             device_type: wgpu::DeviceType::Other,
             driver: "Direct3D9 HAL".into(),
             driver_info: format!(
-                "VP={}",
+                "VP={} RGB{}",
                 if device.caps.software_vertices {
                     "software"
                 } else {
                     "hardware"
-                }
+                },
+                device.caps.color_bits
             ),
             ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Noop)
         };

@@ -61,36 +61,27 @@ for directory in "${import_dirs[@]}"; do link_args+=(-L "native=$directory"); do
 cargo "+$toolchain" rustc --locked --profile legacy -p horizon-client --bin horizon-client \
     --target "$target" -Z build-std=std,panic_abort \
     --no-default-features --features legacy-d3d9,audio -- "${link_args[@]}"
-# Ship the existing local diagnostics client: no separate profiler installation.
-cargo "+$toolchain" rustc --locked --profile legacy -p horizon-client-lib --bin horizon-ctl \
-    --target "$target" -Z build-std=std,panic_abort \
-    --no-default-features --features legacy-d3d9,audio -- "${link_args[@]}"
 binary="$CARGO_TARGET_DIR/$target/legacy/horizon-client.exe"
-control="$CARGO_TARGET_DIR/$target/legacy/horizon-ctl.exe"
-audit_failed=0
 if ! python3 tools/check_win7_imports.py --architecture "$architecture" --d3d9 --json "$binary" > "$work/imports-client-win7-$architecture.json"; then
     cat "$work/imports-client-win7-$architecture.json" >&2
-    audit_failed=1
+    exit 1
 fi
-if ! python3 tools/check_win7_imports.py --architecture "$architecture" --json "$control" > "$work/imports-control-win7-$architecture.json"; then
-    cat "$work/imports-control-win7-$architecture.json" >&2
-    audit_failed=1
-fi
-(( audit_failed == 0 )) || exit 1
 out=${1:-"$work/artifacts"}
 mkdir -p "$out"
 out=$(cd -- "$out" && pwd)
 stage="$out/package"
 mkdir -p "$stage"
+# Retire the previous package's external diagnostics files on an incremental build.
+rm -f "$stage/horizon-ctl.exe" "$stage"/imports-control-win7-*.json
 rustc "+$toolchain" -Vv > "$stage/build-info.txt"
 { git rev-parse HEAD; "$cc" --version | head -1; printf '%s\n' "$target" "$RUSTFLAGS"; } >> "$stage/build-info.txt"
-cp "$work/imports-client-win7-$architecture.json" "$work/imports-control-win7-$architecture.json" "$stage/"
-python3 - "$binary" "$control" "$repo/packaging/win7-client/TESTING.txt" "$out" "$architecture" <<'PY'
+cp "$work/imports-client-win7-$architecture.json" "$stage/"
+python3 - "$binary" "$repo/packaging/win7-client/TESTING.txt" "$out" "$architecture" <<'PY'
 import hashlib, pathlib, shutil, sys, zipfile
-binary, control, instructions, out = map(pathlib.Path, sys.argv[1:5])
-architecture = sys.argv[5]
+binary, instructions, out = map(pathlib.Path, sys.argv[1:4])
+architecture = sys.argv[4]
 stage = out / 'package'
-for source, name in [(binary, 'horizon-client.exe'), (control, 'horizon-ctl.exe'), (instructions, 'TESTING.txt')]:
+for source, name in [(binary, 'horizon-client.exe'), (instructions, 'TESTING.txt')]:
     shutil.copyfile(source, stage / name)
 (stage / 'SHA256SUMS').write_text(''.join(
     f'{hashlib.sha256(file.read_bytes()).hexdigest()}  {file.name}\n'

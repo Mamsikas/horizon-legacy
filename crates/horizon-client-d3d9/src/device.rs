@@ -32,6 +32,8 @@ mod terrain_device;
 use terrain_device::TerrainPipeline;
 #[path = "gui_device.rs"]
 mod gui_device;
+#[path = "presentation_formats.rs"]
+mod presentation_formats;
 pub use gui_device::ScreenTriangles;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blend {
@@ -89,6 +91,7 @@ pub struct Caps {
     pub max_primitive_count: u32,
     pub available_texture_bytes: u32,
     pub software_vertices: bool,
+    pub color_bits: u8,
     pub raw: D3DCAPS9,
 }
 type MeshHandle = RefCell<Option<IDirect3DVertexBuffer9>>;
@@ -277,6 +280,37 @@ impl Device {
         }
     }
     pub fn new(window: Arc<Window>, vsync: bool) -> Result<Self> {
+        Self::new_with_options(window, vsync, crate::Preferences::default())
+    }
+    pub fn new_with_options(
+        window: Arc<Window>,
+        vsync: bool,
+        options: crate::Preferences,
+    ) -> Result<Self> {
+        match Self::create(window.clone(), vsync, options) {
+            Err(error)
+                if options.color_depth == crate::ColorDepth::Bits16
+                    && error.downcast_ref::<windows::core::Error>().is_some() =>
+            {
+                // Some legacy drivers advertise a format pair that allocation
+                // then rejects. Retry a native 32-bit surface, never an extra
+                // conversion/render pass or a CPU rasterizer.
+                log::warn!(
+                    "D3D9 16-bit device/surface creation failed: {error}; retrying 32-bit color"
+                );
+                Self::create(
+                    window,
+                    vsync,
+                    crate::Preferences {
+                        color_depth: crate::ColorDepth::Bits32,
+                        ..options
+                    },
+                )
+            }
+            result => result,
+        }
+    }
+    fn create(window: Arc<Window>, vsync: bool, options: crate::Preferences) -> Result<Self> {
         let RawWindowHandle::Win32(handle) = window.window_handle()?.as_raw() else {
             return Err("Direct3D9 requires a Win32 HWND".into());
         };
@@ -315,17 +349,8 @@ impl Device {
         {
             return Err(format!("D3D9 HAL {name}: missing two texture stages, MODULATE, alpha test or alpha blend; caps={raw:?}").into());
         }
-        let backbuffer = [D3DFMT_X8R8G8B8, D3DFMT_A8R8G8B8]
-            .into_iter()
-            .find(|&format| {
-                // SAFETY: capability query with no user pointers. Keep readback at 32 bits,
-                // including when the desktop itself uses a 16-bit display format.
-                unsafe {
-                    d3d.CheckDeviceType(0, D3DDEVTYPE_HAL, mode.Format, format, BOOL(1))
-                        .is_ok()
-                }
-            })
-            .ok_or("D3D9 HAL: no windowed 32-bit backbuffer compatible with the desktop format")?;
+        let (backbuffer, depth) =
+            presentation_formats::choose(&d3d, mode.Format, options.color_depth)?;
         // SAFETY: read-only capability probes on the adapter's desktop format.
         unsafe {
             d3d.CheckDeviceFormat(
@@ -337,45 +362,21 @@ impl Device {
                 D3DFMT_A8R8G8B8,
             )?;
         }
-        let depth = [D3DFMT_D24X8, D3DFMT_D16]
-            .into_iter()
-            .find(|&depth| {
-                // SAFETY: capability probes only; no resources or pointers escape.
-                unsafe {
-                    d3d.CheckDeviceFormat(
-                        0,
-                        D3DDEVTYPE_HAL,
-                        mode.Format,
-                        D3DUSAGE_DEPTHSTENCIL as u32,
-                        D3DRTYPE_SURFACE,
-                        depth,
-                    )
-                    .is_ok()
-                        && d3d
-                            .CheckDepthStencilMatch(
-                                0,
-                                D3DDEVTYPE_HAL,
-                                mode.Format,
-                                backbuffer,
-                                depth,
-                            )
-                            .is_ok()
-                }
-            })
-            .ok_or("D3D9 HAL: no compatible D24X8 or D16 depth buffer")?;
-        let software_vertices = raw.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT as u32 == 0;
         let requested = std::env::var("HORIZON_D3D9_VERTEX_PROCESSING").unwrap_or_default();
-        let software_vertices = match requested.as_str() {
-            "software" => true,
-            "hardware" if software_vertices => {
-                return Err(
-                    "D3D9: hardware vertex processing requested but HWTRANSFORMANDLIGHT is absent"
-                        .into(),
-                );
-            }
-            "" | "hardware" => software_vertices,
-            _ => return Err("HORIZON_D3D9_VERTEX_PROCESSING must be hardware or software".into()),
+        let vp = if requested.is_empty() {
+            options.vertex_processing
+        } else {
+            crate::VertexProcessing::parse(&requested)
+                .ok_or("HORIZON_D3D9_VERTEX_PROCESSING must be auto, hardware or software")?
         };
+        let software_vertices =
+            vp.software(raw.DevCaps & D3DDEVCAPS_HWTRANSFORMANDLIGHT as u32 != 0)?;
+        let color_bits = if backbuffer == D3DFMT_R5G6B5 { 16 } else { 32 };
+        if options.color_depth == crate::ColorDepth::Bits16 && color_bits != 16 {
+            log::warn!(
+                "D3D9: RGB565 has no native windowed conversion with the preferred depth format; using 32-bit color"
+            );
+        }
         let size = window.inner_size();
         let present = D3DPRESENT_PARAMETERS {
             BackBufferWidth: size.width.max(1),
@@ -429,6 +430,7 @@ impl Device {
             max_primitive_count: raw.MaxPrimitiveCount,
             available_texture_bytes,
             software_vertices,
+            color_bits,
             raw,
         };
         log::info!(
@@ -448,7 +450,7 @@ impl Device {
             } else {
                 "hardware"
             },
-            mode.Format,
+            backbuffer,
             depth,
             available_texture_bytes
         );
@@ -1836,9 +1838,11 @@ impl Device {
             let source = self.inner.device.GetRenderTarget(0)?;
             let mut desc = D3DSURFACE_DESC::default();
             source.GetDesc(&mut desc)?;
-            if desc.Format != D3DFMT_X8R8G8B8 && desc.Format != D3DFMT_A8R8G8B8 {
-                return Err("D3D9 screenshot requires a 32-bit backbuffer".into());
+            let rgb565 = desc.Format == D3DFMT_R5G6B5;
+            if !rgb565 && desc.Format != D3DFMT_X8R8G8B8 && desc.Format != D3DFMT_A8R8G8B8 {
+                return Err("D3D9 screenshot requires an RGB565 or 32-bit backbuffer".into());
             }
+            let stride = if rgb565 { 2 } else { 4 };
             let mut dest = None;
             self.inner.device.CreateOffscreenPlainSurface(
                 desc.Width,
@@ -1852,7 +1856,7 @@ impl Device {
             self.inner.device.GetRenderTargetData(&source, &dest)?;
             let mut locked = D3DLOCKED_RECT::default();
             dest.LockRect(&mut locked, ptr::null(), D3DLOCK_READONLY as u32)?;
-            if locked.pBits.is_null() || locked.Pitch < (desc.Width * 4) as i32 {
+            if locked.pBits.is_null() || locked.Pitch < (desc.Width * stride) as i32 {
                 dest.UnlockRect()?;
                 return Err("D3D9 readback returned an invalid pointer/pitch".into());
             }
@@ -1860,17 +1864,13 @@ impl Device {
             for y in 0..desc.Height as usize {
                 let row = std::slice::from_raw_parts(
                     locked.pBits.cast::<u8>().add(y * locked.Pitch as usize),
-                    desc.Width as usize * 4,
+                    desc.Width as usize * stride as usize,
                 );
-                for (out, bgra) in rgba
-                    [y * desc.Width as usize * 4..(y + 1) * desc.Width as usize * 4]
-                    .as_chunks_mut::<4>()
-                    .0
-                    .iter_mut()
-                    .zip(row.as_chunks::<4>().0)
-                {
-                    out.copy_from_slice(&[bgra[2], bgra[1], bgra[0], 255]);
-                }
+                crate::readback::rgba_row(
+                    row,
+                    &mut rgba[y * desc.Width as usize * 4..(y + 1) * desc.Width as usize * 4],
+                    rgb565,
+                );
             }
             dest.UnlockRect()?;
             Ok((desc.Width, desc.Height, rgba))

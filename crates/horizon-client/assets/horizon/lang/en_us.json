@@ -1223,5 +1223,12 @@
   "horizon.perf.copy_hover": "Copy the link.",
   "horizon.perf.retry_button": "[Retry]",
   "horizon.perf.retry_hover": "Try the upload again. The profile is still saved on your computer.",
-  "horizon.perf.link_hover": "Open the shared profile in your browser."
+  "horizon.perf.link_hover": "Open the shared profile in your browser.",
+  "Direct3D 9": "Direct3D 9",
+  "Vertex Processing": "Vertex Processing",
+  "Color Depth": "Color Depth",
+  "Hardware": "Hardware",
+  "Software": "Software",
+  "Software transforms vertices on the CPU; the GPU draws. Restart required.": "Software transforms vertices on the CPU; the GPU draws. Restart required.",
+  "16-bit saves bandwidth but may band. Falls back to 32-bit. Restart required.": "16-bit saves bandwidth but may band. Falls back to 32-bit. Restart required."
 }

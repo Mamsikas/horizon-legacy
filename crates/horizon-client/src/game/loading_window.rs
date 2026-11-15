@@ -136,6 +136,7 @@ pub(super) fn loading_renderer(
     panorama: Option<&Arc<horizon_client::gfx::panorama::Faces>>,
     previous: Option<&Renderer>,
     api: horizon_client::graphics::GraphicsApi,
+    #[cfg(all(windows, feature = "legacy-d3d9"))] settings: &horizon_client::graphics::Graphics,
 ) -> Result<Renderer> {
     static FORCEFIELD: [u8; 4] = [0; 4];
     static EMPTY_HUD: [u8; 4] = [0, 0, 0, 255];
@@ -156,6 +157,12 @@ pub(super) fn loading_renderer(
     if let Some(atlas) = atlas {
         atlas.font.reset_cache();
     }
+    // The device survives the boot/title/world handoff. Read saved DX9 choices
+    // before this first creation; a later resource reload must keep that device.
+    #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+    let defaults = horizon_client::graphics::Graphics::default();
+    #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+    let settings = &defaults;
     let mut renderer = pollster::block_on(Renderer::new(
         window,
         offscreen,
@@ -176,8 +183,8 @@ pub(super) fn loading_renderer(
         // It draws no terrain.
         false,
         false,
-        // An 8-bit frame, which HDR output takes as well: HDR off until the settings apply.
-        &horizon_client::graphics::Graphics::default(),
+        // Modern loading keeps HDR off; legacy already needs the saved device choices.
+        settings,
         Default::default(),
         previous.map(|r| r.display_reading()).unwrap_or_default(),
     ))?;

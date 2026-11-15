@@ -2,8 +2,10 @@
 
 Current upstream integration: `298c01b0206d72294b25753c9f8d0a77b742b3bb` (this fork's main,
 13 November 2026). Merged into the existing development branch without rewriting its history.
-Scope: Windows 7 SP1 **x64**, Atom N455/GMA3150 first, HD4570 second. No x86 deliverable.
-The ZIP's executable selects DX9 by its `legacy-d3d9` feature, without changing other backend implementations or any saved graphics defaults.
+Scope: Windows 7 SP1, Atom N455/GMA3150 first, HD4570 second. Separate x64 and
+owner-requested x86 packages use the same renderer. The executable selects DX9
+by its `legacy-d3d9` feature. Device choices are stored separately from quality
+presets; other backend implementations and saved quality values stay intact.
 At the owner's request, its default initial window is 854x480. Explicit launch
 dimensions/fullscreen still take precedence; saved graphics values are unchanged.
 
@@ -26,7 +28,7 @@ measurement of this update. HD4570 gameplay remains unverified.
 | `sprites.rs`, `assets.rs`, `atlas_sources.rs` | Convert existing RGBA layers into padded, caps/budget-sized POT Texture2D pages. Keep source layer numbers; remap only legacy vertices. Extrude each sprite's mip levels independently. Animate changed frames only. |
 | `hud.rs`, `hud_layout.rs`, `font.rs`, `screen_effects.rs` | At this HEAD HUD data is **triangles**, and adds Picture/DepthGlint runs. Reuse triangles, alpha/depth/scissor, glyph/map/skin patches and standalone pictures. Split the existing atlas into lazy pages; never rebuild the GUI. |
 | `camera`, `light`, `fog`, `weather`, `particles`, `clouds` | Keep camera math, CPU block light, particles and weather inputs. Fixed-function stage 0 multiplies the sprite and tint/AO; stage 1 samples a 16x16 day/night lightmap. Meshes do not upload when the sun moves. Embedded PS2 fog keeps the spherical environmental and cylindrical distance curves; fixed-function fog remains a caps fallback. |
-| `graphics.rs`, `options_ui.rs` | No defaults or serialization changes. Settings remain stored even when this renderer does not implement an effect. `picked_pack` returns an empty effective pick only in the legacy build, preventing pack failure code from clearing the saved pick. |
+| `graphics.rs`, `graphics_ui.rs`, `options_ui.rs` | DX9-only device preferences persist independently of the existing quality values. Settings remain stored even when this renderer does not implement an effect. `picked_pack` returns an empty effective pick only in the legacy build, preventing pack failure code from clearing the saved pick. |
 | Cargo, `horizon-client-input`, `horizon-threads`, workflows | Keep unsafe forbidden in existing client crates. COM/locked memory belongs to the new !Send/!Sync D3D9 crate. Package audio via existing WASAPI; omit controllers/WinRT and Horizon extras in this legacy executable. Keep ordinary default features. |
 | `horizon-prepare`, `docs/native-client.md`, Win7 launcher | Reuse the prepared 26.3 `--resources` contract. The game does not run Java for prepared resources. First installation/exporting belongs to the existing launcher/preparer; no JDK25-on-Win7 assumption is added. |
 
@@ -221,6 +223,89 @@ cap, reaching 60 establishes only the cap; higher-rate comparisons need the owne
 to choose an uncapped limit. No limit is changed automatically. Windows stack/
 heap sampling and DX9 GPU pass timestamps remain unavailable.
 
+## Current chunk-loading and device-choice iteration
+
+The owner's latest controlled view reached 44 FPS on GMA and 960 FPS on RTX at
+16 chunks; RTX at 48 chunks reached 125 FPS. These are the preceding package's
+hardware measurements. The new captures provide the following pre-change evidence:
+
+| Capture | Average FPS | Render wall | Solid | Translucent | GUI |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| GMA stationary, 56.0 s | 42.9 | 19.1 ms | 8.4 ms | 7.0 ms | 2.1 ms |
+| GMA movement/loading, 49.5 s | 34.9 | 21.8 ms | 14.6 ms | 1.3 ms | 2.7 ms |
+| RTX loading 48 chunks, 102.2 s | 107.6 | 7.5 ms | 2.7 ms | 1.2 ms | 0.1 ms |
+
+GetThreadTimes reports the main thread executing about 96.5% of the stationary
+GMA window and 89.8% of the moving window. The process uses about 1.2/1.3 logical
+cores respectively. Driver CPU work and software vertex processing count as CPU
+execution; elapsed DX9 phases still include waits. This evidence does not support
+calling the whole scene purely GPU-bound. The large F2 capture and periodic
+profile memory-census stalls are excluded from chunk-loading diagnosis and left
+unchanged at the owner's request. Profiling is opt-in through chat.
+
+This pass changes the renderer's transfer pipeline:
+
+- Bulk upload takes ownership of the original SectionMesh rather than cloning
+  its solid/translucent vertices on the frame thread. Once conversion finishes,
+  the staging worker returns those buffers to the existing bounded mesher pool.
+  Canceled jobs recycle too; rejected jobs return ownership for the synchronous
+  fallback. Edits, revision/epoch guards, queue quotas and nearest-first pressure
+  remain. No world-generation, light or meshing quality change is involved.
+- Demand uploads and background buffer merging decompress shadows directly into
+  the original 20/28/32-byte GPU layout. They no longer expand every vertex into
+  the full layout and then encode it again. The uncommon oversized/layout-change
+  path retains splitting. Tests compare the exact bytes and draw-range offsets.
+  A Linux x64 CPU-only A/B of 16 shadows / 65,536 vertices, two isolated repeats,
+  reduces Full-layout assembly time by about 8–10%, Compact by 46–47%. This is a
+  transfer microbenchmark, not an Atom, GPU or gameplay FPS measurement.
+- Graphics > General > Direct3D 9 exposes Auto/Hardware/Software vertex processing
+  and 16/32-bit color. Both persist and require a client restart. Auto follows
+  HWTRANSFORMANDLIGHT; Software can override an available hardware path, while
+  rasterization remains on HAL. F3 reports effective VP and RGB precision.
+- At the owner's request RGB565 is preferred by default, with checked native
+  windowed conversion and a 32-bit fallback. D24 depth takes precedence over the
+  color preference: RGB565 cannot force D16 where 32-bit/D24 is available.
+  Native allocation failure retries 32-bit. Textures, font alpha and depth
+  precision are not reduced. Ordinary windows work; exclusive fullscreen is not
+  required. RGB565 halves color-target storage/bandwidth per pixel, not total
+  process memory; desktop conversion and the hardware determine the FPS effect.
+  32-bit remains selectable for banding or a slower driver path. Screenshot
+  format decoding also understands RGB565; capture behavior is otherwise intact.
+- The normal flat package no longer builds or ships horizon-ctl or its import
+  report. Chat `/profiler start client` and `/profiler stop client` need neither
+  that binary nor `--control`. The development control interface stays in source.
+
+The legacy profile already uses opt-level=3, panic=abort and 16 codegen units.
+Thin LTO was compared with the same CPU assembly benchmark: improvements were
+not consistent across layouts/repeats (Full was slower). LTO remains off to bound
+linker memory until a representative full-game comparison justifies it. x64
+retains SSE3/SSSE3; x86 retains SSE3. AMD K8 with SSE3 generally lacks SSSE3, so a
+successful x64 launch alone is not evidence to require SSSE3 in every x86 path.
+The build does not inherit the host's later ISA or target only one Atom model.
+
+## Native-mod and shared-executable feasibility
+
+A single executable with DX9 and modern APIs is feasible. In the checked vendored
+wgpu HAL, `dx12/mod.rs` already loads d3d12.dll/dxgi.dll and their entry points
+through libloading; their absence is not by itself a reason to forbid a combined
+binary. The present limitation is the compile-time Renderer alias and the Win7
+manifest's exclusion of modern backend features. A combined implementation needs
+an early runtime renderer factory/fallback, shared facade operations, and an audit
+of **all** mandatory Win7 imports before startup. Auto can then try supported
+modern adapters and fall back to DX9; an explicit DX9 menu choice can select it.
+No second product or separate modern client is necessary. This is an integration
+project, not a switch already implemented by this performance pass.
+
+Horizon's [native bundles](native-mods.md#a-bundle) are source/build-time mods that
+may add crates and injection helpers. DX9 could be distributed that way after
+adding an early backend/build seam. Existing [render hooks](native-mods.md#render-hook-points)
+receive wgpu objects after the world has already rendered, so an ordinary
+world-drawn hook cannot substitute the DX9 device. Win7 also affects Rust std,
+EXE-wide imports, dependencies and the toolchain before a mod hook can run. A
+build-time bundle could rebuild the complete compatible executable; a late-loaded
+DLL cannot fix an EXE the Windows loader already rejected. No native-mod or XP
+refactor is included in this optimization iteration.
+
 ## Build, package and test
 
 `tools/build_win7_client.sh` uses nightly-2026-11-11 with rust-src and
@@ -250,17 +335,18 @@ checks each architecture's imports. Both still target Win7 APIs and PE subsystem
 6.1. Running the x86 package on XP with OneCoreAPI is an unverified owner
 experiment, not an XP compatibility claim or a separate renderer implementation.
 
-The Actions artifact ZIP directly contains `horizon-client.exe`, `horizon-ctl.exe`,
-`TESTING.txt`, checksums, import reports and exact build information; no inner ZIP. Select the client exe in the existing Win7 launcher's native-client
+The Actions artifact ZIP directly contains five files: `horizon-client.exe`,
+`TESTING.txt`, checksums, the client import report and exact build information; no inner ZIP. Select the client exe in the existing Win7 launcher's native-client
 setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
 Resources and saves are never distributed in this archive.
 
-This iteration has twenty-two CPU tests (including equivalent bounded fog programs,
+This iteration has twenty-four CPU tests (including equivalent bounded fog programs,
 bounded texture-page ranges,
 projected GUI coordinates, depth-clear reuse equivalence, ordered index windows,
 sparse-tile invalidation, tile seams/placement, executable SM2 arithmetic,
-all vertex layouts/partial codec blocks, animation-cache eviction and shared-page source indices) and thirteen PE policy/parser tests. The packaging workflow builds
-the client/control ZIP and audits static/delay imports,
+all vertex layouts/partial codec blocks, RGB565/32-bit readback, VP selection,
+animation-cache eviction and shared-page source indices) and thirteen PE policy/parser tests. The packaging workflow builds
+the client ZIP and audits static/delay imports,
 architecture and subsystem version. Compiler warnings inherited from the current
 nightly/native dependencies are separate from a successful check. Full parity harnesses
 and a resource/world/launcher gameplay run were not performed in this environment.

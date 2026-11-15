@@ -945,6 +945,9 @@ pub struct Graphics {
     pub shadow_cache: bool,
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
+    /// Direct3D9 device choices; apply on the next client start.
+    #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+    pub d3d9: horizon_client_d3d9::Preferences,
     /// Translucent quads in vertex buffers of their own (`gfx`'s translucent arena), so their
     /// back-to-front draws go out in a few calls, for a little more video memory. On by
     /// default (Translucent Batching, Advanced graphics); read when a renderer is made (start,
@@ -1016,6 +1019,8 @@ impl Default for Graphics {
             battery: false,
             shadow_cache: false,
             api: GraphicsApi::default(),
+            #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+            d3d9: horizon_client_d3d9::Preferences::default(),
             translucent_batching: true,
             hdr_smooth_gradients: true,
             shader_pack: String::new(),
@@ -1194,6 +1199,18 @@ impl Graphics {
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
                 "hdrSmoothGradients" => g.hdr_smooth_gradients = flag(g.hdr_smooth_gradients),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
+                #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+                "d3d9VertexProcessing" => {
+                    if let Some(vp) = horizon_client_d3d9::VertexProcessing::parse(value) {
+                        g.d3d9.vertex_processing = vp;
+                    }
+                }
+                #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+                "d3d9ColorBits" => {
+                    if let Some(bits) = horizon_client_d3d9::ColorDepth::parse(value) {
+                        g.d3d9.color_depth = bits;
+                    }
+                }
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
                     g.overlay = match value {
@@ -1281,6 +1298,14 @@ impl Graphics {
         if let Some(driver) = &self.hdr_failed_start {
             text += &format!("hdrFailedStart:{driver}\n");
         }
+        #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+        {
+            text += &format!(
+                "d3d9VertexProcessing:{}\nd3d9ColorBits:{}\n",
+                self.d3d9.vertex_processing.name(),
+                self.d3d9.color_depth.name()
+            );
+        }
         text += &self.blue_map.serialize();
         text
     }
@@ -1362,6 +1387,29 @@ pub use preset::apply_preset;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+    #[test]
+    fn d3d9_device_preferences_survive_round_trip_and_invalid_values() {
+        use horizon_client_d3d9::{ColorDepth, Preferences, VertexProcessing};
+        let g = Graphics::parse("d3d9VertexProcessing:software\nd3d9ColorBits:32\n");
+        assert_eq!(
+            g.d3d9,
+            Preferences {
+                vertex_processing: VertexProcessing::Software,
+                color_depth: ColorDepth::Bits32,
+            }
+        );
+        assert_eq!(Graphics::parse(&g.serialize()).d3d9, g.d3d9);
+        assert_eq!(
+            Graphics::parse("d3d9ColorBits:bad").d3d9.color_depth,
+            ColorDepth::Bits16
+        );
+        assert_eq!(
+            Graphics::parse("").d3d9.vertex_processing,
+            VertexProcessing::Auto
+        );
+    }
 
     /// UI Brightness is saved in nits, 0 for Auto. An older file's share of Paper White reads
     /// as Auto at 100% or with Paper White on Auto, else as that share of it to the nearest step.

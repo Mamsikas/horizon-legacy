@@ -1,114 +1,84 @@
 Horizon Direct3D9 preview - Windows 7 SP1 (architecture in build-info.txt)
 
 Requires prepared legal Horizon resources for Minecraft 26.3, a D3D9 HAL driver,
-and an SSE3-capable x86 CPU for the x86 package, or an N455-compatible x64 CPU
-(SSE3/SSSE3) for x64. Both packages use Win7 APIs and a 6.1 PE subsystem, not an
-XP port. XP with OneCoreAPI is an unverified user experiment. The x86 executable
-is large-address-aware; available address space still depends on the OS.
-No Java or shader compiler is needed in game. Tested baseline 4b6f861fd3 reached
-about 42 FPS on the owner's same
-GMA two-chunk ice scene, versus 23 before / 5 during the transparency regression.
-RTX settled performance returned to its earlier level. New performance and
-HD4570 results for THIS update are not claimed before retesting.
+and an SSE3-capable x86 CPU for x86, or an N455-compatible x64 CPU (SSE3/SSSE3).
+The x86 EXE is large-address-aware. Both packages use Win7 APIs and subsystem 6.1.
+The owner ran x86 on XP with OneCoreAPI; that remains an experiment, not an XP port.
+No Java, shader compiler, REF/WARP device or CPU rasterizer is required.
 
 Launch:
-1. Extract this ZIP once; horizon-client.exe is directly inside. Select that EXE
+1. Extract this ZIP once. horizon-client.exe is directly inside; select that EXE
    as the native client in your launcher. This package uses DX9 by default.
-2. Keep the same resources, save copy and graphics settings for comparisons.
-   No low preset, render-distance change or fixed 128 MiB cap is installed.
-   Default window size is now 854x480 as requested; explicit --width/--height
-   and fullscreen still take precedence.
-3. For a profile WITHOUT changing launcher arguments, type these in game chat:
+2. Use the same resources, save copy and graphics settings for comparisons.
+   Default initial window size is 854x480; explicit --width/--height and fullscreen
+   take precedence. No low preset, FPS limit or fixed 128 MiB cap is installed.
+3. Profile through game chat, without launcher arguments or an external tool:
      /profiler start client
-   Perform the slow action (load/move, F3+A or open inventory), then:
+   Remain stationary or perform the slow action (movement/loading/F3+A), then:
      /profiler stop client
-   The chat's Folder link/latest.log gives the .hzperf path. Send that file and
-   latest.log. Use no gpu/gpu_detail suffix: DX9 GPU pass timers are unavailable.
-   Detailed timeline is capped at 60 seconds; use separate segments of a long
-   loading test. Captures stay local unless you explicitly use share/upload.
+   The chat's Folder link/latest.log gives the .hzperf path. Send it and latest.log.
+   Use no gpu/gpu_detail suffix: DX9 GPU pass timestamps are unavailable. Detailed
+   timeline is capped at 60 seconds, so use separate segments for a long test.
+   Captures stay local unless you explicitly choose share/upload.
 
-The GMA log's VP=software means CPU vertex processing with hardware HAL
-rasterization. Its actual caps report PS2 and no hardware VS/T&L. Forcing hardware
-VP cannot add that capability. This update automatically uses projected XYZRHW
-GUI on software-VP HALs; world vertices keep FFP. F3 no longer shows the unrelated
-Noop metadata backend label. This is not a CPU rasterizer.
+New device choices: Graphics > General > Direct3D 9
+- Vertex Processing: Auto / Hardware / Software. Software can override available
+  hardware transforms. It runs vertex processing on the CPU while HAL still
+  rasterizes on the GPU. Auto chooses software on GMA3150 because it lacks HW T&L.
+- Color Depth: 16 / 32 bit. The default prefers RGB565 if native windowed conversion
+  and matching depth are supported; otherwise it uses 32 bit. Native surface
+  creation failure also retries 32 bit. Exclusive fullscreen is not required.
+  D24 depth takes priority; texture colors/alpha and depth precision stay intact.
+  16-bit color may band or take a slower desktop-conversion path on some drivers.
+Both settings require a full client restart. F3 shows effective VP and RGB16/32;
+latest.log records actual backbuffer/depth formats. A retained developer override
+HORIZON_D3D9_VERTEX_PROCESSING takes precedence over the saved menu choice.
 
-Short GMA retest:
-Compare the same ice scene at 1024x600 / two chunks / the same Fog OFF preset
-against the 42 FPS baseline. Keep the same FPS limit; if it reaches 60 with a 60
-cap, higher-rate comparisons require YOU to choose uncapped in settings. Compare
-HUD/F1 and inventory, then movement/loading. Send latest.log and a chat capture.
-- main_thread_busy_pct is actual CPU execution on the render/game thread over
-  five seconds, including driver CPU work. Render wall times include waits.
-- CPU/RSS health in new .hzperf files now uses Windows APIs; old zero readings
-  were unsupported sampling, not actual zero CPU/memory use.
-- Fog draw counters should show unfogged terrain with Fog OFF. Ranges near 1e9
-  are Horizon's representation of disabled distance fog. Other fog types remain.
-- Staging batch/page counters show whether arrivals actually share native VBs.
-These do not directly measure GPU utilization. RTX loading tests are useful
-later; repeating every GMA measurement on RTX is unnecessary.
+Primary GMA retest:
+Compare the same ice scene at 1024x600, two chunks, Fog OFF and the same FPS limit.
+The owner's previous build reached 44 FPS there. First compare this build at
+32-bit color, then repeat at 16-bit after restarting. If the driver falls back,
+F3/latest.log will say RGB32. Keep the same window mode throughout; do not enable
+exclusive fullscreen just for the color comparison. Then profile movement/loading.
+A friend with caps-advertised HW VP can compare Auto and Software after restarting.
+Send the log and chat capture for each relevant case. New hardware FPS is not
+claimed before these tests; the host CPU microbenchmark is not a gameplay test.
 
-What changed:
-- Skip provably inactive fog calculations, including the former full shader work
-  with Fog OFF. All variants are embedded ps_2_0; colors/alpha are preserved.
-- Group background conversion results before native upload (at most 2 ms extra
-  wait for more jobs, 32 results / 2 MiB target). Byte and job limits backpressure
-  bulk arrivals; edits keep priority. Source/revision/cancellation guards remain.
-- Packages now use an explicit branch commit. build-info.txt identifies that
-  source rather than an automatically advancing PR merge.
-- Full staging queues leave bulk meshes in the existing nearest-first backlog,
-  instead of converting them on the render thread. Edits have priority and stay
-  immediate. Queue memory stays bounded; oversized/unsupported jobs can progress.
-- FFP reuses solid visibility plans and groups texture/state changes, retaining
-  tight contiguous transformed ranges. SWVP input VBs use SYSTEMMEM; hardware
-  input still uses DEFAULT. Both remain hardware HAL rasterization.
-- Basic transparency packs each texture page into a tight vertex range, with
-  far-to-near sections/pages and back-face culling. Depth testing remains;
-  transparent batches do not write depth. There is no per-quad sorting/index
-  allocation or per-quad draw fragmentation. This deliberately does not match
-  Improved Transparency. The log reports its draws, binds and page ranges.
-- Resident buffer merging can run during bulk loading, rather than waiting
-  for the upload queue to become empty. One bounded merge shares the existing
-  worker; speculative prefetch waits. No world/mesher settings are changed.
-- GUI reuses alpha and depth/scissor inventory geometry. Depth clears remain
-  barriers for overlapping models; disjoint inventory slots share depth and
-  compatible adjacent draws. Pixel-only patches keep mappings cached; newly present sparse tiles
-  invalidate them. SWVP GUI uses a 28-byte projected stream, with ordinary FFP
-  fallback if that optional stream cannot be allocated. Hardware GUI is unchanged.
-- Offline profiles finish encryption and let the server decide admission rather
-  than being rejected locally first. Real online servers still enforce their
-  own authentication; signed-in session-service authentication is unchanged.
+This update removes full source-mesh copies on bulk submission. The staging
+worker returns consumed buffers to the existing mesher pool, including canceled
+jobs. Demand uploads and background buffer merging assemble original encoded
+vertex bytes directly, instead of expanding and re-encoding the whole mesh.
+Existing queue byte/job limits, synchronous edits and basic page transparency
+remain. The ordinary package no longer ships horizon-ctl: chat profiles need
+neither it nor --control. Development control support remains in the source.
+Screenshot and profiling overhead are not changed in this iteration.
 
-Offline-server retest:
-Connect with the same offline account to the same server. If refused, send the
-new latest.log plus the server version/core and its matching login-log lines.
-The client now preserves the server's actual refusal instead of guessing online
-mode from an encryption request. The launcher needs no change for this fix.
+The legacy profile is optimized (opt-level=3), with 16 codegen units, panic=abort
+and LTO off. A CPU-only Thin LTO comparison did not show a consistent gain; it
+remains off to bound linker memory. x64 keeps SSE3/SSSE3, x86 SSE3. SSE3-capable
+K8 CPUs generally lack SSSE3, so x86 does not require it.
 
-Optional external reports require --control on the GAME executable, for example
-in PowerShell from this extracted folder (replace both paths):
-  .\horizon-client.exe --control --resources "C:\path\to\26.3" --game-dir "C:\path\to\test-game"
-Then from a SECOND PowerShell in this extracted folder:
-  .\horizon-ctl.exe bench 20 > frame-stats.json
-  .\horizon-ctl.exe memory > memory.json
-  .\horizon-ctl.exe profile client start --seconds 60 --timeline --no-samples
-If the launcher sets HORIZON_HOME, use the same home in that terminal. These
-commands need not be used for a chat profile. Keep memory reports separate from
-plain FPS tests. Windows stack/heap sampling and DX9 GPU timestamps are unavailable.
+Counters: main_thread_busy_pct is actual five-second CPU execution on the main
+thread, including driver work. Render phases include waits and are not GPU
+timestamps. Profile CPU/RSS health now uses Windows APIs. Log counters include
+terrain layouts, draws/binds, upload batches/pages, GUI cache hits and staging
+queue/conversion time. Requested buffer storage is not physical VRAM.
+The latest pre-change GMA profiles show substantial main-thread execution, so
+elapsed solid/translucent timings alone do not prove a purely GPU-bound scene.
 
-Log counters: CPU elapsed phases (including driver waits), Present, draws/binds,
-mesh/GUI/index uploads, requested/live terrain storage, compressed CPU shadows,
-GUI locks/cache hits, depth_clears/depth_reused, vertex layouts and staging/arrival counts. Requested buffer
-storage is not measured physical VRAM; SWVP buffers now live in system memory.
-Other backends' GPU timestamps are not directly comparable to DX9 CPU phases.
+RTX remains useful for large-distance loading regressions, without repeating
+every GMA measurement. Packed modern quads are smaller than full DX9 vertices;
+instantaneous 48-chunk loading or Vulkan RAM parity is not claimed. RGB565 reduces
+color-target storage per pixel, not the whole process's memory. No new worldgen,
+lighting-quality, protocol or gameplay changes are included in this pass.
 
 Remove old HORIZON_D3D9_MESH_MIB / HORIZON_D3D9_TEXTURE_MIB overrides for ordinary
-tests. Automatic advisory targets use driver/system-memory hints up to 2 GiB.
-Allocation pressure retains drawable shadows/managed paging. User quality and
-render distance remain unchanged. The native SM2 shader programs are unchanged.
+tests. Automatic advisory targets use driver/system-memory hints, up to 2 GiB.
+Allocation pressure retains drawable shadows/managed paging. Quality and render
+distance remain the player's choice. The offline admission fix remains.
 
 Limitations: SDR, simplified End portal, no fancy clouds/star field, enchantment
 foil, shader packs, PBR, post chains, LOD, GPU occlusion/skinning, frame generation
-or split-screen compositor. Base terrain/models, entities/hand, menus/HUD/chat,
-weather and overlays remain. This package contains DX9 only. XP/x86 are not
-implemented or shipped by this update.
+or split-screen compositor. Terrain/models, entities/hand, menus/HUD/chat, weather
+and overlays remain. This executable currently contains DX9 only. A shared EXE
+with runtime modern-API fallback is feasible but requires further integration.

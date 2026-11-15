@@ -159,6 +159,8 @@ impl Loading {
             None,
             None,
             self.settings.horizon.api,
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            &self.settings.horizon,
         ) {
             Ok(r) => self.renderer = Some(r),
             Err(e) => {
@@ -224,6 +226,8 @@ impl Loading {
             Some(&bundle.panorama),
             self.renderer.as_ref(),
             self.settings.horizon.api,
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            &self.settings.horizon,
         ) {
             Ok(r) => {
                 horizon_client::hud::GUI_SCALE.store(self.settings.gui_scale, Ordering::Relaxed);

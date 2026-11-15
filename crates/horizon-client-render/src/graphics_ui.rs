@@ -121,6 +121,10 @@ pub enum H {
     /// Opens the shader pack list (`options_ui::Page::ShaderPacks`).
     ShaderPacks,
     GraphicsApi,
+    #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+    D3d9VertexProcessing,
+    #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+    D3d9ColorDepth,
     TranslucentBatching,
     HdrSmoothGradients,
 }
@@ -643,6 +647,25 @@ pub fn rows() -> Vec<(Page, Vec<(&'static str, Vec<Setting>)>)> {
             ],
         ),
     ];
+    #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+    pages[0].1.insert(
+        3,
+        (
+            "Direct3D 9",
+            vec![
+                h(
+                    H::D3d9VertexProcessing,
+                    None,
+                    "Software transforms vertices on the CPU; the GPU draws. Restart required.",
+                ),
+                h(
+                    H::D3d9ColorDepth,
+                    None,
+                    "16-bit saves bandwidth but may band. Falls back to 32-bit. Restart required.",
+                ),
+            ],
+        ),
+    );
     // Only Windows and Linux have more than one graphics API, translucent batching (Metal
     // draws flat) and GPU culling (Metal draws no count the GPU wrote).
     if cfg!(target_os = "macos") {
@@ -967,6 +990,14 @@ impl H {
             // A press across the row, as Calibrate...: the list it opens shows the pick.
             H::ShaderPacks => Text::literal(lang::get("Shader Packs...")),
             H::GraphicsApi => labelled("Graphics API", g.api.selected().label()),
+            #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+            H::D3d9VertexProcessing => {
+                labelled("Vertex Processing", g.d3d9.vertex_processing.label())
+            }
+            #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+            H::D3d9ColorDepth => {
+                labelled("Color Depth", format!("{} bit", g.d3d9.color_depth.name()))
+            }
             // These two are greyed out where the device can't (`Item::blocked`): Off, as
             // they are there, while the saved value waits for a device that can.
             H::TranslucentBatching => labelled(
@@ -1105,6 +1136,22 @@ impl H {
             H::BatteryMode => g.battery = !g.battery,
             H::ShadowCache => g.shadow_cache = !g.shadow_cache,
             H::GraphicsApi => g.api = step(GraphicsApi::choices(), g.api, back),
+            #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+            H::D3d9VertexProcessing => {
+                g.d3d9.vertex_processing = step(
+                    &horizon_client_d3d9::VertexProcessing::ALL,
+                    g.d3d9.vertex_processing,
+                    back,
+                );
+            }
+            #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+            H::D3d9ColorDepth => {
+                g.d3d9.color_depth = step(
+                    &horizon_client_d3d9::ColorDepth::ALL,
+                    g.d3d9.color_depth,
+                    back,
+                );
+            }
             H::TranslucentBatching => g.translucent_batching = !g.translucent_batching,
             H::HdrSmoothGradients => g.hdr_smooth_gradients = !g.hdr_smooth_gradients,
             H::Pacing => {
@@ -1324,6 +1371,12 @@ impl Item {
                         | Opt::AttackIndicator
                 )
         );
+        #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+        let presetless = presetless
+            || matches!(
+                self,
+                Item::Horizon(H::D3d9VertexProcessing | H::D3d9ColorDepth)
+            );
         if !presetless {
             s.horizon.preset = Preset::Custom;
         }
