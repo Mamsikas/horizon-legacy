@@ -409,8 +409,17 @@ impl Game<'_> {
                         break;
                     }
                     let (key, mesh) = pending.pop().expect("checked above");
-                    renderer.upload(key, &mesh);
-                    spent.push((key, mesh));
+                    #[cfg(all(windows, feature = "legacy-d3d9"))]
+                    if let Some(mesh) =
+                        renderer.upload_owned(key, mesh, self.streaming.mesh_recycler())
+                    {
+                        spent.push((key, mesh));
+                    }
+                    #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+                    {
+                        renderer.upload(key, &mesh);
+                        spent.push((key, mesh));
+                    }
                     count += 1;
                     bytes += size;
                 }

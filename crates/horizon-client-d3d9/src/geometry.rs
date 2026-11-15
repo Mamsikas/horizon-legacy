@@ -77,6 +77,16 @@ impl MeshData {
         out.resize(self.vertices, bytemuck::Zeroable::zeroed());
         let stride = self.encoding.stride();
         let dest = &mut bytemuck::cast_slice_mut::<_, u8>(out)[..self.vertices * stride];
+        self.decode_bytes(dest)?;
+        crate::terrain::expand_in_place(self.encoding, out);
+        Ok(())
+    }
+    /// Restore the original GPU layout without expanding/re-encoding its vertices.
+    pub(crate) fn decode_bytes(&self, dest: &mut [u8]) -> Result<(), String> {
+        let stride = self.encoding.stride();
+        if self.vertices.checked_mul(stride) != Some(dest.len()) {
+            return Err("D3D9 mesh shadow destination length mismatch".into());
+        }
         if self.compressed {
             let n =
                 lz4_flex::block::decompress_into(&self.bytes, dest).map_err(|e| e.to_string())?;
@@ -90,7 +100,6 @@ impl MeshData {
         } else {
             dest.copy_from_slice(&self.bytes);
         }
-        crate::terrain::expand_in_place(self.encoding, out);
         Ok(())
     }
 }

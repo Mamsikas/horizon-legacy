@@ -29,6 +29,8 @@ pub const IDLE_RELEASE: std::time::Duration = std::time::Duration::from_secs(5);
 /// (`examples/gen_light_bench.rs`). Off unless enabled: a relaxed load per
 /// job then.
 pub mod job_stats;
+mod recycle;
+pub use recycle::MeshRecycler;
 /// A chunk under generation, opaque to the streamer.
 pub type Proto = Box<dyn std::any::Any + Send>;
 /// Chunk generation in vanilla's stages: a neighbour-independent proto chunk
@@ -987,10 +989,7 @@ impl<G: ChunkGenerator> Jobs<G> {
                 Done::LightView(x, z, proto, view)
             }
             Job::Free(meshes) => {
-                for (_, mesh) in meshes {
-                    let rejected = shared.meshes.lock().unwrap().put(mesh);
-                    drop(rejected);
-                }
+                recycle::many(shared, meshes);
                 return None;
             }
             Job::Light(x, z, region, seq, sky) => {

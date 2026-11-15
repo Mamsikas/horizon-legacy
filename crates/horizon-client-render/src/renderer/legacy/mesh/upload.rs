@@ -7,11 +7,24 @@ pub(super) const MAX_JOBS: usize = 64;
 pub(super) struct Job {
     key: SectionKey,
     ticket: u64,
-    mesh: SectionMesh,
+    input: Input,
     permit: Permit,
     epoch: usize,
     submitted: Instant,
     recording: bool,
+}
+struct Input {
+    mesh: Option<SectionMesh>,
+    recycler: Option<crate::streaming::MeshRecycler>,
+}
+impl Drop for Input {
+    fn drop(&mut self) {
+        if let Some(recycler) = &self.recycler
+            && let Some(mesh) = self.mesh.take()
+        {
+            recycler.recycle(mesh);
+        }
+    }
 }
 struct Permit {
     quota: Arc<AtomicUsize>,
@@ -45,7 +58,7 @@ pub(super) fn prepare(
     let result = {
         let _span = crate::spans::guard("d3d9_section_convert");
         if job.epoch == epoch.load(Ordering::Relaxed) {
-            scratch.prepare(layout, job.key, &job.mesh, hardware)
+            scratch.prepare(layout, job.key, job.input.mesh.as_ref().unwrap(), hardware)
         } else {
             Err("discarded section from the preceding world".into())
         }
@@ -121,6 +134,28 @@ impl Compactor {
         ticket: u64,
         mesh: &SectionMesh,
     ) -> bool {
+        if !self.upload_room(mesh) || Self::charge(mesh) > LIMIT {
+            return false;
+        }
+        let input = SectionMesh {
+            solid: mesh.solid.clone(),
+            translucent: mesh.translucent.clone(),
+            sides: mesh.sides,
+            bounds: mesh.bounds,
+            visibility: mesh.visibility,
+            block_entities: mesh.block_entities.clone(),
+            ..Default::default()
+        };
+        self.try_upload_owned(key, ticket, input, None).is_none()
+    }
+    /// None means accepted; otherwise the caller still owns the input.
+    pub(in super::super) fn try_upload_owned(
+        &self,
+        key: SectionKey,
+        ticket: u64,
+        mesh: SectionMesh,
+        recycler: Option<crate::streaming::MeshRecycler>,
+    ) -> Option<SectionMesh> {
         // The charge covers source, grouped/full vertices, shadow, encoded GPU
         // data and packets. Repeating UVs may expand; those stay synchronous.
         if mesh.solid.is_empty() && mesh.translucent.is_empty()
@@ -131,13 +166,13 @@ impl Compactor {
                 .chain(&mesh.translucent)
                 .any(|v| v.uv.iter().any(|&u| u > crate::mesher::UV_STEPS as u16))
         {
-            return false;
+            return Some(mesh);
         }
-        let bytes = Self::charge(mesh);
+        let bytes = Self::charge(&mesh);
         let mut used = self.upload_quota.load(Ordering::Relaxed);
         loop {
             let Some(next) = used.checked_add(bytes).filter(|&n| n <= LIMIT) else {
-                return false;
+                return Some(mesh);
             };
             match self.upload_quota.compare_exchange_weak(
                 used,
@@ -158,26 +193,25 @@ impl Compactor {
         // this count. Bound job slots too, so small meshes cannot overflow the
         // channel and spill into synchronous conversion despite spare byte quota.
         self.upload_count.fetch_add(1, Ordering::Relaxed);
-        let input = SectionMesh {
-            solid: mesh.solid.clone(),
-            translucent: mesh.translucent.clone(),
-            sides: mesh.sides,
-            bounds: mesh.bounds,
-            visibility: mesh.visibility,
-            block_entities: mesh.block_entities.clone(),
-            ..Default::default()
-        };
-        self.jobs
-            .try_send(compact::Work::Upload(Job {
-                key,
-                ticket,
-                mesh: input,
-                permit,
-                epoch: self.upload_epoch.load(Ordering::Relaxed),
-                submitted: Instant::now(),
-                recording: crate::spans::recording_here(),
-            }))
-            .is_ok()
+        match self.jobs.try_send(compact::Work::Upload(Job {
+            key,
+            ticket,
+            input: Input {
+                mesh: Some(mesh),
+                recycler,
+            },
+            permit,
+            epoch: self.upload_epoch.load(Ordering::Relaxed),
+            submitted: Instant::now(),
+            recording: crate::spans::recording_here(),
+        })) {
+            Ok(()) => None,
+            Err(
+                std::sync::mpsc::TrySendError::Full(compact::Work::Upload(mut job))
+                | std::sync::mpsc::TrySendError::Disconnected(compact::Work::Upload(mut job)),
+            ) => Some(job.input.mesh.take().unwrap()),
+            Err(_) => unreachable!("submitted an upload job"),
+        }
     }
     pub(in super::super) fn take_upload(&mut self) -> Option<Ready> {
         if self.upload_ready.is_empty() {

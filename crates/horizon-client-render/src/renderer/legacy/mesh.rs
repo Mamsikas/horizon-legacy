@@ -54,7 +54,7 @@ pub(super) fn region_origin(region: RegionKey, layout: ColumnLayout, camera: DVe
 struct PendingArena {
     region: RegionKey,
     encoding: dx::VertexEncoding,
-    vertices: Vec<dx::Vertex>,
+    vertices: dx::EncodedVertices,
     sections: Vec<SectionKey>,
 }
 #[derive(Default)]
@@ -170,6 +170,37 @@ impl Renderer {
             self.pending_error = Some(format!("D3D9 section {key:?}: {error}"));
         }
         self.upload_cpu += started.elapsed();
+    }
+    /// Move bulk meshes into staging; return synchronous inputs for Streaming::free.
+    pub fn upload_owned(
+        &mut self,
+        key: SectionKey,
+        mesh: SectionMesh,
+        recycler: crate::streaming::MeshRecycler,
+    ) -> Option<SectionMesh> {
+        let _span = crate::spans::guard("d3d9_section_upload");
+        let started = Instant::now();
+        self.upload_ticket = self.upload_ticket.wrapping_add(1);
+        let replace =
+            self.sections.contains_key(&key) || self.pending_sections.remove(&key).is_some();
+        let mesh = if !replace && let Some(worker) = &self.compactor {
+            match worker.try_upload_owned(key, self.upload_ticket, mesh, Some(recycler)) {
+                None => {
+                    self.pending_sections.insert(key, self.upload_ticket);
+                    self.upload_cpu += started.elapsed();
+                    return None;
+                }
+                Some(mesh) => mesh,
+            }
+        } else {
+            mesh
+        };
+        if let Err(error) = self.upload_section(key, &mesh) {
+            log::error!("D3D9 section {key:?}: {error}");
+            self.pending_error = Some(format!("D3D9 section {key:?}: {error}"));
+        }
+        self.upload_cpu += started.elapsed();
+        Some(mesh)
     }
     pub(super) fn drain_uploads(&mut self) -> Result<()> {
         let _span = crate::spans::guard("d3d9_arrival_uploads");
@@ -357,13 +388,24 @@ impl Renderer {
             }
         }
         let region = region_key(key);
-        let mut decoded = std::mem::take(&mut self.decode_scratch);
-        self.sections[&key].vertices.decode(&mut decoded)?;
+        let shadow = self.sections[&key].vertices.clone();
         let limit = self.device.max_vertices();
+        // Ordinary sections decode straight into their GPU page. Keep the old
+        // expansion/splitting fallback for large models or a changed layout.
+        let fallback = if shadow.len() > limit || encoding != shadow.encoding() {
+            shadow.decode(&mut self.decode_scratch)?;
+            Some(dx::EncodedVertices::new(
+                &self.decode_scratch,
+                self.device.compact_vertices(),
+            ))
+        } else {
+            None
+        };
+        let required = if fallback.is_none() { shadow.len() } else { 4 };
         let mut first = 0;
-        while first < decoded.len() {
+        while first < shadow.len() {
             let id = if let Some((&id, _)) = pending.iter().find(|(_, a)| {
-                a.region == region && a.encoding == encoding && a.vertices.len() < limit
+                a.region == region && a.encoding == encoding && a.vertices.len() + required <= limit
             }) {
                 id
             } else {
@@ -374,18 +416,20 @@ impl Renderer {
                     PendingArena {
                         region,
                         encoding,
-                        vertices: Vec::new(),
+                        vertices: dx::EncodedVertices::empty(encoding),
                         sections: Vec::new(),
                     },
                 );
                 id
             };
             let arena = pending.get_mut(&id).unwrap();
-            let count = (limit - arena.vertices.len()).min(decoded.len() - first);
+            let count = (limit - arena.vertices.len()).min(shadow.len() - first);
             let offset = arena.vertices.len() as u32;
-            arena
-                .vertices
-                .extend_from_slice(&decoded[first..first + count]);
+            if let Some(encoded) = &fallback {
+                arena.vertices.append_range(encoded, first..first + count)?;
+            } else {
+                arena.vertices.append_mesh(&shadow)?;
+            }
             if arena.sections.last() != Some(&key) {
                 arena.sections.push(key);
             }
@@ -397,7 +441,6 @@ impl Renderer {
             *pending_bytes += count as u64 * encoding.stride() as u64;
             first += count;
         }
-        self.decode_scratch = decoded;
         Ok(true)
     }
     /// Compressed CPU shadows survive Reset. Shared GPU arenas are immutable:
@@ -484,7 +527,7 @@ impl Renderer {
             if live == 0 {
                 continue;
             }
-            match self.device.mesh(&page.vertices) {
+            match self.device.mesh_encoded(&page.vertices) {
                 Ok(mesh) => {
                     self.gpu_mesh_bytes += mesh.bytes();
                     self.arenas.insert(

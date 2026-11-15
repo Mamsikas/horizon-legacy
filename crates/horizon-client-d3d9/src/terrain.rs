@@ -100,6 +100,29 @@ impl EncodedVertices {
             count: 0,
         }
     }
+    /// Append a lossless CPU shadow directly in its original GPU format.
+    /// Compaction and demand uploads need bytes, not expanded float vertices.
+    pub fn append_mesh(&mut self, source: &crate::MeshData) -> Result<(), String> {
+        if source.encoding() != self.encoding || source.len() % 4 != 0 {
+            return Err("D3D9 incompatible encoded mesh".into());
+        }
+        let count = self
+            .count
+            .checked_add(source.len())
+            .filter(|&n| n <= u32::MAX as usize)
+            .ok_or("D3D9 combined vertex count overflow")?;
+        let end = count
+            .checked_mul(self.encoding.stride())
+            .ok_or("D3D9 combined vertex bytes overflow")?;
+        let start = self.bytes.len();
+        self.bytes.resize(end, 0);
+        if let Err(error) = source.decode_bytes(&mut self.bytes[start..]) {
+            self.bytes.truncate(start);
+            return Err(error);
+        }
+        self.count = count;
+        Ok(())
+    }
     /// Join complete quad ranges without decoding or changing their layout.
     pub fn append_range(
         &mut self,
@@ -297,6 +320,21 @@ mod tests {
                 );
                 let mut scratch = Vec::new();
                 let shadow = crate::MeshData::from_encoded(&encoded, &mut scratch);
+                if count % 4 == 0 {
+                    let mut joined = EncodedVertices::empty(encoding);
+                    joined.append_mesh(&shadow).unwrap();
+                    joined.append_mesh(&shadow).unwrap();
+                    assert_eq!(joined.len(), count * 2);
+                    assert_eq!(joined.bytes(), encoded.bytes().repeat(2));
+                    let mut incompatible =
+                        EncodedVertices::empty(if encoding == VertexEncoding::Full {
+                            VertexEncoding::Compact
+                        } else {
+                            VertexEncoding::Full
+                        });
+                    assert!(incompatible.append_mesh(&shadow).is_err());
+                    assert!(incompatible.is_empty());
+                }
                 let mut restored = Vec::new();
                 shadow.decode(&mut restored).unwrap();
                 assert_eq!(

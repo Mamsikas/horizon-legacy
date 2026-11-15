@@ -45,8 +45,6 @@ impl Compactor {
             .name("d3d9 section staging".into())
             .spawn(move || {
                 let mut scratch = convert::Scratch::default();
-                let mut combined = Vec::<dx::Vertex>::new();
-                let mut decoded = Vec::new();
                 let mut next = None;
                 while let Some(work) = next.take().or_else(|| input.recv().ok()) {
                     let job = match work {
@@ -70,18 +68,21 @@ impl Compactor {
                     let prepare = || -> std::result::Result<Prepared, String> {
                         let _span = crate::spans::guard("d3d9_mesh_compact");
                         let mut sections = Vec::new();
-                        combined.clear();
+                        let encoding = job
+                            .sections
+                            .first()
+                            .map_or(dx::VertexEncoding::Full, |s| s.2.encoding());
+                        let mut combined = dx::EncodedVertices::empty(encoding);
                         for (key, revision, data) in job.sections {
-                            data.decode(&mut decoded)?;
                             let first = combined.len() as u32;
-                            combined.extend_from_slice(&decoded);
+                            combined.append_mesh(&data)?;
                             sections.push((key, revision, first..combined.len() as u32));
                         }
                         Ok(Prepared {
                             region: job.region,
                             sections,
                             resident: job.resident,
-                            encoded: dx::EncodedVertices::new(&combined, hardware),
+                            encoded: combined,
                         })
                     };
                     let prepared = prepare();
