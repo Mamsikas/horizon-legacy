@@ -259,7 +259,7 @@ This iteration has twenty-two CPU tests (including equivalent bounded fog progra
 bounded texture-page ranges,
 projected GUI coordinates, depth-clear reuse equivalence, ordered index windows,
 sparse-tile invalidation, tile seams/placement, executable SM2 arithmetic,
-all vertex layouts/partial codec blocks, animation-cache eviction and shared-page source indices) and twelve PE policy/parser tests. The packaging workflow builds
+all vertex layouts/partial codec blocks, animation-cache eviction and shared-page source indices) and thirteen PE policy/parser tests. The packaging workflow builds
 the client/control ZIP and audits static/delay imports,
 architecture and subsystem version. Compiler warnings inherited from the current
 nightly/native dependencies are separate from a successful check. Full parity harnesses

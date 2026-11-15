@@ -234,6 +234,12 @@ for _dll, _names in CLIENT_IMPORTS.items():
 # Standard COM IErrorInfo, available since Windows 2000 (not WinRT error origination).
 SAFE_IMPORTS["ole32.dll"] += " GetErrorInfo SetErrorInfo"
 SAFE_IMPORTS = {dll: frozenset(names.split()) for dll, names in SAFE_IMPORTS.items()}
+# i686 MinGW startup uses the legacy MSVCRT mode accessors and FILE array.
+# These exact x86 exports are present in the Win7 MSVCRT export inventory:
+# https://win7dll.nirsoft.net/msvcrt_dll.html
+# Microsoft documents the accessors in /cpp/c-runtime-library/p-{commode,fmode}.
+# MinGW's DEF_I386 import definitions also distinguish these from the x64 ABI.
+X86_IMPORTS = {"msvcrt.dll": frozenset(("__p__commode", "__p__fmode", "_iob"))}
 FORBIDDEN_APIS = frozenset("""
     CreateDXGIFactory2 GetDpiForWindow GetDpiForMonitor GetSystemTimePreciseAsFileTime
     GetTempPath2W IsWow64Process2 ProcessPrng SetProcessDpiAwareness
@@ -419,7 +425,8 @@ def audit(data, architecture="x64", d3d9=False):
                 problems.append(f"post-Win7 API: {dll}!{symbol}")
             elif symbol.startswith("#"):
                 problems.append(f"ordinal import cannot be verified: {dll}!{symbol}")
-            elif dll in SAFE_IMPORTS and symbol not in SAFE_IMPORTS[dll]:
+            elif (dll in SAFE_IMPORTS and symbol not in SAFE_IMPORTS[dll]
+                  and not (architecture == "x86" and symbol in X86_IMPORTS.get(dll, ()))):
                 problems.append(f"API needs a Win7 export audit: {dll}!{symbol}")
     return {"architecture": architecture, "machine": pe.machine,
             "os_version": list(pe.os_version), "subsystem_version": list(pe.subsystem_version),
