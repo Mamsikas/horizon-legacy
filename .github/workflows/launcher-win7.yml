@@ -5,6 +5,7 @@ on:
     paths:
       - 'launcher/**'
       - 'crates/horizon-prepare/**'
+      - 'crates/horizon-threads/**'
       - 'crates/horizon-protocol/Cargo.toml'
       - 'tools/*win7*'
       - 'packaging/win7/**'
@@ -15,6 +16,10 @@ concurrency:
 jobs:
   package:
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, x86]
     permissions:
       contents: read
     steps:
@@ -29,10 +34,11 @@ jobs:
           WIN7_CROSS_ROOT: ${{ runner.temp }}/win7/cross
           CARGO_HOME: /home/runner/.cargo
           RUSTUP_HOME: /home/runner/.rustup
+          WIN7_ARCH: ${{ matrix.architecture }}
         run: tools/build_win7_launcher.sh
       - uses: actions/upload-artifact@v4
         with:
-          name: horizon-launcher-win7-x64
+          name: horizon-launcher-win7-${{ matrix.architecture }}
           path: |
-            ${{ runner.temp }}/win7/artifacts/horizon-launcher-win7-x64.zip
+            ${{ runner.temp }}/win7/artifacts/horizon-launcher-win7-${{ matrix.architecture }}.zip
             ${{ runner.temp }}/win7/artifacts/SHA256SUMS

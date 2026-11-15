@@ -188,6 +188,12 @@ SAFE_IMPORTS = {
 # (sdk-api/psapi/nf-psapi-getprocessmemoryinfo.md). The added CRT names are legacy
 # MSVCRT C/runtime entrypoints, not UCRT/API-set contracts. Keep the forbidden list strict.
 SAFE_IMPORTS = {dll: frozenset(names.split()) for dll, names in SAFE_IMPORTS.items()}
+# x86 MinGW CRT entrypoints, also present in the pre-SP1 Windows 7 x86 export scan:
+# https://win7dll.nirsoft.net/msvcrt_dll.html (7.0.7100.0). Cross-checked against
+# mingw-w64 v12.0.0's msvcrt.def.in; these are not UCRT or newer API-set imports.
+ARCH_IMPORTS = {
+    "x86": {"msvcrt.dll": frozenset("__p__commode __p__fmode _iob _setjmp3".split())},
+}
 FORBIDDEN_APIS = frozenset("""
     CreateDXGIFactory2 GetDpiForWindow GetDpiForMonitor GetSystemTimePreciseAsFileTime
     GetTempPath2W IsWow64Process2 ProcessPrng SetProcessDpiAwareness
@@ -366,7 +372,8 @@ def audit(data, architecture="x64"):
                 problems.append(f"post-Win7 API: {dll}!{symbol}")
             elif symbol.startswith("#"):
                 problems.append(f"ordinal import cannot be verified: {dll}!{symbol}")
-            elif dll in SAFE_IMPORTS and symbol not in SAFE_IMPORTS[dll]:
+            elif (dll in SAFE_IMPORTS and symbol not in SAFE_IMPORTS[dll]
+                  and symbol not in ARCH_IMPORTS.get(architecture, {}).get(dll, ())):
                 problems.append(f"API needs a Win7 export audit: {dll}!{symbol}")
     return {"architecture": architecture, "machine": pe.machine,
             "os_version": list(pe.os_version), "subsystem_version": list(pe.subsystem_version),

@@ -39,8 +39,12 @@ fn embed_win7_support() {
         "cargo:rerun-if-changed={}",
         root.join(build_support::JAVA_ROOT).display()
     );
-    let files =
-        build_support::collect_sources(&root).expect("collecting preparation source dependencies");
+    let files = if std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() == Ok("x86") {
+        // The x86 edition launches an existing installation: no JVM or Java sources are needed.
+        std::collections::BTreeSet::from(["research-lock.json".to_string()])
+    } else {
+        build_support::collect_sources(&root).expect("collecting preparation source dependencies")
+    };
     let mut code = String::from("pub const FILES: &[(&str, &[u8])] = &[\n");
     for name in files {
         let path = root

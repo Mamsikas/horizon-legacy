@@ -134,7 +134,9 @@ extern "system" {
         parameter: *mut c_void,
     ) -> Handle;
     fn DefWindowProcW(hwnd: Handle, message: u32, wparam: usize, lparam: isize) -> isize;
+    #[cfg_attr(target_pointer_width = "32", link_name = "SetWindowLongW")]
     fn SetWindowLongPtrW(hwnd: Handle, index: i32, value: isize) -> isize;
+    #[cfg_attr(target_pointer_width = "32", link_name = "GetWindowLongW")]
     fn GetWindowLongPtrW(hwnd: Handle, index: i32) -> isize;
     fn GetMessageW(message: *mut Message, hwnd: Handle, min: u32, max: u32) -> i32;
     fn TranslateMessage(message: *const Message) -> i32;
@@ -320,11 +322,19 @@ impl App {
     fn init(&mut self) {
         self.title = self.label("Horizon");
         send(self.title, 0x30, self.heading_font as usize, 1);
-        self.intro = self.label("Your Minecraft files. Your nickname. Ready to play.");
-        self.mc_label = self.label("Minecraft 26.3 folder");
+        self.intro = self.label(if cfg!(target_arch = "x86") {
+            "Your installed Horizon. Your nickname. Ready to play."
+        } else {
+            "Your Minecraft files. Your nickname. Ready to play."
+        });
+        self.mc_label = self.label(if cfg!(target_arch = "x86") {
+            "Installed Horizon folder"
+        } else {
+            "Minecraft 26.3 folder"
+        });
         self.minecraft = self.control(
             "EDIT",
-            &self.settings.minecraft.to_string_lossy(),
+            &self.settings.source().to_string_lossy(),
             TAB | BORDER | 0x80,
             MINECRAFT,
         );
@@ -336,7 +346,11 @@ impl App {
         self.client = self.control("EDIT", "", TAB | BORDER | 0x80 | 0x800, 0);
         self.choose_client = self.button("Choose…", CLIENT);
         self.automatic = self.button("Automatic", AUTOMATIC);
-        self.status = self.label("Choose your Minecraft 26.3 folder, then press Play.");
+        self.status = self.label(if cfg!(target_arch = "x86") {
+            "Choose your installed Horizon folder and a 32-bit client, then press Play."
+        } else {
+            "Choose your Minecraft 26.3 folder, then press Play."
+        });
         self.progress = self.control("msctls_progress32", "", 0, 0);
         send(self.progress, 0x406, 0, 1000); // PBM_SETRANGE32
         self.play = self.control("BUTTON", tr("Play"), TAB | 1, PLAY);
@@ -408,7 +422,11 @@ impl App {
         set(
             self.client,
             if self.settings.client.as_os_str().is_empty() {
-                tr("Automatic — bundled or downloaded")
+                if cfg!(target_arch = "x86") {
+                    tr("Automatic — installed or bundled x86 client")
+                } else {
+                    tr("Automatic — bundled or downloaded")
+                }
             } else {
                 self.settings.client.to_str().unwrap_or("")
             },
@@ -420,7 +438,8 @@ impl App {
     }
     fn read_settings(&mut self) {
         self.settings.nickname = text(self.name).trim().into();
-        self.settings.minecraft = PathBuf::from(text(self.minecraft).trim());
+        self.settings
+            .set_source(PathBuf::from(text(self.minecraft).trim()));
     }
     fn add_log(&mut self, line: &str) {
         if let Some(log) = &mut self.log {
@@ -687,9 +706,11 @@ unsafe extern "system" fn folder_init(hwnd: Handle, message: u32, _: isize, path
     0
 }
 fn browse(owner: Handle, initial: &str) -> Option<PathBuf> {
-    let title = wide(tr(
-        "Choose the folder containing your Minecraft 26.3 installation",
-    ));
+    let title = wide(tr(if cfg!(target_arch = "x86") {
+        "Choose your installed Horizon folder or its prepared resources folder"
+    } else {
+        "Choose the folder containing your Minecraft 26.3 installation"
+    }));
     let initial = wide(initial);
     let mut display = [0u16; 260];
     let info = BrowseInfo {

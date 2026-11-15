@@ -73,6 +73,13 @@ class Win7Imports(unittest.TestCase):
             self.assertTrue(report["passed"], report["problems"])
             self.assertEqual(report["imports"][0]["symbols"], ["GetLastError"])
 
+    def test_x86_crt_exports_are_architecture_specific(self):
+        for symbol in ("__p__commode", "__p__fmode", "_iob", "_setjmp3"):
+            with self.subTest(symbol=symbol):
+                report = CHECK.audit(fixture("msvcrt.dll", symbol, x86=True), "x86")
+                self.assertTrue(report["passed"], report["problems"])
+                self.assertFalse(CHECK.audit(fixture("msvcrt.dll", symbol))["passed"])
+
     def test_rejects_wrong_architecture_and_newer_subsystem(self):
         self.assertFalse(CHECK.audit(fixture(x86=True))["passed"])
         data = fixture()

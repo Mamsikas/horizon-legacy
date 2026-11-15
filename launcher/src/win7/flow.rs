@@ -1,16 +1,20 @@
 //! Setup and offline launch using the existing download, source and preparation core.
+#[cfg(not(target_arch = "x86"))]
+use crate::sources;
 use crate::{
     backend,
     i18n::{tr, trf},
-    sources,
 };
 use horizon_platform::prepare;
 use serde::{Deserialize, Serialize};
+#[cfg(any(not(target_arch = "x86"), test))]
 use serde_json::Value;
+#[cfg(any(not(target_arch = "x86"), test))]
 use sha1::{Digest, Sha1};
+#[cfg(not(target_arch = "x86"))]
+use std::io::{Read, Write};
 use std::{
     fs,
-    io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
 };
@@ -24,6 +28,8 @@ mod support {
 pub struct Settings {
     pub nickname: String,
     pub minecraft: PathBuf,
+    /// The x86 edition uses an already prepared installation instead of Java exporters.
+    pub horizon: PathBuf,
     /// Empty chooses a bundled client, then an installed official release.
     pub client: PathBuf,
     pub installed: String,
@@ -34,6 +40,7 @@ impl Default for Settings {
         Self {
             nickname: "Player".into(),
             minecraft: backend::default_minecraft_dir().unwrap_or_default(),
+            horizon: PathBuf::new(),
             client: PathBuf::new(),
             installed: String::new(),
         }
@@ -41,15 +48,22 @@ impl Default for Settings {
 }
 
 impl Settings {
+    fn filename() -> &'static str {
+        if cfg!(target_arch = "x86") {
+            "win7-launcher-x86.json"
+        } else {
+            "win7-launcher.json"
+        }
+    }
     pub fn load() -> Self {
-        fs::read(backend::data_dir().join("win7-launcher.json"))
+        fs::read(backend::data_dir().join(Self::filename()))
             .ok()
             .and_then(|v| serde_json::from_slice(&v).ok())
             .unwrap_or_default()
     }
     pub fn save(&self) -> Result<(), String> {
         fs::create_dir_all(backend::data_dir()).map_err(|e| e.to_string())?;
-        let path = backend::data_dir().join("win7-launcher.json");
+        let path = backend::data_dir().join(Self::filename());
         let temp = path.with_extension(format!("{}.tmp", std::process::id()));
         fs::write(
             &temp,
@@ -57,6 +71,20 @@ impl Settings {
         )
         .map_err(|e| e.to_string())?;
         fs::rename(temp, path).map_err(|e| e.to_string())
+    }
+    pub fn source(&self) -> &Path {
+        if cfg!(target_arch = "x86") {
+            &self.horizon
+        } else {
+            &self.minecraft
+        }
+    }
+    pub fn set_source(&mut self, path: PathBuf) {
+        if cfg!(target_arch = "x86") {
+            self.horizon = path;
+        } else {
+            self.minecraft = path;
+        }
     }
     pub fn validate(&self) -> Result<(), String> {
         if !(3..=16).contains(&self.nickname.len())
@@ -131,9 +159,13 @@ pub fn run(mut settings: Settings, emit: &dyn Fn(Event)) -> Result<(), String> {
             ("arch", std::env::consts::ARCH),
         ],
     )));
-    let resources = resources(&settings.minecraft, emit).map_err(|error| {
+    let resources = resources(settings.source(), emit).map_err(|error| {
         trf(
-            "Resource preparation failed before the game was started.\n{error}",
+            if cfg!(target_arch = "x86") {
+                "The installed Horizon resources could not be used.\n{error}"
+            } else {
+                "Resource preparation failed before the game was started.\n{error}"
+            },
             &[("error", &error)],
         )
     })?;
@@ -209,6 +241,7 @@ pub fn offline_command(program: &Path, resources: &Path, home: &Path, nickname: 
     cmd
 }
 
+#[cfg(not(target_arch = "x86"))]
 fn client(settings: &mut Settings, emit: &dyn Fn(Event)) -> Result<(PathBuf, bool), String> {
     if !settings.client.as_os_str().is_empty() {
         return Ok((settings.client.clone(), false));
@@ -262,6 +295,104 @@ fn client(settings: &mut Settings, emit: &dyn Fn(Event)) -> Result<(PathBuf, boo
     Ok((exe, true))
 }
 
+#[cfg(target_arch = "x86")]
+fn client(settings: &mut Settings, _: &dyn Fn(Event)) -> Result<(PathBuf, bool), String> {
+    if !settings.client.as_os_str().is_empty() {
+        check_x86_client(&settings.client)?;
+        return Ok((
+            std::path::absolute(&settings.client).map_err(|e| e.to_string())?,
+            false,
+        ));
+    }
+    let mut candidates = installed_folders(&settings.horizon)
+        .into_iter()
+        .map(|dir| dir.join("horizon-client.exe"))
+        .collect::<Vec<_>>();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("horizon-client.exe"));
+        }
+    }
+    let mut rejected = None;
+    for program in candidates.into_iter().filter(|p| p.is_file()) {
+        match check_x86_client(&program) {
+            Ok(()) => {
+                return Ok((
+                    std::path::absolute(program).map_err(|e| e.to_string())?,
+                    false,
+                ))
+            }
+            Err(error) => rejected = Some(error),
+        }
+    }
+    if let Some(error) = rejected {
+        return Err(error);
+    }
+    Err(tr("No 32-bit Horizon client was found. Use Choose to select its executable; the x86 launcher does not download an x64 client.").into())
+}
+
+#[cfg(target_arch = "x86")]
+fn check_x86_client(path: &Path) -> Result<(), String> {
+    match backend::pe_machine_file(path) {
+        Some(0x014c) => Ok(()), // IMAGE_FILE_MACHINE_I386
+        Some(0x8664) => Err(tr(
+            "This is a 64-bit Horizon client. Choose a 32-bit (x86) client for this launcher.",
+        )
+        .into()),
+        _ => Err(tr(
+            "The selected file is not a Windows x86 Horizon client. Choose a 32-bit executable.",
+        )
+        .into()),
+    }
+}
+
+#[cfg(target_arch = "x86")]
+fn installed_folders(chosen: &Path) -> Vec<PathBuf> {
+    let mut folders = vec![chosen.to_path_buf()];
+    // Also accept the resources folder itself without searching unrelated installations.
+    if chosen.ends_with(
+        Path::new(".local/horizon-client").join(horizon_platform::version::VANILLA_VERSION),
+    ) {
+        if let Some(root) = chosen.ancestors().nth(3) {
+            folders.push(root.to_path_buf());
+        }
+    } else if chosen.file_name().is_some_and(|name| name == "resources") {
+        if let Some(parent) = chosen.parent() {
+            folders.push(parent.to_path_buf());
+        }
+    }
+    folders
+}
+
+#[cfg(target_arch = "x86")]
+fn installed_resources(root: &Path, chosen: &Path) -> Result<PathBuf, String> {
+    if chosen.as_os_str().is_empty() || !chosen.is_dir() {
+        return Err(tr("Choose an installed Horizon folder containing prepared resources. The x86 launcher does not need Minecraft files or Java.").into());
+    }
+    let candidates = [
+        chosen.to_path_buf(),
+        prepare::resources_dir(chosen, horizon_platform::version::VANILLA_VERSION, None),
+        chosen.join("resources"),
+    ];
+    let resources = candidates.into_iter()
+        .find(|dir| dir.join("horizon-resources.json").is_file())
+        .ok_or_else(|| tr("Prepared Horizon resources were not found. Select the installation folder or the folder containing horizon-resources.json; a client EXE alone is not enough.").to_string())?;
+    if resources
+        .ancestors()
+        .any(|dir| dir.join(ASSETS_PENDING).exists())
+    {
+        return Err(tr("This Horizon installation has unfinished asset copying. Finish its preparation before using it in the x86 launcher.").into());
+    }
+    let missing = prepare::check(root, &resources)?;
+    if !missing.is_empty() {
+        return Err(trf(
+            "This Horizon installation is incomplete or incompatible:\n{details}",
+            &[("details", &missing.join("\n"))],
+        ));
+    }
+    std::path::absolute(&resources).map_err(|e| e.to_string())
+}
+
 fn support_root() -> Result<PathBuf, String> {
     let root = backend::build_dir()
         .join("win7-prepare")
@@ -277,6 +408,20 @@ fn support_root() -> Result<PathBuf, String> {
     Ok(root)
 }
 
+#[cfg(target_arch = "x86")]
+fn resources(chosen: &Path, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
+    emit(Event::Status(
+        tr("Checking installed Horizon resources…").into(),
+    ));
+    let resources = installed_resources(&support_root()?, chosen)?;
+    emit(Event::Log(trf(
+        "Using installed Horizon resources: {path}",
+        &[("path", &resources.display().to_string())],
+    )));
+    Ok(resources)
+}
+
+#[cfg(not(target_arch = "x86"))]
 fn resources(chosen: &Path, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
     let root = support_root()?;
     emit(Event::Log(trf(
@@ -382,6 +527,7 @@ fn resources(chosen: &Path, emit: &dyn Fn(Event)) -> Result<PathBuf, String> {
 
 const ASSETS_PENDING: &str = ".win7-assets-pending";
 
+#[cfg(any(not(target_arch = "x86"), test))]
 fn resources_ready(root: &Path, resources: &Path) -> bool {
     !resources.join(ASSETS_PENDING).exists()
         && prepare::check(root, resources).is_ok_and(|missing| missing.is_empty())
@@ -389,6 +535,7 @@ fn resources_ready(root: &Path, resources: &Path) -> bool {
 
 /// Complete existing exports before considering Java/server installation. This also handles
 /// a fresh prepare: the core's default export intentionally leaves the large sound store out.
+#[cfg(any(not(target_arch = "x86"), test))]
 fn finish_prepared_resources(
     root: &Path,
     minecraft: &Path,
@@ -415,6 +562,7 @@ fn finish_prepared_resources(
     Ok(true)
 }
 
+#[cfg(not(target_arch = "x86"))]
 fn download_server(
     file: &Value,
     expected: &str,
@@ -642,6 +790,11 @@ mod tests {
 
     #[test]
     fn bundled_exporters_include_every_compiler_input() {
+        if cfg!(target_arch = "x86") {
+            assert_eq!(support::FILES.len(), 1);
+            assert_eq!(support::FILES[0].0, "research-lock.json");
+            return;
+        }
         for name in prepare::exporters::source_files() {
             let path = format!("mods/horizon/src/test/java/dev/horizonlab/parity/{name}");
             assert!(
