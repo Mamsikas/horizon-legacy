@@ -234,12 +234,12 @@ for _dll, _names in CLIENT_IMPORTS.items():
 # Standard COM IErrorInfo, available since Windows 2000 (not WinRT error origination).
 SAFE_IMPORTS["ole32.dll"] += " GetErrorInfo SetErrorInfo"
 SAFE_IMPORTS = {dll: frozenset(names.split()) for dll, names in SAFE_IMPORTS.items()}
-# i686 MinGW startup uses the legacy MSVCRT mode accessors and FILE array.
+# i686 MinGW uses legacy MSVCRT mode accessors, the FILE array and setjmp.
 # These exact x86 exports are present in the Win7 MSVCRT export inventory:
 # https://win7dll.nirsoft.net/msvcrt_dll.html
-# Microsoft documents the accessors in /cpp/c-runtime-library/p-{commode,fmode}.
+# Microsoft documents /cpp/c-runtime-library/p-{commode,fmode} and setjmp3.
 # MinGW's DEF_I386 import definitions also distinguish these from the x64 ABI.
-X86_IMPORTS = {"msvcrt.dll": frozenset(("__p__commode", "__p__fmode", "_iob"))}
+X86_IMPORTS = {"msvcrt.dll": frozenset(("__p__commode", "__p__fmode", "_iob", "_setjmp3"))}
 FORBIDDEN_APIS = frozenset("""
     CreateDXGIFactory2 GetDpiForWindow GetDpiForMonitor GetSystemTimePreciseAsFileTime
     GetTempPath2W IsWow64Process2 ProcessPrng SetProcessDpiAwareness

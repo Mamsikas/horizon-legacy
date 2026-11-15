@@ -104,7 +104,7 @@ class Win7Imports(unittest.TestCase):
                     self.assertTrue(report["passed"], report["problems"])
 
     def test_accepts_reviewed_i686_crt_exports_only_for_x86(self):
-        for symbol in ("__p__commode", "__p__fmode", "_iob"):
+        for symbol in ("__p__commode", "__p__fmode", "_iob", "_setjmp3"):
             for delayed in (False, True):
                 with self.subTest(symbol=symbol, delayed=delayed):
                     report = CHECK.audit(fixture("msvcrt.dll", symbol, x86=True,

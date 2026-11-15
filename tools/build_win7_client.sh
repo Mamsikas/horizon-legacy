@@ -67,14 +67,16 @@ cargo "+$toolchain" rustc --locked --profile legacy -p horizon-client-lib --bin 
     --no-default-features --features legacy-d3d9,audio -- "${link_args[@]}"
 binary="$CARGO_TARGET_DIR/$target/legacy/horizon-client.exe"
 control="$CARGO_TARGET_DIR/$target/legacy/horizon-ctl.exe"
+audit_failed=0
 if ! python3 tools/check_win7_imports.py --architecture "$architecture" --d3d9 --json "$binary" > "$work/imports-client-win7-$architecture.json"; then
     cat "$work/imports-client-win7-$architecture.json" >&2
-    exit 1
+    audit_failed=1
 fi
 if ! python3 tools/check_win7_imports.py --architecture "$architecture" --json "$control" > "$work/imports-control-win7-$architecture.json"; then
     cat "$work/imports-control-win7-$architecture.json" >&2
-    exit 1
+    audit_failed=1
 fi
+(( audit_failed == 0 )) || exit 1
 out=${1:-"$work/artifacts"}
 mkdir -p "$out"
 out=$(cd -- "$out" && pwd)
