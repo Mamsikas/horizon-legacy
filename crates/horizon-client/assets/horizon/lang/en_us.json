@@ -1230,5 +1230,6 @@
   "Hardware": "Hardware",
   "Software": "Software",
   "Software transforms vertices on the CPU; the GPU draws. Restart required.": "Software transforms vertices on the CPU; the GPU draws. Restart required.",
-  "16-bit saves bandwidth but may band. Falls back to 32-bit. Restart required.": "16-bit saves bandwidth but may band. Falls back to 32-bit. Restart required."
+  "16-bit saves bandwidth but may band. Falls back to 32-bit. Restart required.": "16-bit saves bandwidth but may band. Falls back to 32-bit. Restart required.",
+  "Direct3D 9 does not support this feature.": "Direct3D 9 does not support this feature."
 }

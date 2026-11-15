@@ -36,27 +36,44 @@ HORIZON_D3D9_VERTEX_PROCESSING takes precedence over the saved menu choice.
 
 Primary GMA retest:
 Compare the same ice scene at 1024x600, two chunks, Fog OFF and the same FPS limit.
-The owner's previous build reached 44 FPS there. First compare this build at
-32-bit color, then repeat at 16-bit after restarting. If the driver falls back,
-F3/latest.log will say RGB32. Keep the same window mode throughout; do not enable
-exclusive fullscreen just for the color comparison. Then profile movement/loading.
-A friend with caps-advertised HW VP can compare Auto and Software after restarting.
-Send the log and chat capture for each relevant case. New hardware FPS is not
-claimed before these tests; the host CPU microbenchmark is not a gameplay test.
+The owner's preceding build reached 45 FPS there with RGB565 confirmed. Keep
+Resolution Scale at 100% for this baseline; then profile 60-90 seconds stationary
+and 90 seconds of movement/loading using the chat commands above. Compare frame
+spikes as well as FPS, and check that block placement/breaking remains immediate.
+The longer movement profile and latest.log are the most useful next capture.
+No new RTX capture is needed for this pass. A server capture with visible entities
+will help choose the next entity optimization; Sync/Async culling already uses
+Horizon's CPU cullers, independently of DX9 GPU-culling support.
 
-This update removes full source-mesh copies on bulk submission. The staging
-worker returns consumed buffers to the existing mesher pool, including canceled
-jobs. Demand uploads and background buffer merging assemble original encoded
-vertex bytes directly, instead of expanding and re-encoding the whole mesh.
-Existing queue byte/job limits, synchronous edits and basic page transparency
-remain. The ordinary package no longer ships horizon-ctl: chat profiles need
-neither it nor --control. Development control support remains in the source.
-Screenshot and profiling overhead are not changed in this iteration.
+Settings checks in the same window (do not change the loading baseline):
+- Resolution Scale: compare 100%, 75%, 50%, then return to 100%, without restarting.
+  The world changes resolution; HUD and inventory stay at full window resolution.
+  Native DX9 scaling uses a persistent color/depth target and a hardware resolve,
+  with no CPU picture readback. 100% adds no extra resolve. The log records scaled
+  dimensions or a driver fallback. Check resizing/minimizing/restoring too.
+- Mipmap Levels: compare 0/2/4 and switch back. This now uses Horizon's native-size
+  mip limit rather than only an on/off flag. Check leaves and water/lava, including
+  changing levels while Animated Textures is Off. RGSS remains a linear approximation;
+  Anisotropic now requests native filtering capped to the driver's capability.
+- Unsupported API effects remain visible but disabled with an explanation, without
+  erasing saved values. CPU culling and manual Resolution Scale remain available.
+  A friend with caps-advertised HW VP can still compare Auto and Software, with a
+  client restart for each device preference. RGB565 needs no exclusive fullscreen.
 
-The legacy profile is optimized (opt-level=3), with 16 codegen units, panic=abort
-and LTO off. A CPU-only Thin LTO comparison did not show a consistent gain; it
-remains off to bound linker memory. x64 keeps SSE3/SSSE3, x86 SSE3. SSE3-capable
-K8 CPUs generally lack SSSE3, so x86 does not require it.
+This update caches sprite-to-atlas transforms and bypasses polygon handling for
+ordinary UVs. It moves immediate updates' lossless CPU-shadow compression onto the
+existing bounded staging worker; geometry is drawable before compression finishes.
+The queue replaces obsolete inputs, with byte/job limits and a synchronous pressure
+fallback. Existing bulk ownership/recycling, encoded upload pages and immediate
+edits remain. Shared game/world generation code is not optimized in this pass.
+Chat profiles need neither horizon-ctl nor --control; the ordinary package does
+not ship that tool. Screenshot/profiler overhead is unchanged.
+
+Horizon's official release profile already uses Thin LTO. Our legacy profile uses
+opt-level=3, 16 codegen units, panic=abort and LTO off for iterative link time/memory.
+One CPU-kernel benchmark is not enough to judge whole-game LTO; a final build should
+compare loading, terrain, GUI and entities before choosing. It is not enabled now.
+x64 keeps SSE3/SSSE3, x86 SSE3; an SSE3 K8 does not necessarily support SSSE3.
 
 Counters: main_thread_busy_pct is actual five-second CPU execution on the main
 thread, including driver work. Render phases include waits and are not GPU
@@ -77,7 +94,7 @@ tests. Automatic advisory targets use driver/system-memory hints, up to 2 GiB.
 Allocation pressure retains drawable shadows/managed paging. Quality and render
 distance remain the player's choice. The offline admission fix remains.
 
-Limitations: SDR, simplified End portal, no fancy clouds/star field, enchantment
+Limitations: SDR, simplified End portal, no clouds/star field, enchantment
 foil, shader packs, PBR, post chains, LOD, GPU occlusion/skinning, frame generation
 or split-screen compositor. Terrain/models, entities/hand, menus/HUD/chat, weather
 and overlays remain. This executable currently contains DX9 only. A shared EXE

@@ -200,7 +200,10 @@ impl Renderer {
                 [f.color[0], f.color[1], f.color[2]]
             })
         };
-        match self.device.begin(clear) {
+        match self
+            .device
+            .begin_scaled(clear, if frame.title { 1.0 } else { self.world_scale })
+        {
             Ok(true) => {}
             Ok(false) => {
                 self.last_wait = started.elapsed();
@@ -414,7 +417,7 @@ impl Renderer {
         *clock = Instant::now();
     }
     fn texture_bytes(&self) -> u64 {
-        self.sprites.layout.bytes()
+        self.sprites.pages.iter().map(|p| p.bytes).sum::<u64>()
             + self.hud.atlas.bytes()
             + self.panorama.as_ref().map_or(0, Pixels::bytes)
             + self.pictures.values().map(Pixels::bytes).sum::<u64>()
@@ -794,6 +797,9 @@ impl Renderer {
             self.draw_entities(frame, frame.hand, None, 2)?;
         }
         self.stamp("effects/hand", &mut clock);
+        if self.device.finish_world()? {
+            self.stamp("world resolve", &mut clock);
+        }
         self.draw_gui(frame)?;
         self.stamp("GUI draw", &mut clock);
         self.save_screenshot();

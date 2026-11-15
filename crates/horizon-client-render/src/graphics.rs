@@ -1669,6 +1669,8 @@ mod tests {
             translucent_batching: false,
             hdr_smooth_gradients: false,
             shader_pack: "Golden Hour".into(),
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            d3d9: horizon_client_d3d9::Preferences::default(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
         // A legacy marker's hold, which names no driver, round-trips too; none writes no line.

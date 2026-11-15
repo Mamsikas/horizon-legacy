@@ -7,12 +7,15 @@ pub(super) struct Sprites {
     mips: Vec<crate::mipmap::Settings>,
     pub frame_cache: dx::AnimationCache,
     frame_scratch: Vec<u8>,
+    minimum_size: u32,
+    mipmap_option: Option<u32>,
 }
 impl Sprites {
     pub fn new(
         device: &mut dx::Device,
         pixels: &[u8],
         size: u32,
+        minimum_size: u32,
         layers: u32,
         settings: &[crate::mipmap::Settings],
         animations: &[SpriteAnimation],
@@ -104,12 +107,21 @@ impl Sprites {
                 .collect(),
             frame_cache: dx::AnimationCache::new(4 << 20),
             frame_scratch: Vec::new(),
+            minimum_size: minimum_size.max(1),
+            mipmap_option: None,
         })
     }
     pub fn animate(&mut self, device: &mut dx::Device, ticks: u64) -> Result<()> {
+        self.update_animations(device, Some(ticks))
+    }
+    fn update_animations(&mut self, device: &mut dx::Device, ticks: Option<u64>) -> Result<()> {
         for (animation, previous) in &mut self.animations {
-            let frame = animation.frame(ticks);
-            if *previous == frame {
+            let frame = match ticks {
+                Some(ticks) => animation.frame(ticks),
+                None if *previous != usize::MAX => *previous,
+                None => continue,
+            };
+            if ticks.is_some() && *previous == frame {
                 continue;
             }
             let (group, local) = self.layout.locations[animation.layer as usize];
@@ -137,7 +149,7 @@ impl Sprites {
                     .insert(animation.layer, frame, &self.frame_scratch);
             }
             let mut at = 0;
-            for level in 0..plan.levels {
+            for level in 0..self.pages[page].levels {
                 let cell = (plan.cell >> level).max(1);
                 let len = (cell * cell * 4) as usize;
                 device.patch(
@@ -156,7 +168,48 @@ impl Sprites {
         Ok(())
     }
     pub fn cpu_bytes(&self) -> usize {
-        self.frame_cache.bytes() + self.frame_scratch.capacity()
+        self.frame_cache.bytes()
+            + self.frame_scratch.capacity()
+            + self
+                .pages
+                .iter()
+                .map(dx::Texture::mip_cpu_bytes)
+                .sum::<usize>()
+    }
+    pub fn set_mipmap_levels(&mut self, device: &mut dx::Device, requested: u32) -> Result<()> {
+        if self.mipmap_option == Some(requested) {
+            return Ok(());
+        }
+        self.mipmap_option = Some(requested);
+        let changed = (|| -> Result<()> {
+            for (group, plan) in self.layout.layouts.iter().enumerate() {
+                let levels = crate::sprites::sprite_mipmap_limit(
+                    requested,
+                    plan.size,
+                    self.minimum_size,
+                    plan.levels,
+                ) + 1;
+                for page in
+                    self.layout.offsets[group]..self.layout.offsets[group] + plan.pages as usize
+                {
+                    device.limit_texture_levels(&mut self.pages[page], levels)?;
+                }
+            }
+            Ok(())
+        })();
+        // Restore currently displayed frames, including when Animated Textures is Off.
+        let refreshed = self.update_animations(device, None);
+        changed?;
+        refreshed?;
+        log::info!(
+            "D3D9 mipmap option={requested} native_levels={:?} retained_tail_bytes={}",
+            self.pages.iter().map(|p| p.levels).collect::<Vec<_>>(),
+            self.pages
+                .iter()
+                .map(dx::Texture::mip_cpu_bytes)
+                .sum::<usize>()
+        );
+        Ok(())
     }
     pub fn quad(
         &self,

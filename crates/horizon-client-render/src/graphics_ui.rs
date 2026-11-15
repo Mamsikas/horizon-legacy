@@ -1191,6 +1191,45 @@ impl Item {
         if !self.available() {
             return Some("This feature is not yet available in Horizon.");
         }
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        if matches!(
+            self,
+            Item::Horizon(
+                H::LodDistance
+                    | H::FarDetail
+                    | H::BlueMapAutoDetect
+                    | H::BlueMapRadius
+                    | H::PresentMode
+                    | H::DynamicResolution
+                    | H::TargetFps
+                    | H::Antialiasing
+                    | H::Upscaling
+                    | H::UpscalingSharpness
+                    | H::FrameGeneration
+                    | H::Hdr
+                    | H::HdrBlackLevel
+                    | H::HdrCalibrate
+                    | H::HdrPeak
+                    | H::HdrPaperWhite
+                    | H::HdrUiBrightness
+                    | H::HdrLighting
+                    | H::HdrSmoothGradients
+                    | H::ShaderPacks
+                    | H::ShadowCache
+                    | H::ScreenshotQuality
+                    | H::TranslucentBatching
+            ) | Item::Vanilla(
+                Opt::Clouds
+                    | Opt::CloudRange
+                    | Opt::ImprovedTransparency
+                    | Opt::ChunkFade
+                    | Opt::MenuBlur
+                    | Opt::GlintSpeed
+                    | Opt::GlintStrength
+            )
+        ) {
+            return Some("Direct3D 9 does not support this feature.");
+        }
         match self {
             Item::Horizon(
                 H::HdrCalibrate
@@ -1722,6 +1761,36 @@ mod tests {
                 assert!(!r.text.is_empty() && r.text.len() < 80, "{:?}", r.item);
             }
         }
+    }
+
+    #[cfg(all(windows, feature = "legacy-d3d9"))]
+    #[test]
+    fn legacy_api_limits_leave_scale_and_cpu_culling_available_without_changing_values() {
+        let mut s = Settings::default();
+        s.horizon.taa = true;
+        s.horizon.resolution_scale = 50;
+        s.horizon.lod_distance = 64;
+        for h in [
+            H::Antialiasing,
+            H::Hdr,
+            H::FrameGeneration,
+            H::PresentMode,
+            H::ShaderPacks,
+            H::LodDistance,
+        ] {
+            assert_eq!(
+                Item::Horizon(h).blocked(&s, &NONE),
+                Some("Direct3D 9 does not support this feature.")
+            );
+        }
+        for h in [H::ResolutionScale, H::EntityCulling, H::ParticleCulling] {
+            assert_eq!(Item::Horizon(h).blocked(&s, &NONE), None);
+        }
+        assert!(s.horizon.taa);
+        assert_eq!(
+            (s.horizon.resolution_scale, s.horizon.lod_distance),
+            (50, 64)
+        );
     }
 
     #[test]

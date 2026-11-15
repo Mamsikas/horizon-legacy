@@ -34,6 +34,10 @@ use terrain_device::TerrainPipeline;
 mod gui_device;
 #[path = "presentation_formats.rs"]
 mod presentation_formats;
+#[path = "texture_levels.rs"]
+mod texture_levels;
+#[path = "world_target.rs"]
+mod world_target;
 pub use gui_device::ScreenTriangles;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Blend {
@@ -99,6 +103,7 @@ struct Inner {
     stream_sequence: Cell<u64>,
     default_meshes: RefCell<Vec<Weak<MeshHandle>>>,
     presentation: RefCell<Option<Presentation>>,
+    world: RefCell<world_target::State>,
     device: IDirect3DDevice9,
     _d3d: IDirect3D9,
     _window: Arc<Window>,
@@ -118,6 +123,7 @@ pub struct Texture {
     pub height: u32,
     pub levels: u32,
     pub bytes: u64,
+    mip_backup: Option<texture_levels::Backup>,
 }
 pub struct Mesh {
     raw: Rc<MeshHandle>,
@@ -248,6 +254,7 @@ pub struct Device {
     surface_pending: bool,
     lost: bool,
     scene: bool,
+    anisotropy: u32,
     cached_state: Option<(DrawState, usize, usize)>,
     state_cache: StateCache,
     cached_transform: Option<[[f32; 16]; 3]>,
@@ -459,6 +466,7 @@ impl Device {
                 stream_sequence: Cell::new(0),
                 default_meshes: RefCell::new(Vec::new()),
                 presentation: RefCell::new(None),
+                world: RefCell::new(world_target::State::default()),
                 device,
                 _d3d: d3d,
                 _window: window,
@@ -479,6 +487,7 @@ impl Device {
             surface_pending: true,
             lost: false,
             scene: false,
+            anisotropy: 1,
             cached_state: None,
             state_cache: StateCache::default(),
             cached_transform: None,
@@ -594,6 +603,7 @@ impl Device {
             surface_pending: true,
             lost: self.lost,
             scene: false,
+            anisotropy: self.anisotropy,
             cached_state: None,
             state_cache: StateCache::default(),
             cached_transform: None,
@@ -614,6 +624,20 @@ impl Device {
             stream_uploads: 0,
             stream_locks: 0,
             index_uploads: 0,
+        }
+    }
+    pub fn set_anisotropy(&mut self, requested: u32) {
+        let maximum =
+            if self.caps.raw.TextureFilterCaps & D3DPTFILTERCAPS_MINFANISOTROPIC as u32 != 0 {
+                self.caps.raw.MaxAnisotropy.clamp(1, 16)
+            } else {
+                1
+            };
+        let actual = requested.clamp(1, maximum);
+        if self.anisotropy != actual {
+            self.anisotropy = actual;
+            self.cached_state = None;
+            log::info!("D3D9 anisotropy requested={requested} effective={actual}");
         }
     }
     pub fn compact_vertices(&self) -> bool {
@@ -738,6 +762,7 @@ impl Device {
             }
         }
         self.inner.presentation.borrow_mut().take();
+        *self.inner.world.borrow_mut() = world_target::State::default();
     }
     fn create_presentation(&mut self) -> Result<()> {
         self.detach_presentation();
@@ -782,6 +807,9 @@ impl Device {
         Ok(())
     }
     pub fn begin(&mut self, color: [f32; 3]) -> Result<bool> {
+        self.begin_scaled(color, 1.0)
+    }
+    pub fn begin_scaled(&mut self, color: [f32; 3], scale: f32) -> Result<bool> {
         if self.present.BackBufferWidth == 0 || self.present.BackBufferHeight == 0 {
             return Ok(false);
         }
@@ -873,6 +901,8 @@ impl Device {
         self.cached_transform = None;
         self.shader_active = None;
         self.fog_constants = None;
+        // Select the world target before Clear, so scaling does not also clear a full-size window.
+        self.select_world_target(scale)?;
         // SAFETY: state values are D3D9 constants; begin/finish pair on this thread.
         unsafe {
             self.inner.device.SetVertexShader(None)?;
@@ -961,6 +991,10 @@ impl Device {
             // SAFETY: best-effort matching EndScene on an error path; never called twice.
             let _ = unsafe { self.inner.device.EndScene() };
             self.scene = false;
+        }
+        if self.inner.world.borrow().active {
+            let _ = self.restore_main_target();
+            self.inner.world.borrow_mut().active = false;
         }
     }
     pub fn mark_lost(&mut self) {
@@ -1062,6 +1096,7 @@ impl Device {
         let raw = raw.ok_or("D3D9 texture missing")?;
         let base = raw.cast::<IDirect3DBaseTexture9>()?;
         let texture = Texture {
+            mip_backup: None,
             raw,
             base,
             owner: self.inner.clone(),
@@ -1584,7 +1619,23 @@ impl Device {
                 } else {
                     D3DTEXF_POINT
                 };
-                cache.sampler(d, sampler, D3DSAMP_MINFILTER, filter.0 as u32)?;
+                let anisotropic = sampler == 0 && state.linear && self.anisotropy > 1;
+                cache.sampler(
+                    d,
+                    sampler,
+                    D3DSAMP_MINFILTER,
+                    if anisotropic {
+                        D3DTEXF_ANISOTROPIC.0 as u32
+                    } else {
+                        filter.0 as u32
+                    },
+                )?;
+                cache.sampler(
+                    d,
+                    sampler,
+                    D3DSAMP_MAXANISOTROPY,
+                    if anisotropic { self.anisotropy } else { 1 },
+                )?;
                 cache.sampler(d, sampler, D3DSAMP_MAGFILTER, filter.0 as u32)?;
                 cache.sampler(
                     d,

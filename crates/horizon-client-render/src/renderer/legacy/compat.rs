@@ -25,6 +25,7 @@ impl Renderer {
     }
     pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
         vec![
+            ("D3D9 scaled color/depth", self.device.world_target_bytes()),
             (
                 "D3D9 terrain buffers (caps-selected pool)",
                 self.gpu_mesh_bytes,
@@ -36,7 +37,10 @@ impl Renderer {
                     .map(mesh::DrawBatch::gpu_bytes)
                     .sum::<u64>(),
             ),
-            ("D3D9 sprite pages (managed)", self.sprites.layout.bytes()),
+            (
+                "D3D9 sprite pages (managed)",
+                self.sprites.pages.iter().map(|p| p.bytes).sum(),
+            ),
             ("D3D9 GUI pages (managed)", self.hud.atlas.bytes()),
         ]
     }
@@ -277,6 +281,11 @@ impl Renderer {
         upscale: f32,
         sharpness: f32,
     ) {
+        self.world_scale = if scale.is_finite() {
+            scale.clamp(0.25, 2.0)
+        } else {
+            1.0
+        };
     }
     pub fn set_shader_pack(
         &mut self,
@@ -386,12 +395,22 @@ impl Renderer {
     }
     pub fn set_texture_filtering(&mut self, filtering: i32, bit: i32) {
         self.linear = filtering > 0;
+        self.device.set_anisotropy(if filtering == 2 {
+            1 << bit.clamp(0, 4)
+        } else {
+            1
+        });
     }
     pub fn sprite_split(&self) -> u32 {
         0
     }
     pub fn set_mipmap_levels(&mut self, levels: u32) {
-        self.mipmaps = levels > 0;
+        if let Err(error) = self.sprites.set_mipmap_levels(&mut self.device, levels) {
+            log::warn!(
+                "D3D9 mipmap-level change could not allocate its textures: {error}; keeping available levels and the saved option"
+            );
+        }
+        self.mipmaps = self.sprites.pages.iter().any(|p| p.levels > 1);
     }
     /// DX9 LOST/NOTRESET is recovered in begin(), without replacing the gameplay renderer.
     pub fn device_lost(&self) -> bool {

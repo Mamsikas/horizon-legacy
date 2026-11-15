@@ -37,3 +37,5 @@ mod texture_pages;
 pub use texture_pages::{PageOrder, TextureRange, append_texture_pages};
 mod shadow_queue;
 pub use shadow_queue::ShadowQueue;
+mod world_size;
+pub use world_size::world_buffer_size;
