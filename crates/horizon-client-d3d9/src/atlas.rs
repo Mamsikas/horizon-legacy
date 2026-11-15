@@ -146,6 +146,7 @@ pub struct AtlasUv {
     inverse_side: f32,
 }
 impl AtlasUv {
+    #[inline]
     pub fn map(self, uv: [f32; 2]) -> [f32; 2] {
         [
             (self.offset[0] + uv[0] * self.size) * self.inverse_side,

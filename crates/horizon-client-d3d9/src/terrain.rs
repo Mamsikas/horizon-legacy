@@ -320,6 +320,21 @@ mod tests {
                 );
                 let mut scratch = Vec::new();
                 let shadow = crate::MeshData::from_encoded(&encoded, &mut scratch);
+                let pending = crate::MeshData::pending(&encoded);
+                let mut direct = Vec::new();
+                pending.decode(&mut direct).unwrap();
+                assert_eq!(
+                    bytemuck::cast_slice::<_, u8>(&direct),
+                    bytemuck::cast_slice::<_, u8>(&input)
+                );
+                let compressed = pending.compress_pending(&mut scratch).unwrap();
+                assert!(!compressed.compression_pending());
+                assert!(compressed.compress_pending(&mut scratch).is_none());
+                compressed.decode(&mut direct).unwrap();
+                assert_eq!(
+                    bytemuck::cast_slice::<_, u8>(&direct),
+                    bytemuck::cast_slice::<_, u8>(&input)
+                );
                 if count % 4 == 0 {
                     let mut joined = EncodedVertices::empty(encoding);
                     joined.append_mesh(&shadow).unwrap();

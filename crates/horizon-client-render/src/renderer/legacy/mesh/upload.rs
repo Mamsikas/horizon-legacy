@@ -58,7 +58,13 @@ pub(super) fn prepare(
     let result = {
         let _span = crate::spans::guard("d3d9_section_convert");
         if job.epoch == epoch.load(Ordering::Relaxed) {
-            scratch.prepare(layout, job.key, job.input.mesh.as_ref().unwrap(), hardware)
+            scratch.prepare(
+                layout,
+                job.key,
+                job.input.mesh.as_ref().unwrap(),
+                hardware,
+                false,
+            )
         } else {
             Err("discarded section from the preceding world".into())
         }

@@ -2,6 +2,7 @@ use super::*;
 mod arrival;
 mod compact;
 pub(super) mod convert;
+mod shadows;
 mod upload;
 pub(super) use compact::Compactor;
 pub(super) struct Packet {
@@ -252,6 +253,7 @@ impl Renderer {
             key,
             mesh,
             self.device.compact_vertices(),
+            self.compactor.is_some(),
         )?;
         let gpu = self.apply_converted(key, ready);
         let mut batch = dx::UploadBatch::new(self.device.max_vertices())?;
@@ -262,8 +264,18 @@ impl Renderer {
     fn apply_converted(
         &mut self,
         key: SectionKey,
-        ready: convert::Converted,
+        mut ready: convert::Converted,
     ) -> dx::EncodedVertices {
+        let defer = self.compactor.as_mut().is_some_and(|worker| {
+            worker.shadow_queue.cancel(key);
+            ready.shadow.compression_pending()
+                && worker
+                    .shadow_queue
+                    .admit(key, ready.shadow.bytes() as usize)
+        });
+        if ready.shadow.compression_pending() && !defer {
+            ready.shadow = Arc::new(self.convert_scratch.compress(&ready.shadow).unwrap());
+        }
         let convert::Converted {
             solid,
             translucent,
@@ -568,8 +580,9 @@ impl Renderer {
     }
     pub fn clear_sections(&mut self, layout: ColumnLayout) {
         self.pending_sections.clear();
-        if let Some(worker) = &self.compactor {
+        if let Some(worker) = &mut self.compactor {
             worker.cancel_uploads();
+            worker.shadow_queue.clear();
         }
         self.sections.clear();
         self.sections.set_min_y(layout.min_y());
@@ -609,7 +622,7 @@ impl Renderer {
         }
     }
     pub fn has_section(&self, key: SectionKey) -> bool {
-        self.sections.contains_key(&key)
+        self.sections.contains_key(&key) && !self.pending_sections.contains_key(&key)
     }
     pub fn section_count(&self) -> usize {
         self.sections.len()

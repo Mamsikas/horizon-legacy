@@ -186,6 +186,7 @@ impl Renderer {
             return Ok(false);
         }
         self.drain_uploads()?;
+        self.progress_shadows();
         if let Some(error) = self.pending_error.take() {
             return Err(error.into());
         }
@@ -378,6 +379,18 @@ impl Renderer {
                 self.stage_profile[4]
             );
             self.stage_profile = [0.0; 5];
+            if let Some(worker) = &self.compactor {
+                let (pending, bytes, active, [count, ns, peak]) = worker.shadow_status();
+                log::info!(
+                    "D3D9 deferred shadows pending={} bytes={} active={} completed={} worker_avg_ms={:.3} worker_peak_ms={:.3}",
+                    pending,
+                    bytes,
+                    active,
+                    count,
+                    ns as f64 / count.max(1) as f64 / 1.0e6,
+                    peak as f64 / 1.0e6
+                );
+            }
             log::info!(
                 "D3D9 window_frames={} cpu_avg_ms={:.3} cpu_peak_ms={:.3} peak_stages_ms={:?} mesh_uploads={} stream_uploads={} index_uploads={}",
                 self.profile_window.0,

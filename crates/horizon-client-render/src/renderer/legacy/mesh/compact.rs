@@ -19,6 +19,8 @@ struct Prepared {
 pub(super) enum Work {
     Compact(Job),
     Upload(upload::Job),
+    Shadow(shadows::Job),
+    ReleaseShadow(Arc<dx::MeshData>),
 }
 pub(in super::super) struct Compactor {
     pub(super) jobs: SyncSender<Work>,
@@ -29,14 +31,19 @@ pub(in super::super) struct Compactor {
     pub(super) upload_quota: Arc<AtomicUsize>,
     pub(super) upload_count: Arc<AtomicUsize>,
     pub(super) upload_epoch: Arc<AtomicUsize>,
+    pub(super) shadow_done: Receiver<shadows::Ready>,
+    pub(super) shadow_queue: dx::ShadowQueue<SectionKey>,
+    pub(super) shadow_busy: bool,
+    pub(super) shadow_stats: [u64; 3],
     busy: bool,
 }
 impl Compactor {
     pub(in super::super) fn new(layout: Arc<dx::AtlasSet>, hardware: bool) -> Option<Self> {
-        // One extra slot belongs to the sole outstanding compaction job.
-        let (jobs, input) = mpsc::sync_channel::<Work>(upload::MAX_JOBS + 1);
+        // One slot each for compaction, deferred shadow compression and its release.
+        let (jobs, input) = mpsc::sync_channel::<Work>(upload::MAX_JOBS + 3);
         let (output, done) = mpsc::sync_channel(1);
         let (uploads, upload_done) = mpsc::sync_channel(2);
+        let (shadows, shadow_done) = mpsc::sync_channel(1);
         let upload_quota = Arc::new(AtomicUsize::new(0));
         let upload_count = Arc::new(AtomicUsize::new(0));
         let upload_epoch = Arc::new(AtomicUsize::new(0));
@@ -48,6 +55,16 @@ impl Compactor {
                 let mut next = None;
                 while let Some(work) = next.take().or_else(|| input.recv().ok()) {
                     let job = match work {
+                        Work::Shadow(job) => {
+                            if shadows.send(shadows::prepare(job, &mut scratch)).is_err() {
+                                break;
+                            }
+                            continue;
+                        }
+                        Work::ReleaseShadow(source) => {
+                            drop(source);
+                            continue;
+                        }
                         Work::Upload(job) => {
                             let (ready, pending) = upload::prepare_batch(
                                 job,
@@ -102,6 +119,10 @@ impl Compactor {
             upload_quota,
             upload_count,
             upload_epoch,
+            shadow_done,
+            shadow_queue: dx::ShadowQueue::new(8 << 20),
+            shadow_busy: false,
+            shadow_stats: [0; 3],
             busy: false,
         })
     }

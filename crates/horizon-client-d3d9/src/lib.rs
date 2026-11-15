@@ -35,3 +35,5 @@ mod upload_batch;
 pub use upload_batch::{UploadBatch, UploadPage, UploadPart};
 mod texture_pages;
 pub use texture_pages::{PageOrder, TextureRange, append_texture_pages};
+mod shadow_queue;
+pub use shadow_queue::ShadowQueue;

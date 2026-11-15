@@ -13,9 +13,27 @@ pub struct MeshData {
     bytes: Vec<u8>,
     vertices: usize,
     compressed: bool,
+    pending: bool,
     encoding: crate::VertexEncoding,
 }
 impl MeshData {
+    /// Drawable immediately; only the optional lossless storage compression is deferred.
+    pub fn pending(vertices: &crate::EncodedVertices) -> Self {
+        Self {
+            bytes: vertices.bytes().to_vec(),
+            vertices: vertices.len(),
+            compressed: false,
+            pending: true,
+            encoding: vertices.encoding(),
+        }
+    }
+    pub fn compression_pending(&self) -> bool {
+        self.pending
+    }
+    pub fn compress_pending(&self, scratch: &mut Vec<u8>) -> Option<Self> {
+        self.pending
+            .then(|| Self::encode(&self.bytes, self.vertices, self.encoding, scratch))
+    }
     pub fn new(vertices: &[Vertex]) -> Self {
         Self::with_scratch(vertices, &mut Vec::new())
     }
@@ -58,6 +76,7 @@ impl MeshData {
             },
             vertices: count,
             compressed: use_compressed,
+            pending: false,
             encoding,
         }
     }
