@@ -105,8 +105,10 @@ class Win7Imports(unittest.TestCase):
                     report = CHECK.audit(fixture(symbol=symbol, delayed=delayed))
                     self.assertTrue(report["passed"], report["problems"])
 
-    def test_accepts_reviewed_win7_io_exports_on_both_architectures(self):
+    def test_accepts_reviewed_win7_runtime_exports_on_both_architectures(self):
         exports = [("kernel32.dll", "SetNamedPipeHandleState")]
+        exports += [("kernel32.dll", symbol) for symbol in
+                    ("AddVectoredContinueHandler", "RemoveVectoredContinueHandler")]
         exports += [("msvcrt.dll", symbol) for symbol in
                     ("_close", "_dup", "_dup2", "_get_osfhandle", "_open_osfhandle")]
         for architecture in ("x64", "x86"):
@@ -116,6 +118,14 @@ class Win7Imports(unittest.TestCase):
                         report = CHECK.audit(fixture(dll, symbol, x86=architecture == "x86",
                                                      delayed=delayed), architecture)
                         self.assertTrue(report["passed"], report["problems"])
+
+    def test_x64_unwind_exports_are_not_accepted_for_x86(self):
+        for symbol in ("RtlAddFunctionTable", "RtlDeleteFunctionTable"):
+            for delayed in (False, True):
+                with self.subTest(symbol=symbol, delayed=delayed):
+                    self.assertTrue(CHECK.audit(fixture(symbol=symbol, delayed=delayed))["passed"])
+                    self.assertFalse(CHECK.audit(fixture(symbol=symbol, x86=True,
+                                                        delayed=delayed), "x86")["passed"])
 
     def test_accepts_reviewed_i686_crt_exports_only_for_x86(self):
         for symbol in ("__p__commode", "__p__fmode", "_iob", "_setjmp3"):

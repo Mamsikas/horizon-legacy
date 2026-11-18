@@ -204,7 +204,8 @@ CLIENT_IMPORTS = {'advapi32.dll': 'AdjustTokenPrivileges LookupPrivilegeValueA I
  'kernel32.dll': 'CreateSemaphoreA GetHandleInformation GetModuleHandleExA GetProcessAffinityMask '
                  'GetThreadPriority SuspendThread GetCurrentProcessorNumber GetDiskFreeSpaceW '
                  'GetQueuedCompletionStatusEx GlobalSize K32GetProcessMemoryInfo '
-                 'QueryThreadCycleTime SetFileCompletionNotificationModes SetNamedPipeHandleState',
+                 'QueryThreadCycleTime SetFileCompletionNotificationModes SetNamedPipeHandleState '
+                 'AddVectoredContinueHandler RemoveVectoredContinueHandler',
  'msvcrt.dll': '_beginthreadex _endthreadex _hypot _setjmp _vscprintf _vsnprintf _wgetenv fputs '
                'getenv log10 longjmp printf strerror _strdup _close _dup _dup2 '
                '_get_osfhandle _open_osfhandle',
@@ -236,6 +237,9 @@ for _dll, _names in CLIENT_IMPORTS.items():
 # above: their exact exports are in https://win7dll.nirsoft.net/msvcrt_dll.html.
 # SetNamedPipeHandleState is a Kernel32 export since Windows 2000:
 # https://learn.microsoft.com/windows/win32/api/namedpipeapi/nf-namedpipeapi-setnamedpipehandlestate
+# Vectored continue handlers are Kernel32 exports since Vista (XP x64):
+# https://learn.microsoft.com/windows/win32/api/errhandlingapi/nf-errhandlingapi-addvectoredcontinuehandler
+# https://learn.microsoft.com/windows/win32/api/errhandlingapi/nf-errhandlingapi-removevectoredcontinuehandler
 
 # Standard COM IErrorInfo, available since Windows 2000 (not WinRT error origination).
 SAFE_IMPORTS["ole32.dll"] += " GetErrorInfo SetErrorInfo"
@@ -246,6 +250,11 @@ SAFE_IMPORTS = {dll: frozenset(names.split()) for dll, names in SAFE_IMPORTS.ite
 # Microsoft documents /cpp/c-runtime-library/p-{commode,fmode} and setjmp3.
 # MinGW's DEF_I386 import definitions also distinguish these from the x64 ABI.
 X86_IMPORTS = {"msvcrt.dll": frozenset(("__p__commode", "__p__fmode", "_iob", "_setjmp3"))}
+# Microsoft's SDK metadata names XP x64/Server 2003 x64 and Kernel32.dll for
+# these dynamic-unwind exports; do not accept them on 32-bit Windows.
+# https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winnt/nf-winnt-rtladdfunctiontable.md
+# https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winnt/nf-winnt-rtldeletefunctiontable.md
+X64_IMPORTS = {"kernel32.dll": frozenset(("RtlAddFunctionTable", "RtlDeleteFunctionTable"))}
 # GetCurrentThreadStackLimits requires Windows 8; the Win7 stack helper must be
 # used instead, not an import-policy exception.
 # https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadstacklimits
@@ -435,7 +444,7 @@ def audit(data, architecture="x64", d3d9=False):
             elif symbol.startswith("#"):
                 problems.append(f"ordinal import cannot be verified: {dll}!{symbol}")
             elif (dll in SAFE_IMPORTS and symbol not in SAFE_IMPORTS[dll]
-                  and not (architecture == "x86" and symbol in X86_IMPORTS.get(dll, ()))):
+                  and symbol not in (X86_IMPORTS if architecture == "x86" else X64_IMPORTS).get(dll, ())):
                 problems.append(f"API needs a Win7 export audit: {dll}!{symbol}")
     return {"architecture": architecture, "machine": pe.machine,
             "os_version": list(pe.os_version), "subsystem_version": list(pe.subsystem_version),
