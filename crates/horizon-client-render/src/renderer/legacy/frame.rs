@@ -836,6 +836,7 @@ impl Renderer {
         let mut batches = Vec::new();
         let mut sprite_batches = Vec::new();
         let mut glints = Vec::new();
+        let mut armor_glint = None;
         for quad in input.chunks_exact(4) {
             let overlay = quad[0].layer & 0xffff;
             if overlay == 13 {
@@ -903,13 +904,12 @@ impl Renderer {
             });
             if matches!(overlay, 7 | 8 | 33 | 36) && frame.glint_alpha > 0.0 {
                 let armor = overlay == 36;
+                let transform = armor.then(|| {
+                    *armor_glint.get_or_insert_with(|| dx::ArmorGlint::new(frame.glint_ticks))
+                });
                 let mut foil = vertices;
                 for (v, source) in foil.iter_mut().zip(quad) {
-                    v.light = if armor {
-                        dx::armor_glint_uv(source.glint_uv, frame.glint_ticks)
-                    } else {
-                        source.glint_uv
-                    };
+                    v.light = transform.map_or(source.glint_uv, |t| t.uv(source.glint_uv));
                     v.color =
                         dx::glint_color(frame.glint_alpha, frame.pvp.glint, (v.color >> 24) as u8);
                 }
@@ -1259,7 +1259,11 @@ impl Renderer {
                 &self.lightmap
             };
             self.device.state(*state, texture, Some(second))?;
-            if state.glint != 0 {
+            // The staged TEX2 stream already contains foil UVs. Reuse it for
+            // every command: a transient foil upload would invalidate its serial
+            // before the next ordinary widget. SWVP's separate XYZRHW stream
+            // lacks the second UV, so only that path needs transient foil draws.
+            if state.glint != 0 && staged.is_none() {
                 self.device
                     .draw_triangles(&self.gui_vertices[range.start as usize..range.end as usize])?;
             } else if let Some(screen) = &screen {

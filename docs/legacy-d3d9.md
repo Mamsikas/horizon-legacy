@@ -50,6 +50,8 @@ lighting inputs and player choices. Deep performance work is the next task (TZ 3
 - No forced low preset, distance reduction, FPS cap or fixed 128 MiB cap. Advisory
   budgets follow driver/system memory, with bounded paging/fallback under pressure.
   Ordinary tests should remove old HORIZON_D3D9_MESH_MIB/TEXTURE_MIB overrides.
+  New upstream guest-capable threads reserve 136 MiB of virtual stack each; this
+  is address space, not committed RSS. Keep that distinction in x86 memory reports.
 
 ## Ownership and source map
 
@@ -65,6 +67,7 @@ lighting inputs and player choices. Deep performance work is the next task (TZ 3
 | Resolution scale | D3D9 `world_size.rs`, `world_target.rs`: persistent native color/depth, hardware StretchRect outside a scene, full-resolution HUD. |
 | Embedded shaders | D3D9 `fog*_program.rs`, `terrain_program.rs`; sources and SDK validation in `tools/d3d9/`. No runtime shader compilation. |
 | Input/boot compatibility | Win7 clipboard shim; game runtime loading/window setup and HDR stubs keep unsupported DLLs out of imports. Preserve early device choices across loading/title/world handoff. |
+| Thread stack compatibility | `horizon-guest-stack/src/win7_stack.rs`: VirtualQuery walks the current reservation instead of importing Win8's GetCurrentThreadStackLimits. The upstream stack-size policy is preserved. |
 | Shared game logic | Upstream `horizon-client`, `horizon-client-gameplay`, `horizon-gameplay`; do not optimize those as a substitute for improving DX9. Adapt interfaces only as needed for this port. |
 | Distribution entry | Upstream moved the `horizon-client` executable into package `horizon-game`; the Win7 script must build that package with legacy-d3d9,audio. |
 
@@ -98,6 +101,10 @@ lighting inputs and player choices. Deep performance work is the next task (TZ 3
   Glint uses a separate masked path only when present; do not make every widget pay
   for an offscreen enchantment composite. Three-stage FFP squares sampled RGB; on
   two-stage hardware the small glint texture is pre-squared (filtering approximation).
+  Keep base/foil state barriers even on one atlas page. Hardware VP reuses the
+  existing TEX2 GUI upload for foil; transient foil uploads would invalidate its
+  staged serial. SWVP foil uses the separate transient stream, leaving XYZRHW
+  ordinary GUI valid. Include glint strength/tint in cached geometry inputs.
 - Scale 100% has no extra target/resolve. Scaling the world selects its target before
   Clear, then resolves before HUD. Release DEFAULT targets on Reset and when unused.
   No CPU readback is involved. The saved option survives driver/allocation fallback.
@@ -152,6 +159,10 @@ chart on the N455's two logical threads does not establish a purely GPU-bound sc
 | Nov 18 movement, 42f0b42d47 | 64.891 s / 2254 | 34.73 | 22.06 ms | 15.55 | 0.72 | 2.73 | little visible entity work |
 | Nov 18 server route, 42f0b42d47 | 49.354 s / 557 | 11.29 | 64.11 ms | 35.50 | 3.71 | 2.87 | 16.61 / 5.45 ms |
 
+`profile-20261118-112520Z.hzperf` is movement;
+`profile-20261118-113039Z.hzperf` is the server route. Their 5-second process CPU
+readings are roughly 1.0–1.5 logical cores on the two-thread N455.
+
 The moving run's upload_queue averages 0.227 ms/frame versus about 0.4 ms earlier;
 retained CPU geometry is about 1.7 MiB, native arenas about 9 MiB. The log confirms
 background shadow work completes and drains. Overall movement is about 2.6% slower
@@ -176,7 +187,8 @@ its pinned cross tools with tools/bootstrap_win7_cross.sh. Set WIN7_ARCH=x86 for
 opt-level 3, panic=abort and stripped debug info. Keep linker memory bounded through
 build parallelism; do not turn LTO off silently. Benchmark its effect honestly.
 
-Actions keeps DX9 Win7 package/audit/tests and SDK shader validation. Upstream
+Actions keeps DX9 Win7 package/audit/tests, SDK shader validation and real x64/x86
+Windows tests comparing the Win7 stack query with the modern API. Upstream
 release/site/launcher/telemetry/mod publishing bots are not this fork's CI. Future
 merges must not reactivate them accidentally. Only x86 and x64 distribution
 artifacts are uploaded, as flat ZIPs containing EXE, TESTING.txt, build-info.txt,

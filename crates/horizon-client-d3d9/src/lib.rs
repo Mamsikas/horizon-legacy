@@ -41,4 +41,4 @@ mod world_size;
 pub use world_size::world_buffer_size;
 
 mod glint;
-pub use glint::{armor_glint_uv, glint_color, glint_pixels};
+pub use glint::{ArmorGlint, glint_color, glint_pixels};

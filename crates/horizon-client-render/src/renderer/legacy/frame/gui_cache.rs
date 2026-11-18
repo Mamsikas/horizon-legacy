@@ -19,6 +19,7 @@ pub(super) struct GuiRun<'a> {
 struct Entry {
     source: Vec<crate::hud::HudVertex>,
     state: Option<DrawState>,
+    glint_color: u32,
     revision: u64,
     vertices: Vec<dx::Vertex>,
     commands: Vec<GuiCommand>,
@@ -77,6 +78,7 @@ impl GuiCache {
             let entry = &mut self.entries[self.at];
             self.at += 1;
             let same = entry.state == Some(run.state)
+                && entry.glint_color == run.glint_color
                 && entry.revision == run.pixels.revision()
                 && bytemuck::cast_slice::<_, u8>(&entry.source)
                     == bytemuck::cast_slice::<_, u8>(source);
@@ -91,6 +93,7 @@ impl GuiCache {
                 entry.source.clear();
                 entry.source.extend_from_slice(source);
                 entry.state = Some(run.state);
+                entry.glint_color = run.glint_color;
                 entry.revision = run.pixels.revision();
                 self.retained += entry.bytes();
             }
@@ -165,6 +168,9 @@ fn build(
             0.0
         };
         if kind != previous_kind {
+            // A shared atlas page does not make base colour and foil compatible.
+            // Preserve their painter order and state across a mixed run.
+            batches.flush();
             batches.begin(DrawState {
                 glint: kind,
                 equal_depth: kind != 0 && run.state.depth_test,

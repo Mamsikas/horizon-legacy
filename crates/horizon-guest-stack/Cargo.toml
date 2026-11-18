@@ -9,5 +9,11 @@ description = "Guest stack reservations and executable startup without allocator
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(all(windows, target_vendor = "win7"))'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
+
 [lints]
 workspace = true

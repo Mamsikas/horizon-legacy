@@ -31,13 +31,26 @@ pub fn glint_color(strength: f32, tint: u32, alpha: u8) -> u32 {
     });
     u32::from(alpha) << 24 | u32::from(rgb[0]) << 16 | u32::from(rgb[1]) << 8 | u32::from(rgb[2])
 }
-pub fn armor_glint_uv(uv: [f32; 2], ticks: f32) -> [f32; 2] {
-    let (s, c) = 0.17453292_f32.sin_cos();
-    let [x, y] = uv.map(|v| v * 0.16);
-    [
-        x * c - y * s - (ticks % 110000.0) / 110000.0,
-        x * s + y * c + (ticks % 30000.0) / 30000.0,
-    ]
+#[derive(Clone, Copy)]
+pub struct ArmorGlint {
+    scroll: [f32; 2],
+}
+impl ArmorGlint {
+    /// One scrolling transform for the frame, not a remainder/trig per vertex.
+    pub fn new(ticks: f32) -> Self {
+        Self {
+            scroll: [-(ticks % 110000.0) / 110000.0, (ticks % 30000.0) / 30000.0],
+        }
+    }
+    pub fn uv(self, uv: [f32; 2]) -> [f32; 2] {
+        // sin/cos of the shader's fixed ten-degree rotation.
+        let (s, c) = (0.17364818, 0.9848077);
+        let [x, y] = uv.map(|v| v * 0.16);
+        [
+            x * c - y * s + self.scroll[0],
+            x * s + y * c + self.scroll[1],
+        ]
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -59,8 +72,11 @@ mod tests {
         assert_eq!(glint_color(0.0, 0, 123), 123 << 24);
         assert_eq!(glint_color(1.0, 0, 123), 0x7bffffff);
         assert_eq!(glint_color(0.5, 0x000000ff, 255), 0xff400000);
-        assert_eq!(armor_glint_uv([0.0; 2], 0.0), [0.0; 2]);
-        let moved = armor_glint_uv([0.0; 2], 15000.0);
+        assert_eq!(ArmorGlint::new(0.0).uv([0.0; 2]), [0.0; 2]);
+        let rotated = ArmorGlint::new(0.0).uv([6.25, 0.0]);
+        assert!((rotated[0] - 0.9848077).abs() < 1e-6);
+        assert!((rotated[1] - 0.17364818).abs() < 1e-6);
+        let moved = ArmorGlint::new(15000.0).uv([0.0; 2]);
         assert!((moved[0] + 15000.0 / 110000.0).abs() < 1e-6);
         assert!((moved[1] - 0.5).abs() < 1e-6);
     }

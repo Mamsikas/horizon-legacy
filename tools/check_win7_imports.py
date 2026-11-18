@@ -204,9 +204,10 @@ CLIENT_IMPORTS = {'advapi32.dll': 'AdjustTokenPrivileges LookupPrivilegeValueA I
  'kernel32.dll': 'CreateSemaphoreA GetHandleInformation GetModuleHandleExA GetProcessAffinityMask '
                  'GetThreadPriority SuspendThread GetCurrentProcessorNumber GetDiskFreeSpaceW '
                  'GetQueuedCompletionStatusEx GlobalSize K32GetProcessMemoryInfo '
-                 'QueryThreadCycleTime SetFileCompletionNotificationModes',
+                 'QueryThreadCycleTime SetFileCompletionNotificationModes SetNamedPipeHandleState',
  'msvcrt.dll': '_beginthreadex _endthreadex _hypot _setjmp _vscprintf _vsnprintf _wgetenv fputs '
-               'getenv log10 longjmp printf strerror _strdup',
+               'getenv log10 longjmp printf strerror _strdup _close _dup _dup2 '
+               '_get_osfhandle _open_osfhandle',
  'ntdll.dll': 'NtCancelIoFileEx NtDeviceIoControlFile',
  'ole32.dll': 'PropVariantClear PropVariantCopy OleInitialize RegisterDragDrop RevokeDragDrop',
  'oleaut32.dll': 'VariantClear VariantCopy',
@@ -231,6 +232,11 @@ CLIENT_IMPORTS = {'advapi32.dll': 'AdjustTokenPrivileges LookupPrivilegeValueA I
 for _dll, _names in CLIENT_IMPORTS.items():
     SAFE_IMPORTS[_dll] = SAFE_IMPORTS.get(_dll, "") + " " + _names
 
+# Upstream's new wasm host uses the five classic CRT descriptor/handle functions
+# above: their exact exports are in https://win7dll.nirsoft.net/msvcrt_dll.html.
+# SetNamedPipeHandleState is a Kernel32 export since Windows 2000:
+# https://learn.microsoft.com/windows/win32/api/namedpipeapi/nf-namedpipeapi-setnamedpipehandlestate
+
 # Standard COM IErrorInfo, available since Windows 2000 (not WinRT error origination).
 SAFE_IMPORTS["ole32.dll"] += " GetErrorInfo SetErrorInfo"
 SAFE_IMPORTS = {dll: frozenset(names.split()) for dll, names in SAFE_IMPORTS.items()}
@@ -240,11 +246,14 @@ SAFE_IMPORTS = {dll: frozenset(names.split()) for dll, names in SAFE_IMPORTS.ite
 # Microsoft documents /cpp/c-runtime-library/p-{commode,fmode} and setjmp3.
 # MinGW's DEF_I386 import definitions also distinguish these from the x64 ABI.
 X86_IMPORTS = {"msvcrt.dll": frozenset(("__p__commode", "__p__fmode", "_iob", "_setjmp3"))}
+# GetCurrentThreadStackLimits requires Windows 8; the Win7 stack helper must be
+# used instead, not an import-policy exception.
+# https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadstacklimits
 FORBIDDEN_APIS = frozenset("""
     CreateDXGIFactory2 GetDpiForWindow GetDpiForMonitor GetSystemTimePreciseAsFileTime
     GetTempPath2W IsWow64Process2 ProcessPrng SetProcessDpiAwareness
     SetProcessDpiAwarenessContext SetThreadDescription GetThreadDescription
-    SetThreadDpiAwarenessContext WaitOnAddress WakeByAddressAll WakeByAddressSingle
+    SetThreadDpiAwarenessContext GetCurrentThreadStackLimits WaitOnAddress WakeByAddressAll WakeByAddressSingle
     GetOverlappedResultEx GetSystemTimePreciseAsFileTime DiscardVirtualMemory
     OfferVirtualMemory ReclaimVirtualMemory VirtualAlloc2 MapViewOfFile3
 """.split())

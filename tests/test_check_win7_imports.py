@@ -91,10 +91,12 @@ class Win7Imports(unittest.TestCase):
         self.assertFalse(CHECK.audit(data)["passed"])
 
     def test_rejects_post_win7_api_in_both_import_tables(self):
-        for delayed in (False, True):
-            report = CHECK.audit(fixture(symbol="WaitOnAddress", delayed=delayed))
-            self.assertFalse(report["passed"])
-            self.assertIn("post-Win7 API", report["problems"][0])
+        for symbol in ("WaitOnAddress", "GetCurrentThreadStackLimits"):
+            for delayed in (False, True):
+                with self.subTest(symbol=symbol, delayed=delayed):
+                    report = CHECK.audit(fixture(symbol=symbol, delayed=delayed))
+                    self.assertFalse(report["passed"])
+                    self.assertIn("post-Win7 API", report["problems"][0])
 
     def test_accepts_reviewed_kernel32_cpu_accounting_in_both_tables(self):
         for symbol in ("GetProcessTimes", "GetSystemTimes", "GetThreadTimes"):
@@ -102,6 +104,18 @@ class Win7Imports(unittest.TestCase):
                 with self.subTest(symbol=symbol, delayed=delayed):
                     report = CHECK.audit(fixture(symbol=symbol, delayed=delayed))
                     self.assertTrue(report["passed"], report["problems"])
+
+    def test_accepts_reviewed_win7_io_exports_on_both_architectures(self):
+        exports = [("kernel32.dll", "SetNamedPipeHandleState")]
+        exports += [("msvcrt.dll", symbol) for symbol in
+                    ("_close", "_dup", "_dup2", "_get_osfhandle", "_open_osfhandle")]
+        for architecture in ("x64", "x86"):
+            for delayed in (False, True):
+                for dll, symbol in exports:
+                    with self.subTest(architecture=architecture, delayed=delayed, symbol=symbol):
+                        report = CHECK.audit(fixture(dll, symbol, x86=architecture == "x86",
+                                                     delayed=delayed), architecture)
+                        self.assertTrue(report["passed"], report["problems"])
 
     def test_accepts_reviewed_i686_crt_exports_only_for_x86(self):
         for symbol in ("__p__commode", "__p__fmode", "_iob", "_setjmp3"):

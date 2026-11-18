@@ -4,6 +4,9 @@
 mod constants;
 pub use constants::{GUEST_STACK_BYTES, HOST_HEADROOM};
 
+#[cfg(all(windows, any(target_vendor = "win7", test)))]
+mod win7_stack;
+
 /// Spawn guarantees the reservation even on platforms without a stack-size query.
 pub fn builder() -> std::thread::Builder {
     std::thread::Builder::new().stack_size(GUEST_STACK_BYTES + HOST_HEADROOM)
@@ -144,12 +147,19 @@ fn inspect_current() -> Result<(), &'static str> {
             return Err("GuestStackUnavailable: calling thread needs 136 MiB of stack");
         }
     }
-    #[cfg(windows)]
+    #[cfg(all(windows, not(target_vendor = "win7")))]
     {
         let mut low = 0;
         let mut high = 0;
         // SAFETY: both pointers refer to writable stack bounds.
         unsafe { get_current_thread_stack_limits(&mut low, &mut high) };
+        if high - low < GUEST_STACK_BYTES + HOST_HEADROOM {
+            return Err("GuestStackUnavailable: calling thread needs 136 MiB of stack");
+        }
+    }
+    #[cfg(all(windows, target_vendor = "win7"))]
+    {
+        let (low, high) = win7_stack::bounds()?;
         if high - low < GUEST_STACK_BYTES + HOST_HEADROOM {
             return Err("GuestStackUnavailable: calling thread needs 136 MiB of stack");
         }
@@ -160,7 +170,7 @@ fn inspect_current() -> Result<(), &'static str> {
     Ok(())
 }
 
-#[cfg(windows)]
+#[cfg(all(windows, not(target_vendor = "win7")))]
 #[link(name = "kernel32")]
 unsafe extern "system" {
     #[link_name = "GetCurrentThreadStackLimits"]
