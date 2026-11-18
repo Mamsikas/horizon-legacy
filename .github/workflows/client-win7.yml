@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'crates/**'
+      - 'third_party/**'
       - 'tools/d3d9/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
@@ -17,6 +18,7 @@ on:
     branches: [main]
     paths:
       - 'crates/**'
+      - 'third_party/**'
       - 'tools/d3d9/**'
       - 'Cargo.toml'
       - 'Cargo.lock'

@@ -67,6 +67,7 @@ lighting inputs and player choices. Deep performance work is the next task (TZ 3
 | Resolution scale | D3D9 `world_size.rs`, `world_target.rs`: persistent native color/depth, hardware StretchRect outside a scene, full-resolution HUD. |
 | Embedded shaders | D3D9 `fog*_program.rs`, `terrain_program.rs`; sources and SDK validation in `tools/d3d9/`. No runtime shader compilation. |
 | Input/boot compatibility | Win7 clipboard shim; game runtime loading/window setup and HDR stubs keep unsupported DLLs out of imports. Preserve early device choices across loading/title/world handoff. |
+| Win7 COM imports | `third_party/windows-link`: only the Win7 target routes classic CoTaskMemAlloc/Free/Realloc through Ole32. Keep combase and other WinRT imports rejected; preserve the narrow patch when updating bindings. |
 | Thread stack compatibility | `horizon-guest-stack/src/win7_stack.rs`: VirtualQuery walks the current reservation instead of importing Win8's GetCurrentThreadStackLimits. The upstream stack-size policy is preserved. |
 | Shared game logic | Upstream `horizon-client`, `horizon-client-gameplay`, `horizon-gameplay`; do not optimize those as a substitute for improving DX9. Adapt interfaces only as needed for this port. |
 | Distribution entry | Upstream moved the `horizon-client` executable into package `horizon-game`; the Win7 script must build that package with legacy-d3d9,audio. |
@@ -183,7 +184,8 @@ A host CPU microbenchmark can validate a kernel, not establish GMA gameplay FPS.
 `tools/build_win7_client.sh` pins nightly-2026-11-11, uses rust-src/build-std and the
 Win7 GNU target, static native support and the portable CPU flags above. Install
 its pinned cross tools with tools/bootstrap_win7_cross.sh. Set WIN7_ARCH=x86 for
-32 bit; default x64. The optimized legacy profile uses Thin LTO, one codegen unit,
+32 bit; default x64. An early COM-only import probe runs before the full game build and is never shipped.
+The optimized legacy profile uses Thin LTO, one codegen unit,
 opt-level 3, panic=abort and stripped debug info. Keep linker memory bounded through
 build parallelism; do not turn LTO off silently. Benchmark its effect honestly.
 

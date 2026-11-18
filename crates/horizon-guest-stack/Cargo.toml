@@ -13,7 +13,7 @@ libc = "0.2"
 windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
 
 [target.'cfg(windows)'.dev-dependencies]
-windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
+windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_Com"] }
 
 [lints]
 workspace = true

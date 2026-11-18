@@ -58,6 +58,12 @@ PY
 )
 link_args=()
 for directory in "${import_dirs[@]}"; do link_args+=(-L "native=$directory"); done
+# Catch Windows binding/import-library changes before spending time on game LTO.
+# This ABI probe is not part of either distribution package.
+cargo "+$toolchain" rustc --locked --profile legacy -p horizon-guest-stack --example win7_com_imports \
+    --target "$target" -Z build-std=std,panic_abort -- "${link_args[@]}"
+python3 tools/check_win7_imports.py --architecture "$architecture" \
+    "$CARGO_TARGET_DIR/$target/legacy/examples/win7_com_imports.exe"
 cargo "+$toolchain" rustc --locked --profile legacy -p horizon-game --bin horizon-client \
     --target "$target" -Z build-std=std,panic_abort \
     --no-default-features --features legacy-d3d9,audio -- "${link_args[@]}"

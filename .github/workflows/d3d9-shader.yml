@@ -3,10 +3,10 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', 'crates/horizon-client-d3d9/src/terrain*', 'crates/horizon-guest-stack/**', '.github/workflows/d3d9-shader.yml']
+    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', 'crates/horizon-client-d3d9/src/terrain*', 'crates/horizon-guest-stack/**', 'third_party/windows-link/**', '.github/workflows/d3d9-shader.yml']
   pull_request:
     branches: [main]
-    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', 'crates/horizon-client-d3d9/src/terrain*', 'crates/horizon-guest-stack/**', '.github/workflows/d3d9-shader.yml']
+    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', 'crates/horizon-client-d3d9/src/terrain*', 'crates/horizon-guest-stack/**', 'third_party/windows-link/**', '.github/workflows/d3d9-shader.yml']
 jobs:
   shader:
     runs-on: windows-2022
