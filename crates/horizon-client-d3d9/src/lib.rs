@@ -7,7 +7,7 @@ pub use device::*;
 #[cfg(windows)]
 mod thread_time;
 #[cfg(windows)]
-pub use thread_time::{process_cpu_time, system_cpu_ticks, thread_cpu_time};
+pub use thread_time::{system_cpu_ticks, thread_cpu_time};
 
 mod atlas;
 pub use atlas::{AtlasLayout, AtlasSet, AtlasUv};
@@ -39,3 +39,6 @@ mod shadow_queue;
 pub use shadow_queue::ShadowQueue;
 mod world_size;
 pub use world_size::world_buffer_size;
+
+mod glint;
+pub use glint::{armor_glint_uv, glint_color, glint_pixels};

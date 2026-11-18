@@ -1,4 +1,4 @@
-use crate::gamerules::GameRules as Rules;
+use crate::gamerules::{GameRules as Rules, vanilla};
 use horizon_perf_format::Gauges;
 use horizon_perf_format::v1::{Build, GameRules, HorizonOptions, Machine, Settings};
 
@@ -23,11 +23,7 @@ pub(super) struct SystemProbe {
 
 impl SystemProbe {
     pub(super) fn read(&mut self, t: f64, counts: WorldCounts) -> Gauges {
-        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
         let pid = std::process::id();
-        #[cfg(all(windows, feature = "legacy-d3d9"))]
-        let cpu_s = horizon_client_render::renderer::process_cpu_time().map(|t| t.as_secs_f64());
-        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
         let cpu_s = horizon_bench::cpu_seconds(pid);
         #[cfg(all(windows, feature = "legacy-d3d9"))]
         let stat = horizon_client_render::renderer::system_cpu_ticks();
@@ -36,12 +32,8 @@ impl SystemProbe {
             .ok()
             .and_then(|s| parse_cpu_stat(&s));
         let threads = std::thread::available_parallelism().map_or(1, |n| n.get()) as f64;
-        #[cfg(all(windows, feature = "legacy-d3d9"))]
-        let rss = horizon_threads::process_memory::resident_bytes();
-        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
-        let rss = horizon_bench::rss_bytes(pid);
         let mut g = Gauges {
-            rss_mb: rss.map_or(0.0, |b| (b >> 20) as f32),
+            rss_mb: horizon_bench::rss_bytes(pid).map_or(0.0, |b| (b >> 20) as f32),
             players: counts.players,
             chunks: counts.chunks,
             entities: counts.entities,
@@ -221,14 +213,16 @@ pub fn settings(view: u32, simulation: u32, max_players: u32, compression: i32) 
 /// The game rules a capture records: the typed allowlist, nothing else from the world's rule set.
 pub fn game_rules(rules: &Rules) -> GameRules {
     GameRules {
-        random_tick_speed: Some(rules.int("random_tick_speed")),
-        max_entity_cramming: Some(rules.int("max_entity_cramming")),
-        fire_spread_radius_around_player: Some(rules.int("fire_spread_radius_around_player")),
-        advance_time: Some(rules.bool("advance_time")),
-        mob_griefing: Some(rules.bool("mob_griefing")),
-        spawn_mobs: Some(rules.bool("spawn_mobs")),
-        spawn_monsters: Some(rules.bool("spawn_monsters")),
-        spawner_blocks_work: Some(rules.bool("spawner_blocks_work")),
+        random_tick_speed: Some(rules.int_at(vanilla::RANDOM_TICK_SPEED)),
+        max_entity_cramming: Some(rules.int_at(vanilla::MAX_ENTITY_CRAMMING)),
+        fire_spread_radius_around_player: Some(
+            rules.int_at(vanilla::FIRE_SPREAD_RADIUS_AROUND_PLAYER),
+        ),
+        advance_time: Some(rules.bool_at(vanilla::ADVANCE_TIME)),
+        mob_griefing: Some(rules.bool_at(vanilla::MOB_GRIEFING)),
+        spawn_mobs: Some(rules.bool_at(vanilla::SPAWN_MOBS)),
+        spawn_monsters: Some(rules.bool_at(vanilla::SPAWN_MONSTERS)),
+        spawner_blocks_work: Some(rules.bool_at(vanilla::SPAWNER_BLOCKS_WORK)),
     }
 }
 

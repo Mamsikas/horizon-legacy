@@ -59,6 +59,9 @@ pub struct DrawState {
     pub alpha_ref: u8,
     pub cull: bool,
     pub lightmap: bool,
+    /// 0 ordinary, 1 item foil, 2 armour foil; slot one is the repeating glint.
+    pub glint: u8,
+    pub equal_depth: bool,
     pub fog: Option<Fog>,
     pub fog_program: crate::FogProgram,
     pub scissor: Option<[u32; 4]>,
@@ -77,6 +80,8 @@ impl Default for DrawState {
             alpha_ref: 127,
             cull: true,
             lightmap: true,
+            glint: 0,
+            equal_depth: false,
             fog: None,
             fog_program: crate::FogProgram::Dual,
             scissor: None,
@@ -1475,14 +1480,29 @@ impl Device {
                 cache.textures[0] = texture.raw.as_raw() as usize;
                 self.binds += 1;
             }
-            cache.stage(d, 0, D3DTSS_COLOROP, D3DTOP_MODULATE.0 as u32)?;
+            cache.stage(
+                d,
+                0,
+                D3DTSS_COLOROP,
+                if state.glint != 0 {
+                    D3DTOP_SELECTARG2
+                } else {
+                    D3DTOP_MODULATE
+                }
+                .0 as u32,
+            )?;
             cache.stage(d, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
             cache.stage(d, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
             cache.stage(d, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as u32)?;
             cache.stage(d, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE)?;
             cache.stage(d, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE)?;
             cache.stage(d, 0, D3DTSS_TEXCOORDINDEX, 0)?;
-            let lm = if state.lightmap { lightmap } else { None };
+            let glint_square = state.glint != 0 && self.caps.raw.MaxTextureBlendStages >= 3;
+            let lm = if state.lightmap || state.glint != 0 {
+                lightmap
+            } else {
+                None
+            };
             let light_texture = lm.map(|t| &t.base);
             let light_id = light_texture.map_or(0, |t| t.as_raw() as usize);
             if cache.textures[1] != light_id {
@@ -1501,7 +1521,33 @@ impl Device {
                 } as u32,
             )?;
             cache.stage(d, 1, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
-            cache.stage(d, 1, D3DTSS_COLORARG2, D3DTA_CURRENT)?;
+            cache.stage(
+                d,
+                1,
+                D3DTSS_COLORARG2,
+                if glint_square {
+                    D3DTA_TEXTURE
+                } else {
+                    D3DTA_CURRENT
+                },
+            )?;
+            cache.stage(
+                d,
+                2,
+                D3DTSS_COLOROP,
+                if glint_square {
+                    D3DTOP_MODULATE
+                } else {
+                    D3DTOP_DISABLE
+                }
+                .0 as u32,
+            )?;
+            if glint_square {
+                cache.stage(d, 2, D3DTSS_COLORARG1, D3DTA_CURRENT)?;
+                cache.stage(d, 2, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
+                cache.stage(d, 2, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32)?;
+                cache.stage(d, 2, D3DTSS_ALPHAARG1, D3DTA_CURRENT)?;
+            }
             cache.stage(d, 1, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2.0 as u32)?;
             cache.stage(d, 1, D3DTSS_ALPHAARG2, D3DTA_CURRENT)?;
             cache.stage(d, 1, D3DTSS_TEXCOORDINDEX, 1)?;
@@ -1524,7 +1570,9 @@ impl Device {
             cache.render(
                 d,
                 D3DRS_ZFUNC,
-                if state.reverse_z {
+                if state.equal_depth {
+                    D3DCMP_EQUAL
+                } else if state.reverse_z {
                     D3DCMP_GREATEREQUAL
                 } else {
                     D3DCMP_LESSEQUAL
@@ -1654,7 +1702,7 @@ impl Device {
                         D3DTEXF_NONE.0
                     } as u32,
                 )?;
-                let address = if sampler == 0 && state.wrap {
+                let address = if sampler == 0 && state.wrap || sampler == 1 && state.glint != 0 {
                     D3DTADDRESS_WRAP
                 } else {
                     D3DTADDRESS_CLAMP

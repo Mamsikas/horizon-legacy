@@ -254,10 +254,12 @@ mod tests {
         assert!(!root.join(JRE.directory).join(MARKER).exists());
         // A corrupt cached archive is rejected before the supplied probe can run.
         fs::write(&archive, b"damaged").unwrap();
-        assert!(install_archive(&root, &archive, &package, |_, _| panic!(
-            "unchecked archive executed"
-        ))
-        .is_err());
+        assert!(
+            install_archive(&root, &archive, &package, |_, _| panic!(
+                "unchecked archive executed"
+            ))
+            .is_err()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

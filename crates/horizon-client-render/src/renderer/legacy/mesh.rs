@@ -643,9 +643,8 @@ impl Renderer {
         &'a self,
         _fade_seconds: f32,
         camera: DVec3,
-        frustum: Option<Frustum>,
-        keep_section: impl Fn(u32) -> bool + 'a,
-        keep_long_range: impl Fn(u32) -> bool + 'a,
+        frustum: Option<gfx::JoinedFrusta>,
+        marks: Option<&'a Arc<[u8]>>,
     ) -> impl Iterator<Item = (&'a ([i32; 3], u32), bool)> + 'a {
         let min_y = self.layout.min_y();
         self.sections
@@ -664,14 +663,22 @@ impl Renderer {
                 let distance = Vec3::ZERO.max(min).min(max).length_squared();
                 if distance > 256.0 * 256.0
                     || (distance > 64.0 * 64.0
-                        && !section.blocks.iter().any(|(_, id)| keep_long_range(*id)))
+                        && !section.blocks.iter().any(|(_, id)| {
+                            marks
+                                .and_then(|m| m.get(*id as usize))
+                                .is_some_and(|flag| flag & 2 != 0)
+                        }))
                 {
                     return None;
                 }
                 let inside = frustum.is_none_or(|f| f.contains(min, max));
                 (inside
                     || frustum.is_none_or(|f| f.intersects(min, max))
-                    || section.blocks.iter().any(|(_, id)| keep_section(*id)))
+                    || section.blocks.iter().any(|(_, id)| {
+                        marks
+                            .and_then(|m| m.get(*id as usize))
+                            .is_some_and(|flag| flag & 1 != 0)
+                    }))
                 .then_some((&section.blocks, inside))
             })
             .flat_map(|(blocks, inside)| blocks.iter().map(move |b| (b, inside)))

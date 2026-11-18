@@ -18,19 +18,19 @@ use crate::shortcut;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 use winreg::RegKey;
+use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE};
 
 pub const APP_NAME: &str = "Horizon Launcher";
 const BINARY: &str = "horizon-launcher.exe";
 const PUBLISHER: &str = "Horizon";
-const ABOUT_URL: &str = "https://playhorizon.dev";
+const ABOUT_URL: &str = horizon_addresses::LAUNCHER_ABOUT;
 const UNINSTALL_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\HorizonLauncher";
 const OWN_KEY: &str = r"Software\Horizon\Launcher";
 const ASIDE_PREFIX: &str = "horizon-launcher-uninstall-";
 
 pub use crate::setup_args::Mode;
-use crate::setup_args::{classify, Invocation};
+use crate::setup_args::{Invocation, classify};
 
 /// The parts of the work, for the progress line.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -305,7 +305,7 @@ fn wide(path: &Path) -> Vec<u16> {
 }
 
 fn hide(path: &Path) {
-    use windows_sys::Win32::Storage::FileSystem::{SetFileAttributesW, FILE_ATTRIBUTE_HIDDEN};
+    use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_HIDDEN, SetFileAttributesW};
     let path = wide(path);
     // SAFETY: `path` is a NUL-terminated UTF-16 string that outlives the call.
     unsafe { SetFileAttributesW(path.as_ptr(), FILE_ATTRIBUTE_HIDDEN) };
@@ -313,7 +313,7 @@ fn hide(path: &Path) {
 
 /// Best effort: without administrator rights Windows refuses, and [`clean_aside`] does it later.
 fn delete_at_restart(path: &Path) {
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT};
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW};
     let path = wide(path);
     // SAFETY: as in `hide`; a null new name means "delete".
     unsafe { MoveFileExW(path.as_ptr(), std::ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) };
@@ -685,12 +685,12 @@ mod tests {
     /// What the shell itself reads as the shortcut's target: the field Explorer starts from.
     #[cfg(feature = "gui")]
     fn target_of(link: &Path) -> String {
-        use windows::core::{Interface, HSTRING};
         use windows::Win32::System::Com::{
-            CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER,
-            COINIT_APARTMENTTHREADED, STGM_READ,
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+            IPersistFile, STGM_READ,
         };
         use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+        use windows::core::{HSTRING, Interface};
         // SAFETY: COM calls on interfaces made and dropped here, on this test's own thread.
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);

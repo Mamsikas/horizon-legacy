@@ -26,6 +26,7 @@ impl Renderer {
     pub fn gpu_census(&self) -> Vec<(&'static str, u64)> {
         vec![
             ("D3D9 scaled color/depth", self.device.world_target_bytes()),
+            ("D3D9 glint textures", self.glint.bytes()),
             (
                 "D3D9 terrain buffers (caps-selected pool)",
                 self.gpu_mesh_bytes,
@@ -199,12 +200,6 @@ impl Renderer {
     ) -> Option<bool> {
         self.occlusion.visible_for_camera(key, camera_section)
     }
-    pub fn hold_world(&mut self, ask: &WorldHold) {
-        self.hold = ask.clone();
-    }
-    pub fn world_holds_column(&self, column: (i32, i32)) -> bool {
-        self.hold.covers((column.0, 0, column.1))
-    }
     pub fn shadow_pass_block_entities(
         &self,
         camera: DVec3,
@@ -262,6 +257,74 @@ impl Renderer {
     pub fn measure_emission(&mut self) {}
     pub fn skinned_models(&self) -> Option<u32> {
         None
+    }
+    pub fn invalidate_block_entity_position(&mut self, _pos: [i32; 3]) {} // Dynamic CPU entities have no GPU snapshots.
+    pub fn terrain_looks(&self) -> bool {
+        false
+    } // No shader material-map vertex payload.
+    pub fn queue_upload_retries(
+        &mut self,
+        _dirty: &mut crate::world::DirtySections,
+        _now: Instant,
+    ) -> usize {
+        0
+    } // Retained CPU shadows already retry residency.
+    pub fn stage_prepared_draws(&mut self, _draws: &[gfx::PreparedModelDraw]) {} // prepared_generation is None: CPU fallback is used.
+    pub fn take_world(&mut self, _from: &mut Self) -> bool {
+        false
+    } // Atlas UVs are baked; resource reloads remesh.
+    pub fn translucent_cracks_transparent(&self) -> bool {
+        false
+    }
+    pub fn native_pack_name(&self) -> Option<&str> {
+        None
+    }
+    pub fn release_world(&mut self) {} // No shader pack holds the direct world path.
+    pub fn set_world_view_own_level(&mut self, _level: Option<mod_api::LevelRef>) {}
+    pub fn prepared_generation(&self) -> Option<u64> {
+        None
+    }
+    pub fn prepared_instance_room(&self, _already: u64, _incoming: usize) -> usize {
+        0
+    }
+    pub fn draws_entity_stage(&self) -> bool {
+        false
+    }
+    pub fn names_entity_runs(&self) -> bool {
+        false
+    }
+    pub fn traces_entities(&self) -> bool {
+        false
+    }
+    pub fn ray_entity_reach(&self, _camera: DVec3) -> Option<gfx::Frustum> {
+        None
+    }
+    pub fn take_entity_runs(
+        &mut self,
+        runs: &mut gfx::native_entity::EntityRuns,
+        posed: &mut gfx::native_entity::EntityRuns,
+    ) {
+        runs.clear();
+        posed.clear();
+    }
+    pub fn take_ray_only(
+        &mut self,
+        vertices: &mut Vec<Vertex>,
+        runs: &mut gfx::native_entity::EntityRuns,
+    ) {
+        vertices.clear();
+        runs.clear();
+    }
+    pub fn build_mod_pipelines(
+        &mut self,
+        set: &crate::mod_pipelines::Pipelines,
+        _sprite: &dyn Fn(&str) -> Option<[f32; 4]>,
+    ) -> std::result::Result<(), String> {
+        if set.built().iter().any(Option::is_some) {
+            Err("Custom GPU pipelines are unavailable on Direct3D 9".into())
+        } else {
+            Ok(())
+        }
     }
     pub fn skins_entities(&self) -> bool {
         false

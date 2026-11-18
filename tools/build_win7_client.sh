@@ -48,7 +48,7 @@ cd -- "$repo"
 # Older windows-targets build scripts do not recognize the win7 vendor. Supply their
 # checksum-verified import libraries without patching the registry or the modern build.
 cargo "+$toolchain" metadata --locked --format-version 1 --filter-platform "$target" \
-    --no-default-features --features horizon-client/legacy-d3d9,horizon-client/audio > "$work/cargo-metadata.json"
+    --no-default-features --features horizon-game/legacy-d3d9,horizon-game/audio > "$work/cargo-metadata.json"
 mapfile -t import_dirs < <(python3 - "$work/cargo-metadata.json" "$import_package" <<'PY'
 import json, pathlib, sys
 for package in json.loads(pathlib.Path(sys.argv[1]).read_text())['packages']:
@@ -58,7 +58,7 @@ PY
 )
 link_args=()
 for directory in "${import_dirs[@]}"; do link_args+=(-L "native=$directory"); done
-cargo "+$toolchain" rustc --locked --profile legacy -p horizon-client --bin horizon-client \
+cargo "+$toolchain" rustc --locked --profile legacy -p horizon-game --bin horizon-client \
     --target "$target" -Z build-std=std,panic_abort \
     --no-default-features --features legacy-d3d9,audio -- "${link_args[@]}"
 binary="$CARGO_TARGET_DIR/$target/legacy/horizon-client.exe"
@@ -74,6 +74,7 @@ mkdir -p "$stage"
 # Retire the previous package's external diagnostics files on an incremental build.
 rm -f "$stage/horizon-ctl.exe" "$stage"/imports-control-win7-*.json
 rustc "+$toolchain" -Vv > "$stage/build-info.txt"
+printf '%s\n' 'profile=legacy opt-level=3 lto=thin codegen-units=1' >> "$stage/build-info.txt"
 { git rev-parse HEAD; "$cc" --version | head -1; printf '%s\n' "$target" "$RUSTFLAGS"; } >> "$stage/build-info.txt"
 cp "$work/imports-client-win7-$architecture.json" "$stage/"
 python3 - "$binary" "$repo/packaging/win7-client/TESTING.txt" "$out" "$architecture" <<'PY'

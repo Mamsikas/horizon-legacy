@@ -2,9 +2,7 @@
 use std::time::Duration;
 use windows::Win32::{
     Foundation::FILETIME,
-    System::Threading::{
-        GetCurrentProcess, GetCurrentThread, GetProcessTimes, GetSystemTimes, GetThreadTimes,
-    },
+    System::Threading::{GetCurrentThread, GetSystemTimes, GetThreadTimes},
 };
 fn ticks(t: FILETIME) -> u64 {
     u64::from(t.dwLowDateTime) | (u64::from(t.dwHighDateTime) << 32)
@@ -22,28 +20,6 @@ pub fn thread_cpu_time() -> Option<Duration> {
     unsafe {
         GetThreadTimes(
             GetCurrentThread(),
-            &mut created,
-            &mut exited,
-            &mut kernel,
-            &mut user,
-        )
-        .ok()?;
-    }
-    Some(Duration::from_nanos(
-        (ticks(kernel) + ticks(user)).saturating_mul(100),
-    ))
-}
-
-/// Accumulated user + kernel CPU time across this process's threads.
-pub fn process_cpu_time() -> Option<Duration> {
-    let mut created = FILETIME::default();
-    let mut exited = FILETIME::default();
-    let mut kernel = FILETIME::default();
-    let mut user = FILETIME::default();
-    // SAFETY: process pseudo handle and initialized local output storage.
-    unsafe {
-        GetProcessTimes(
-            GetCurrentProcess(),
             &mut created,
             &mut exited,
             &mut kernel,

@@ -2,10 +2,10 @@ use super::*;
 use dx::{Blend, DrawState};
 pub(super) mod gui_cache;
 
-struct Batch {
-    page: usize,
-    state: DrawState,
-    vertices: Vec<dx::Vertex>,
+pub(super) struct Batch {
+    pub(super) page: usize,
+    pub(super) state: DrawState,
+    pub(super) vertices: Vec<dx::Vertex>,
 }
 #[derive(Clone)]
 pub(super) enum GuiCommand {
@@ -152,7 +152,7 @@ impl Renderer {
             frame.depth_far,
         ))
     }
-    pub fn camera_frustum(
+    fn local_camera_frustum(
         &self,
         fov_degrees: f32,
         yaw: f32,
@@ -171,6 +171,18 @@ impl Renderer {
             .view_proj(bob),
         )
     }
+    pub fn camera_frustum(
+        &self,
+        _camera: DVec3,
+        fov_degrees: f32,
+        yaw: f32,
+        pitch: f32,
+        bob: Mat4,
+        depth_far: f32,
+    ) -> gfx::JoinedFrusta {
+        self.local_camera_frustum(fov_degrees, yaw, pitch, bob, depth_far)
+            .into()
+    }
     pub fn camera_frustum_with_jitter(
         &self,
         fov_degrees: f32,
@@ -178,8 +190,9 @@ impl Renderer {
         pitch: f32,
         bob: Mat4,
         depth_far: f32,
-    ) -> Frustum {
-        self.camera_frustum(fov_degrees, yaw, pitch, bob, depth_far)
+    ) -> gfx::JoinedFrusta {
+        self.local_camera_frustum(fov_degrees, yaw, pitch, bob, depth_far)
+            .into()
     }
     pub fn render(&mut self, frame: &Frame) -> Result<bool> {
         if self.suspended {
@@ -251,162 +264,165 @@ impl Renderer {
         ));
         self.stage_times
             .push(("D3D9 Present".into(), self.last_wait.as_secs_f32() * 1000.0));
-        let cpu_ms = self.last_encode.as_secs_f64() * 1000.0;
-        self.profile_window.0 += 1;
-        self.profile_window.1 += cpu_ms;
-        if cpu_ms >= self.profile_window.2 {
-            self.profile_window.2 = cpu_ms;
-            self.worst_stages.clone_from(&self.timings);
-        }
-        if self.last_log.elapsed() >= Duration::from_secs(5) {
-            let cpu = dx::thread_cpu_time();
-            let busy = cpu
-                .zip(self.last_thread_cpu)
-                .and_then(|(now, old)| now.checked_sub(old))
-                .map(|elapsed| {
-                    (elapsed.as_secs_f64() * 100.0 / self.last_log.elapsed().as_secs_f64())
-                        .clamp(0.0, 100.0)
-                });
-            log::info!(
-                "D3D9 main_thread_busy_pct={busy:?} (CPU execution; driver waits are wall time)"
-            );
-            self.last_thread_cpu = cpu;
-            log::info!(
-                "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_decoded_bytes={} mesh_gpu_bytes={} arenas={} texture_bytes={} compactions={} eager_sections={}",
-                self.frames,
-                self.last_encode.as_secs_f64() * 1000.0,
-                self.last_wait.as_secs_f64() * 1000.0,
-                self.device.draws,
-                self.device.binds,
-                self.uploaded_bytes,
-                self.drawn_sections,
-                self.sections.len(),
-                self.mesh_bytes,
-                self.decoded_mesh_bytes,
-                self.gpu_mesh_bytes,
-                self.arenas.len(),
-                self.texture_bytes(),
-                self.compactions,
-                self.eager_sections
-            );
-            log::info!(
-                "D3D9 stages_ms={:?} section_conversion_ms={:.3} process_memory_bytes={:?}",
-                self.timings,
-                self.upload_cpu.as_secs_f64() * 1000.0,
-                horizon_threads::process_memory::usage()
-            );
-            log::info!(
-                "D3D9 GUI draws={} texture_binds={} vertex_uploads={} buffer_locks={} projected={} depth_clears={} depth_reused={}",
-                self.gui_stats[0],
-                self.gui_stats[1],
-                self.gui_stats[2],
-                self.gui_stats[3],
-                !self.gui_screen.is_empty(),
-                self.gui_depth.clears,
-                self.gui_depth.reused
-            );
-            log::info!(
-                "D3D9 basic transparency draws={} texture_binds={} page_ranges={}",
-                self.translucent_stats[0],
-                self.translucent_stats[1],
-                self.translucent_stats[2]
-            );
-            log::info!(
-                "D3D9 fog draws dual={} environment={} distance={} unfogged={} fully_fogged={}",
-                self.device.fog_draws[0],
-                self.device.fog_draws[1],
-                self.device.fog_draws[2],
-                self.device.fog_draws[3],
-                self.device.fog_draws[4]
-            );
-            log::info!("D3D9 fog parameters={:?}", self.device.fog_parameters());
-            log::info!(
-                "D3D9 GUI cache reused_chunks={} rebuilt_chunks={} cpu_bytes={}",
-                self.gui_cache.hits,
-                self.gui_cache.misses,
-                self.gui_cache.bytes()
-            );
-            log::info!(
-                "D3D9 arrival pages_total={} sections_total={} max_sections_per_page={}",
-                self.arrival_pages,
-                self.arrival_sections,
-                self.arrival_max_sections
-            );
-            let batches = self
-                .compactor
-                .as_ref()
-                .map_or([0; 2], mesh::Compactor::batch_stats);
-            log::info!(
-                "D3D9 staging batches={} max_sections_per_batch={}",
-                batches[0],
-                batches[1]
-            );
-            log::info!(
-                "D3D9 solid_plan_reused={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
-                self.solid_reused,
-                self.uncached_mesh_bytes,
-                self.pending_sections.len(),
-                self.compactor
-                    .as_ref()
-                    .map_or(0, mesh::Compactor::reserved_uploads),
-                self.staged_sections
-            );
-            let mut vertex_bytes = [0u64; 3];
-            for a in self.arenas.values() {
-                let i = match a.mesh.stride() {
-                    20 => 0,
-                    28 => 1,
-                    _ => 2,
-                };
-                vertex_bytes[i] += a.mesh.bytes();
+        if self.diagnostics {
+            let cpu_ms = self.last_encode.as_secs_f64() * 1000.0;
+            self.profile_window.0 += 1;
+            self.profile_window.1 += cpu_ms;
+            if cpu_ms >= self.profile_window.2 {
+                self.profile_window.2 = cpu_ms;
+                self.worst_stages.clone_from(&self.timings);
             }
-            log::info!(
-                "D3D9 terrain_vertex_bytes compact20={} wide28={} ffp32={}",
-                vertex_bytes[0],
-                vertex_bytes[1],
-                vertex_bytes[2]
-            );
-            log::info!(
-                "D3D9 animation_cache hits={} misses={} cpu_bytes={}",
-                self.sprites.frame_cache.hits,
-                self.sprites.frame_cache.misses,
-                self.sprites.cpu_bytes()
-            );
-            let n = self.stage_profile[0].max(1.0);
-            log::info!(
-                "D3D9 staging completed={} queue_wall_avg_ms={:.3} queue_wall_peak_ms={:.3} conversion_wall_avg_ms={:.3} conversion_wall_peak_ms={:.3}",
-                self.stage_profile[0],
-                self.stage_profile[1] / n,
-                self.stage_profile[2],
-                self.stage_profile[3] / n,
-                self.stage_profile[4]
-            );
-            self.stage_profile = [0.0; 5];
-            if let Some(worker) = &self.compactor {
-                let (pending, bytes, active, [count, ns, peak]) = worker.shadow_status();
+            if self.last_log.elapsed() >= Duration::from_secs(5) {
+                let cpu = dx::thread_cpu_time();
+                let busy = cpu
+                    .zip(self.last_thread_cpu)
+                    .and_then(|(now, old)| now.checked_sub(old))
+                    .map(|elapsed| {
+                        (elapsed.as_secs_f64() * 100.0 / self.last_log.elapsed().as_secs_f64())
+                            .clamp(0.0, 100.0)
+                    });
                 log::info!(
-                    "D3D9 deferred shadows pending={} bytes={} active={} completed={} worker_avg_ms={:.3} worker_peak_ms={:.3}",
-                    pending,
-                    bytes,
-                    active,
-                    count,
-                    ns as f64 / count.max(1) as f64 / 1.0e6,
-                    peak as f64 / 1.0e6
+                    "D3D9 main_thread_busy_pct={busy:?} (CPU execution; driver waits are wall time)"
                 );
+                self.last_thread_cpu = cpu;
+                log::info!(
+                    "D3D9 frame={} cpu_ms={:.3} present_ms={:.3} draws={} texture_binds={} uploads={} sections={}/{} mesh_cpu_bytes={} mesh_decoded_bytes={} mesh_gpu_bytes={} arenas={} texture_bytes={} compactions={} eager_sections={}",
+                    self.frames,
+                    self.last_encode.as_secs_f64() * 1000.0,
+                    self.last_wait.as_secs_f64() * 1000.0,
+                    self.device.draws,
+                    self.device.binds,
+                    self.uploaded_bytes,
+                    self.drawn_sections,
+                    self.sections.len(),
+                    self.mesh_bytes,
+                    self.decoded_mesh_bytes,
+                    self.gpu_mesh_bytes,
+                    self.arenas.len(),
+                    self.texture_bytes(),
+                    self.compactions,
+                    self.eager_sections
+                );
+                log::info!(
+                    "D3D9 stages_ms={:?} section_conversion_ms={:.3} process_memory_bytes={:?}",
+                    self.timings,
+                    self.upload_cpu.as_secs_f64() * 1000.0,
+                    horizon_threads::process_memory::usage()
+                );
+                log::info!(
+                    "D3D9 GUI draws={} texture_binds={} vertex_uploads={} buffer_locks={} projected={} depth_clears={} depth_reused={}",
+                    self.gui_stats[0],
+                    self.gui_stats[1],
+                    self.gui_stats[2],
+                    self.gui_stats[3],
+                    !self.gui_screen.is_empty(),
+                    self.gui_depth.clears,
+                    self.gui_depth.reused
+                );
+                log::info!(
+                    "D3D9 basic transparency draws={} texture_binds={} page_ranges={}",
+                    self.translucent_stats[0],
+                    self.translucent_stats[1],
+                    self.translucent_stats[2]
+                );
+                log::info!(
+                    "D3D9 fog draws dual={} environment={} distance={} unfogged={} fully_fogged={}",
+                    self.device.fog_draws[0],
+                    self.device.fog_draws[1],
+                    self.device.fog_draws[2],
+                    self.device.fog_draws[3],
+                    self.device.fog_draws[4]
+                );
+                log::info!("D3D9 fog parameters={:?}", self.device.fog_parameters());
+                log::info!(
+                    "D3D9 GUI cache reused_chunks={} rebuilt_chunks={} cpu_bytes={}",
+                    self.gui_cache.hits,
+                    self.gui_cache.misses,
+                    self.gui_cache.bytes()
+                );
+                log::info!(
+                    "D3D9 arrival pages_total={} sections_total={} max_sections_per_page={}",
+                    self.arrival_pages,
+                    self.arrival_sections,
+                    self.arrival_max_sections
+                );
+                let batches = self
+                    .compactor
+                    .as_ref()
+                    .map_or([0; 2], mesh::Compactor::batch_stats);
+                log::info!(
+                    "D3D9 staging batches={} max_sections_per_batch={}",
+                    batches[0],
+                    batches[1]
+                );
+                log::info!(
+                    "D3D9 solid_plan_reused={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
+                    self.solid_reused,
+                    self.uncached_mesh_bytes,
+                    self.pending_sections.len(),
+                    self.compactor
+                        .as_ref()
+                        .map_or(0, mesh::Compactor::reserved_uploads),
+                    self.staged_sections
+                );
+                let mut vertex_bytes = [0u64; 3];
+                for a in self.arenas.values() {
+                    let i = match a.mesh.stride() {
+                        20 => 0,
+                        28 => 1,
+                        _ => 2,
+                    };
+                    vertex_bytes[i] += a.mesh.bytes();
+                }
+                log::info!(
+                    "D3D9 terrain_vertex_bytes compact20={} wide28={} ffp32={}",
+                    vertex_bytes[0],
+                    vertex_bytes[1],
+                    vertex_bytes[2]
+                );
+                log::info!(
+                    "D3D9 animation_cache hits={} misses={} cpu_bytes={}",
+                    self.sprites.frame_cache.hits,
+                    self.sprites.frame_cache.misses,
+                    self.sprites.cpu_bytes()
+                );
+                let n = self.stage_profile[0].max(1.0);
+                log::info!(
+                    "D3D9 staging completed={} queue_wall_avg_ms={:.3} queue_wall_peak_ms={:.3} conversion_wall_avg_ms={:.3} conversion_wall_peak_ms={:.3}",
+                    self.stage_profile[0],
+                    self.stage_profile[1] / n,
+                    self.stage_profile[2],
+                    self.stage_profile[3] / n,
+                    self.stage_profile[4]
+                );
+                self.stage_profile = [0.0; 5];
+                if let Some(worker) = &self.compactor {
+                    let (pending, bytes, active, [count, ns, peak]) = worker.shadow_status();
+                    log::info!(
+                        "D3D9 deferred shadows pending={} bytes={} active={} completed={} worker_avg_ms={:.3} worker_peak_ms={:.3}",
+                        pending,
+                        bytes,
+                        active,
+                        count,
+                        ns as f64 / count.max(1) as f64 / 1.0e6,
+                        peak as f64 / 1.0e6
+                    );
+                }
+                log::info!(
+                    "D3D9 window_frames={} cpu_avg_ms={:.3} cpu_peak_ms={:.3} peak_stages_ms={:?} mesh_uploads={} stream_uploads={} index_uploads={}",
+                    self.profile_window.0,
+                    self.profile_window.1 / self.profile_window.0 as f64,
+                    self.profile_window.2,
+                    self.worst_stages,
+                    self.device.mesh_uploads,
+                    self.device.stream_uploads,
+                    self.device.index_uploads
+                );
+                self.profile_window = (0, 0.0, 0.0);
+                self.last_log = Instant::now();
             }
-            log::info!(
-                "D3D9 window_frames={} cpu_avg_ms={:.3} cpu_peak_ms={:.3} peak_stages_ms={:?} mesh_uploads={} stream_uploads={} index_uploads={}",
-                self.profile_window.0,
-                self.profile_window.1 / self.profile_window.0 as f64,
-                self.profile_window.2,
-                self.worst_stages,
-                self.device.mesh_uploads,
-                self.device.stream_uploads,
-                self.device.index_uploads
-            );
-            self.profile_window = (0, 0.0, 0.0);
-            self.last_log = Instant::now();
         }
+
         self.upload_cpu = Duration::ZERO;
         Ok(shown)
     }
@@ -805,8 +821,7 @@ impl Renderer {
         self.save_screenshot();
         if self.capture.take().is_some() {
             self.capture_result = Some(Err(
-                "Render captures require the modern client; Direct3D9 logs counters directly"
-                    .into(),
+                "GPU render captures are unavailable on Direct3D 9; use the chat profiler".into(),
             ));
         }
         Ok(())
@@ -820,6 +835,7 @@ impl Renderer {
     ) -> Result<()> {
         let mut batches = Vec::new();
         let mut sprite_batches = Vec::new();
+        let mut glints = Vec::new();
         for quad in input.chunks_exact(4) {
             let overlay = quad[0].layer & 0xffff;
             if overlay == 13 {
@@ -885,6 +901,34 @@ impl Renderer {
                 }
                 v
             });
+            if matches!(overlay, 7 | 8 | 33 | 36) && frame.glint_alpha > 0.0 {
+                let armor = overlay == 36;
+                let mut foil = vertices;
+                for (v, source) in foil.iter_mut().zip(quad) {
+                    v.light = if armor {
+                        dx::armor_glint_uv(source.glint_uv, frame.glint_ticks)
+                    } else {
+                        source.glint_uv
+                    };
+                    v.color =
+                        dx::glint_color(frame.glint_alpha, frame.pvp.glint, (v.color >> 24) as u8);
+                }
+                let state = DrawState {
+                    glint: if armor { 2 } else { 1 },
+                    blend: Blend::Additive,
+                    lightmap: false,
+                    depth_write: false,
+                    equal_depth: state.depth_test,
+                    fog: state.fog.map(|f| dx::Fog {
+                        color: [0.0, 0.0, 0.0, f.color[3]],
+                        ..f
+                    }),
+                    ..state
+                };
+                self.hud
+                    .atlas
+                    .polygon(&foil, |page, p| batch(&mut glints, page, state, p, false));
+            }
             if matches!(overlay, 41..=44) {
                 let layer = if overlay == 41 {
                     quad[0].glint_uv[0] as u32
@@ -937,6 +981,7 @@ impl Renderer {
                 .state(b.state, &self.sprites.pages[b.page], Some(&self.lightmap))?;
             self.device.draw_transient(&b.vertices)?;
         }
+        self.draw_glints(&glints, frame.pvp.glint)?;
         Ok(())
     }
     fn draw_panorama(&mut self, frame: &Frame) -> Result<()> {
@@ -1133,6 +1178,7 @@ impl Renderer {
             self.gui_cache.append(
                 gui_cache::GuiRun {
                     source: input,
+                    glint_color: dx::glint_color(h.glint_alpha, h.glint_colour, 255),
                     pixels,
                     state,
                     picture,
@@ -1207,8 +1253,16 @@ impl Renderer {
             let Some(texture) = &textures[*page] else {
                 continue;
             };
-            self.device.state(*state, texture, Some(&self.lightmap))?;
-            if let Some(screen) = &screen {
+            let second = if state.glint != 0 {
+                self.glint.texture(state.glint, h.glint_colour)
+            } else {
+                &self.lightmap
+            };
+            self.device.state(*state, texture, Some(second))?;
+            if state.glint != 0 {
+                self.device
+                    .draw_triangles(&self.gui_vertices[range.start as usize..range.end as usize])?;
+            } else if let Some(screen) = &screen {
                 self.device.draw_screen(screen, range.clone())?;
             } else if let Some(staged) = &staged {
                 self.device.draw_staged_triangles(staged, range.clone())?;
@@ -1284,38 +1338,19 @@ impl Renderer {
         let Some(request) = self.screenshot.take() else {
             return;
         };
-        let result = self
-            .device
-            .screenshot()
-            .and_then(|(width, height, pixels)| {
-                let (pixels, size) = if let Some(size) = request.size {
-                    (gfx::square_downscale(&pixels, width, height, size), size)
-                } else {
-                    (pixels, [width, height])
-                };
-                if let Some(parent) = request.path.parent() {
-                    std::fs::create_dir_all(parent)?;
-                }
-                let mut encoder = png::Encoder::new(
-                    std::io::BufWriter::new(std::fs::File::create(&request.path)?),
-                    size[0],
-                    size[1],
-                );
-                encoder.set_color(png::ColorType::Rgba);
-                encoder.set_depth(png::BitDepth::Eight);
-                encoder.write_header()?.write_image_data(&pixels)?;
-                Ok(size)
-            })
-            .map_err(|e| e.to_string());
-        if request.background {
-            self.saved_screenshots.push(SavedScreenshot {
-                path: request.path,
-                result,
-                hdr: None,
-            });
-        } else {
-            self.screenshot_result = Some(result);
-        }
+        self.screenshot_result = Some(
+            self.device
+                .screenshot()
+                .map(|(width, height, pixels)| {
+                    let (pixels, size) = if let Some(size) = request.size {
+                        (gfx::square_downscale(&pixels, width, height, size), size)
+                    } else {
+                        (pixels, [width, height])
+                    };
+                    gfx::PendingScreenshot::sdr(request.path, request.background, size, pixels)
+                })
+                .map_err(|error| error.to_string()),
+        );
     }
 }
 fn repeat_quad(input: &[dx::Vertex; 4], rect: [f32; 4], mut emit: impl FnMut(&[dx::Vertex])) {

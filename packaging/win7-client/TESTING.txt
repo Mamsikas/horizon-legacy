@@ -1,101 +1,52 @@
-Horizon Direct3D9 preview - Windows 7 SP1 (architecture in build-info.txt)
+Horizon DX9 - Windows 7 SP1 - x64/x86 Thin LTO distribution
 
-Requires prepared legal Horizon resources for Minecraft 26.3, a D3D9 HAL driver,
-and an SSE3-capable x86 CPU for x86, or an N455-compatible x64 CPU (SSE3/SSSE3).
-The x86 EXE is large-address-aware. Both packages use Win7 APIs and subsystem 6.1.
-The owner ran x86 on XP with OneCoreAPI; that remains an experiment, not an XP port.
-No Java, shader compiler, REF/WARP device or CPU rasterizer is required.
+Extract this ZIP once: horizon-client.exe is directly inside. Select it as your
+launcher's native client. Supply your own legal prepared Minecraft 26.3 resources.
+No game assets, Java, shader compiler or external control tool are included.
 
-Launch:
-1. Extract this ZIP once. horizon-client.exe is directly inside; select that EXE
-   as the native client in your launcher. This package uses DX9 by default.
-2. Use the same resources, save copy and graphics settings for comparisons.
-   Default initial window size is 854x480; explicit --width/--height and fullscreen
-   take precedence. No low preset, FPS limit or fixed 128 MiB cap is installed.
-3. Profile through game chat, without launcher arguments or an external tool:
-     /profiler start client
-   Remain stationary or perform the slow action (movement/loading/F3+A), then:
-     /profiler stop client
-   The chat's Folder link/latest.log gives the .hzperf path. Send it and latest.log.
-   Use no gpu/gpu_detail suffix: DX9 GPU pass timestamps are unavailable. Detailed
-   timeline is capped at 60 seconds, so use separate segments for a long test.
-   Captures stay local unless you explicitly choose share/upload.
+Requirements: D3D9 HAL driver, Win7 SP1; x64 SSE3/SSSE3 or x86 SSE3. x86 is
+large-address-aware. Subsystem/API target stays Win7. XP + OneCoreAPI is an
+owner experiment with known input/long-session issues, not native XP support.
 
-New device choices: Graphics > General > Direct3D 9
-- Vertex Processing: Auto / Hardware / Software. Software can override available
-  hardware transforms. It runs vertex processing on the CPU while HAL still
-  rasterizes on the GPU. Auto chooses software on GMA3150 because it lacks HW T&L.
-- Color Depth: 16 / 32 bit. The default prefers RGB565 if native windowed conversion
-  and matching depth are supported; otherwise it uses 32 bit. Native surface
-  creation failure also retries 32 bit. Exclusive fullscreen is not required.
-  D24 depth takes priority; texture colors/alpha and depth precision stay intact.
-  16-bit color may band or take a slower desktop-conversion path on some drivers.
-Both settings require a full client restart. F3 shows effective VP and RGB16/32;
-latest.log records actual backbuffer/depth formats. A retained developer override
-HORIZON_D3D9_VERTEX_PROCESSING takes precedence over the saved menu choice.
+Default initial window: 854x480. Explicit --width/--height/fullscreen wins.
+Graphics > General > Direct3D 9 offers Auto/Hardware/Software VP and 16/32-bit
+color; these require restart. Software VP transforms on the CPU and rasterizes
+on the GPU. GMA3150 uses it automatically. RGB565 is preferred with 32-bit fallback;
+D24 depth takes priority. Exclusive fullscreen is not required. No fixed 128 MiB
+cap, forced low preset or render-distance/FPS reduction is installed.
 
-Primary GMA retest:
-Compare the same ice scene at 1024x600, two chunks, Fog OFF and the same FPS limit.
-The owner's preceding build reached 45 FPS there with RGB565 confirmed. Keep
-Resolution Scale at 100% for this baseline; then profile 60-90 seconds stationary
-and 90 seconds of movement/loading using the chat commands above. Compare frame
-spikes as well as FPS, and check that block placement/breaking remains immediate.
-The longer movement profile and latest.log are the most useful next capture.
-No new RTX capture is needed for this pass. A server capture with visible entities
-will help choose the next entity optimization; Sync/Async culling already uses
-Horizon's CPU cullers, independently of DX9 GPU-culling support.
+This integration updates Horizon, enables Thin LTO (opt=3, one codegen unit,
+panic=abort), restores enchantment shimmer and makes normal logs quiet. Check:
+- Enchanted held/dropped items, inventory/hotbar icons, GUI models and armour.
+  Shimmer should scroll, obey masks/depth, disappear at Glint Strength zero and
+  follow Glint Speed. Ordinary items should have no extra pass. Custom CIT glint
+  remains unsupported. Two-stage adapters approximate glint filtering.
+- Immediate breaking/placement, ice/water, F5 skin, depth and GUI transitions.
+- Resolution Scale 100/75/50: only the world changes resolution; HUD stays sharp.
+  Return to 100 for performance comparisons. Check resize/minimize/restore.
+- Mipmap Levels 0/2/4, including changes while Animated Textures is Off. Native
+  anisotropy follows driver caps; RGSS is still approximated by linear filtering.
+- CPU entity/particle culling Off/Sync/Async. Unsupported API effects stay disabled
+  with a reason, preserving saved values. New upstream interfaces must not silently
+  enable unsupported GPU pipelines or import newer mandatory Windows APIs.
 
-Settings checks in the same window (do not change the loading baseline):
-- Resolution Scale: compare 100%, 75%, 50%, then return to 100%, without restarting.
-  The world changes resolution; HUD and inventory stay at full window resolution.
-  Native DX9 scaling uses a persistent color/depth target and a hardware resolve,
-  with no CPU picture readback. 100% adds no extra resolve. The log records scaled
-  dimensions or a driver fallback. Check resizing/minimizing/restoring too.
-- Mipmap Levels: compare 0/2/4 and switch back. This now uses Horizon's native-size
-  mip limit rather than only an on/off flag. Check leaves and water/lava, including
-  changing levels while Animated Textures is Off. RGSS remains a linear approximation;
-  Anisotropic now requests native filtering capped to the driver's capability.
-- Unsupported API effects remain visible but disabled with an explanation, without
-  erasing saved values. CPU culling and manual Resolution Scale remain available.
-  A friend with caps-advertised HW VP can still compare Auto and Software, with a
-  client restart for each device preference. RGB565 needs no exclusive fullscreen.
+For a useful regression comparison, use the same hardware, route, world state,
+window, distance, warmup and settings against the previous 42f0b42d47 build.
+Start on GMA at two chunks, 1024x600, scale 100%, Fog Off and RGB565. Run the same
+server route too; entities/terrain there are the next deep-optimization baseline.
+A different scene or a successful CPU test does not establish hardware FPS parity.
 
-This update caches sprite-to-atlas transforms and bypasses polygon handling for
-ordinary UVs. It moves immediate updates' lossless CPU-shadow compression onto the
-existing bounded staging worker; geometry is drawable before compression finishes.
-The queue replaces obsolete inputs, with byte/job limits and a synchronous pressure
-fallback. Existing bulk ownership/recycling, encoded upload pages and immediate
-edits remain. Shared game/world generation code is not optimized in this pass.
-Chat profiles need neither horizon-ctl nor --control; the ordinary package does
-not ship that tool. Screenshot/profiler overhead is unchanged.
+Profile through game chat, with no --control or other launcher argument:
+  /profiler start client
+Perform the fixed route for 60-90 seconds, then:
+  /profiler stop client
+Send the local .hzperf and latest.log. No upload occurs unless you choose it.
+Use no gpu/gpu_detail suffix: DX9 has no GPU pass timestamps. Detailed timeline
+can stop at its configured cap; ordinary longer phase/health captures still help.
+Phases include driver waits. Process CPU/RSS use upstream Windows probes.
+Periodic DX9 diagnostic logs are off; a developer can opt in with
+HORIZON_D3D9_LOG_STATS=1. Startup identification and actionable warnings remain.
 
-Horizon's official release profile already uses Thin LTO. Our legacy profile uses
-opt-level=3, 16 codegen units, panic=abort and LTO off for iterative link time/memory.
-One CPU-kernel benchmark is not enough to judge whole-game LTO; a final build should
-compare loading, terrain, GUI and entities before choosing. It is not enabled now.
-x64 keeps SSE3/SSSE3, x86 SSE3; an SSE3 K8 does not necessarily support SSSE3.
-
-Counters: main_thread_busy_pct is actual five-second CPU execution on the main
-thread, including driver work. Render phases include waits and are not GPU
-timestamps. Profile CPU/RSS health now uses Windows APIs. Log counters include
-terrain layouts, draws/binds, upload batches/pages, GUI cache hits and staging
-queue/conversion time. Requested buffer storage is not physical VRAM.
-The latest pre-change GMA profiles show substantial main-thread execution, so
-elapsed solid/translucent timings alone do not prove a purely GPU-bound scene.
-
-RTX remains useful for large-distance loading regressions, without repeating
-every GMA measurement. Packed modern quads are smaller than full DX9 vertices;
-instantaneous 48-chunk loading or Vulkan RAM parity is not claimed. RGB565 reduces
-color-target storage per pixel, not the whole process's memory. No new worldgen,
-lighting-quality, protocol or gameplay changes are included in this pass.
-
-Remove old HORIZON_D3D9_MESH_MIB / HORIZON_D3D9_TEXTURE_MIB overrides for ordinary
-tests. Automatic advisory targets use driver/system-memory hints, up to 2 GiB.
-Allocation pressure retains drawable shadows/managed paging. Quality and render
-distance remain the player's choice. The offline admission fix remains.
-
-Limitations: SDR, simplified End portal, no clouds/star field, enchantment
-foil, shader packs, PBR, post chains, LOD, GPU occlusion/skinning, frame generation
-or split-screen compositor. Terrain/models, entities/hand, menus/HUD/chat, weather
-and overlays remain. This executable currently contains DX9 only. A shared EXE
-with runtime modern-API fallback is feasible but requires further integration.
+No new hardware FPS claim is made by this package. Shared generation/gameplay
+optimization is not the renderer task. See docs/legacy-d3d9.md in the repository
+for architecture, performance invariants, explicit gaps and the TZ 3 handoff.

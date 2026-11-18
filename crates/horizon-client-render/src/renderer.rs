@@ -6,6 +6,6 @@ mod legacy;
 #[cfg(not(all(windows, feature = "legacy-d3d9")))]
 pub use crate::gfx::Renderer;
 #[cfg(all(windows, feature = "legacy-d3d9"))]
-pub use horizon_client_d3d9::{process_cpu_time, system_cpu_ticks};
+pub use horizon_client_d3d9::system_cpu_ticks;
 #[cfg(all(windows, feature = "legacy-d3d9"))]
 pub use legacy::Renderer;

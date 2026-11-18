@@ -22,6 +22,7 @@ use winit::window::Window;
 mod atlas;
 mod compat;
 mod frame;
+mod glint;
 mod mesh;
 mod resident;
 mod solid_cache;
@@ -36,6 +37,7 @@ pub struct Renderer {
     device: dx::Device,
     sprites: Sprites,
     lightmap: dx::Texture,
+    glint: glint::Glint,
     panorama: Option<Pixels>,
     panorama_faces: Arc<panorama::Faces>,
     pictures: HashMap<u64, Pixels>,
@@ -46,6 +48,7 @@ pub struct Renderer {
     pub config: wgpu::SurfaceConfiguration,
     pub info: wgpu::AdapterInfo,
     pub suspended: bool,
+    diagnostics: bool,
     pub paced_elsewhere: bool,
     pub gpu_times: Vec<f32>,
     pub lightmap_pixels: [u8; 1024],
@@ -58,9 +61,7 @@ pub struct Renderer {
     pub section_draw_calls: usize,
     pub uploaded_bytes: u64,
     pub screenshot: Option<ScreenshotRequest>,
-    pub screenshot_result: Option<std::result::Result<[u32; 2], String>>,
-    pub screenshot_hdr: Option<std::path::PathBuf>,
-    pub saved_screenshots: Vec<SavedScreenshot>,
+    pub screenshot_result: Option<std::result::Result<gfx::PendingScreenshot, String>>,
     pub screenshot_quality: u32,
     pub gamma: f32,
     world_scale: f32,
@@ -128,7 +129,6 @@ pub struct Renderer {
     profile_window: (u64, f64, f64),
     worst_stages: Vec<(&'static str, f32)>,
     stage_times: Vec<(String, f32)>,
-    hold: WorldHold,
     shader_refusal: Option<(i32, String, Instant)>,
 }
 impl Renderer {
@@ -142,15 +142,15 @@ impl Renderer {
         sprite_mips: &[crate::mipmap::Settings],
         animations: &[SpriteAnimation],
         hud_atlas: (&[u8], u32, u32),
-        _glint: (&[u8], u32, u32),
-        _glint_armor: (&[u8], u32, u32),
+        glint_pixels: (&[u8], u32, u32),
+        glint_armor: (&[u8], u32, u32),
         forcefield: (&[u8], u32),
         panorama_faces: Arc<panorama::Faces>,
         _prepared: Option<PreparedTextures>,
         previous: Option<&Self>,
         _api: crate::graphics::GraphicsApi,
         _translucent_batching: bool,
-        _shader_pack: bool,
+        _shader_pack: (bool, bool),
         settings: &crate::graphics::Graphics,
         _request: output::FrameRequest,
         _display: output::DisplayReading,
@@ -204,7 +204,7 @@ impl Renderer {
             mesh_budget,
             texture_budget
         );
-        log::warn!(
+        log::debug!(
             "Direct3D9 limitations: SDR; no shader packs, distant LOD, GPU occlusion/skinning, HDR, TAA/FXAA, frame generation, PBR, post chains or fancy clouds. Stored graphics options remain unchanged."
         );
         let info = wgpu::AdapterInfo {
@@ -225,10 +225,12 @@ impl Renderer {
             ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Noop)
         };
         let compactor = mesh::Compactor::new(sprites.layout.clone(), device.compact_vertices());
+        let glint = glint::Glint::new(&mut device, glint_pixels, glint_armor)?;
         Ok(Self {
             device,
             sprites,
             lightmap,
+            glint,
             panorama: None,
             panorama_faces,
             pictures: HashMap::default(),
@@ -252,6 +254,7 @@ impl Renderer {
             },
             info,
             suspended: false,
+            diagnostics: std::env::var("HORIZON_D3D9_LOG_STATS").as_deref() == Ok("1"),
             paced_elsewhere: false,
             gpu_times: Vec::new(),
             lightmap_pixels: [0; 1024],
@@ -265,8 +268,6 @@ impl Renderer {
             uploaded_bytes: 0,
             screenshot: None,
             screenshot_result: None,
-            screenshot_hdr: None,
-            saved_screenshots: Vec::new(),
             screenshot_quality: 1,
             gamma: 0.0,
             world_scale: settings.resolution_scale as f32 / 100.0,
@@ -337,7 +338,6 @@ impl Renderer {
             profile_window: (0, 0.0, 0.0),
             worst_stages: Vec::new(),
             stage_times: Vec::new(),
-            hold: WorldHold::default(),
             shader_refusal: None,
         })
     }

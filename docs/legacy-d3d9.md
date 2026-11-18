@@ -1,411 +1,189 @@
-# Windows 7 Direct3D9 client preview
+# Horizon DX9: maintenance and handoff
 
-Current upstream integration: `298c01b0206d72294b25753c9f8d0a77b742b3bb` (this fork's main,
-13 November 2026). Merged into the existing development branch without rewriting its history.
-Scope: Windows 7 SP1, Atom N455/GMA3150 first, HD4570 second. Separate x64 and
-owner-requested x86 packages use the same renderer. The executable selects DX9
-by its `legacy-d3d9` feature. Device choices are stored separately from quality
-presets; other backend implementations and saved quality values stay intact.
-At the owner's request, its default initial window is 854x480. Explicit launch
-dimensions/fullscreen still take precedence; saved graphics values are unchanged.
+This fork provides one native Minecraft Java Edition 26.3 client using Direct3D 9,
+primarily for Atom N455 / Intel GMA3150 and Windows 7. It is a renderer/backend port,
+not a different game implementation. Preserve vanilla gameplay, protocol, resources,
+lighting inputs and player choices. Deep performance work is the next task (TZ 3).
 
-The owner has now run the game on N455/GMA3150/Win7 x64: about 50 FPS in a flat
-world and 30 in a normal world at two chunks, with roughly 500–750 MiB reported
-process memory. This is an owner hardware result for the preceding build, not a
-measurement of this update. HD4570 gameplay remains unverified.
+## Repository and upstream
 
-## Dependency and integration review (R0)
+- `main` is the DX9 distribution branch. Develop on `dx9-dev` or a focused branch,
+  then open PRs against this repository's `main`, not the official Horizon repository.
+- Upstream is `https://github.com/horizon-rust/horizon`. This integration uses
+  `df50a07e73` (2026-11-18). It includes the fork's synced upstream `bc07dd266c`.
+  Record the exact upstream revision whenever updating; do not chase a moving head
+  during validation. Merge history, never replace it with a force-push.
+- `archive/dx9-before-nov18` preserves the last pre-integration source, `42f0b42d47`.
+  Previous measurements and binaries refer to that source, not the new LTO build.
+- After an upstream merge, resolve moved code in its new home. Remove redundant
+  fork fixes once the equivalent upstream behavior exists. The November integration
+  removes duplicate Windows process CPU/RSS sampling in favor of `horizon-system`.
+  The system-wide Windows CPU probe remains needed. The offline encrypted-login
+  fix remains separate: an offline profile sends the encryption response and the
+  server decides admission; signed-in session authentication is unchanged.
+- Keep this document and the fork-specific instructions in `AGENTS.md` current.
+  Upstream's other docs describe upstream features, not a promise that DX9 supports
+  every GPU pipeline. Do not publish official Horizon releases from this fork.
 
-| Source | Finding / reuse |
+## Requirements and defaults
+
+- Windows 7 SP1 and a real Direct3D 9 HAL driver. REF/WARP or CPU rasterization
+  is not selected. Software *vertex processing* still rasterizes on the GPU.
+- x64 permits SSE3/SSSE3, matching N455; x86 requires SSE3 and is large-address-aware.
+  Do not use host-native SSE4, POPCNT or AVX. K8 with SSE3 need not have SSSE3.
+- The Windows D3D9 runtime is required; an external shader compiler/DXC is not.
+  Basic geometry uses FFP with two texture stages. Full environmental/distance fog
+  uses embedded PS2 when available, with FFP fallback. Hardware VS2 enables smaller
+  vertices but is optional: GMA3150 has no hardware T&L and uses software VP.
+- The GPU's shader capability and a historical DX9b runtime are different questions.
+  Native XP / historical-runtime compatibility is not established. The owner ran
+  x86 on XP with OneCoreAPI, with mouse capture and long-running chunk/crash issues.
+  Both packages still use the Win7 ABI and PE subsystem 6.1; do not call them XP builds.
+- Prepared legal Horizon resources for Minecraft 26.3 are supplied by the player.
+  Never commit or ship Mojang assets, jars, decompiled sources, resources or saves.
+- Default initial window: 854x480; explicit size/fullscreen wins. Prefer RGB565 with
+  checked 32-bit fallback. D24 depth takes priority over 16-bit color. Exclusive
+  fullscreen is not required. Textures/alpha stay 32-bit; RGB565 can introduce banding.
+- VP Auto/Hardware/Software and Color Depth 16/32 are in Graphics > General >
+  Direct3D 9; they persist and require restart. A developer environment VP override
+  takes precedence. F3 reports effective VP/color, startup logs identify the adapter.
+- No forced low preset, distance reduction, FPS cap or fixed 128 MiB cap. Advisory
+  budgets follow driver/system memory, with bounded paging/fallback under pressure.
+  Ordinary tests should remove old HORIZON_D3D9_MESH_MIB/TEXTURE_MIB overrides.
+
+## Ownership and source map
+
+| Area | Files / contract |
 | --- | --- |
-| `horizon-client/{main,entry,lib}.rs`, `game.rs` | Keep startup, authorization, resources, game state and event processing. Change the gameplay renderer type import only. |
-| `game/{event_loop,window_handler,startup_menu,render_tick}.rs` | Keep winit 0.30.13, HWND, keyboard/mouse, IME, frame generation and ordinary FPS limiting. DX9 receives the same CPU `Frame`. |
-| `game/loading_window.rs` | Current HEAD moved the constructors here. A build-time adapter supplies both loading/title and game renderers; it avoids modern mip/PBR preparation and direct wgpu device access. |
-| `game/{world_update,world_loading,packs,frames,postprocess}.rs` | Upload changed sections and release columns through the adapter. Keep resource reload, dimension layout, block entities and all gameplay. Suppress only legacy LOD workers. |
-| `horizon-client-render/gfx.rs`, `gfx/{resident,arena}.rs` | Modern Renderer is GPU-specific, with public config/HUD/stats fields and large arenas. Reuse Frame, Frustum, View and metadata types, never its device or arenas. Two additional helpers expose existing CPU frustum/lightning generation. |
-| `streaming.rs`, `mesher{,/packed,/lighting}.rs`, `chunk.rs` | Existing workers deliver SectionMesh. Full solid/translucent quads remain available, with 24-byte TerrainVertex, UV accessor, AO/tint/light, bounds, Sides, visibility and block entities. Legacy disables packed layout; meshing stays unchanged. |
-| `model_library.rs`, `models/`, `block_entity_render.rs` | Keep non-cube, item/entity and block-entity CPU geometry. Advertise no GPU skinning so ordinary entities are posed on the existing CPU path. |
-| `sprites.rs`, `assets.rs`, `atlas_sources.rs` | Convert existing RGBA layers into padded, caps/budget-sized POT Texture2D pages. Keep source layer numbers; remap only legacy vertices. Extrude each sprite's mip levels independently. Animate changed frames only. |
-| `hud.rs`, `hud_layout.rs`, `font.rs`, `screen_effects.rs` | At this HEAD HUD data is **triangles**, and adds Picture/DepthGlint runs. Reuse triangles, alpha/depth/scissor, glyph/map/skin patches and standalone pictures. Split the existing atlas into lazy pages; never rebuild the GUI. |
-| `camera`, `light`, `fog`, `weather`, `particles`, `clouds` | Keep camera math, CPU block light, particles and weather inputs. Fixed-function stage 0 multiplies the sprite and tint/AO; stage 1 samples a 16x16 day/night lightmap. Meshes do not upload when the sun moves. Embedded PS2 fog keeps the spherical environmental and cylindrical distance curves; fixed-function fog remains a caps fallback. |
-| `graphics.rs`, `graphics_ui.rs`, `options_ui.rs` | DX9-only device preferences persist independently of the existing quality values. Settings remain stored even when this renderer does not implement an effect. `picked_pack` returns an empty effective pick only in the legacy build, preventing pack failure code from clearing the saved pick. |
-| Cargo, `horizon-client-input`, `horizon-threads`, workflows | Keep unsafe forbidden in existing client crates. COM/locked memory belongs to the new !Send/!Sync D3D9 crate. Package audio via existing WASAPI; omit controllers/WinRT and Horizon extras in this legacy executable. Keep ordinary default features. |
-| `horizon-prepare`, `docs/native-client.md`, Win7 launcher | Reuse the prepared 26.3 `--resources` contract. The game does not run Java for prepared resources. First installation/exporting belongs to the existing launcher/preparer; no JDK25-on-Win7 assumption is added. |
+| Native Windows/D3D9 facade | `crates/horizon-client-d3d9/src/`: COM, pointers, locked memory and Win32 stay here. Device/resources are !Send/!Sync and retain their owner. |
+| Backend selection | `horizon-client-render/src/renderer.rs`: compile-time DX9 alias on Windows + legacy-d3d9. Shared gfx Frame/types remain usable without creating a wgpu device. |
+| World renderer | `renderer/legacy.rs`, `legacy/frame.rs`, `legacy/compat.rs`: Frame consumption, lighting, state, unsupported capabilities. |
+| Geometry transfer | `legacy/mesh.rs`, `mesh/{convert,upload,arrival,compact,shadows}.rs`, `solid_cache.rs`, `resident.rs`: owned/bounded conversion, immutable arenas, visibility/index plans. |
+| CPU geometry and indices | D3D9 `geometry.rs`, `terrain.rs`, `upload_batch.rs`, `texture_pages.rs`, `shadow_queue.rs`: lossless shadows, original encoded layouts and bounded jobs. |
+| Textures / HUD | `legacy/atlas.rs`, `frame/gui_cache.rs`; D3D9 `atlas.rs`, `tiles.rs`, `animation.rs`, `screen.rs`, `gui_device.rs`, `texture_levels.rs`. |
+| Enchantment glint | `legacy/glint.rs`, D3D9 `glint.rs`, entity/HUD routing in frame code. A masked additive depth-read-only pass only for enchanted geometry; supplied animation UVs and strength/tint are used. |
+| Resolution scale | D3D9 `world_size.rs`, `world_target.rs`: persistent native color/depth, hardware StretchRect outside a scene, full-resolution HUD. |
+| Embedded shaders | D3D9 `fog*_program.rs`, `terrain_program.rs`; sources and SDK validation in `tools/d3d9/`. No runtime shader compilation. |
+| Input/boot compatibility | Win7 clipboard shim; game runtime loading/window setup and HDR stubs keep unsupported DLLs out of imports. Preserve early device choices across loading/title/world handoff. |
+| Shared game logic | Upstream `horizon-client`, `horizon-client-gameplay`, `horizon-gameplay`; do not optimize those as a substitute for improving DX9. Adapt interfaces only as needed for this port. |
+| Distribution entry | Upstream moved the `horizon-client` executable into package `horizon-game`; the Win7 script must build that package with legacy-d3d9,audio. |
 
-`renderer::Renderer` is a build-time safe adapter rather than an enum that allocates
-both GPU engines. Its lifecycle covers construction, section upload/removal, dimension
-clear, resource-pack replacement, render, resize and shutdown. Compatibility methods
-report unavailable GPU effects explicitly. `gfx::Frame` is shared; no second world,
-input mapping, mesher, inventory or resource system was introduced.
+## Rendering and performance invariants
 
-## Hardware boundary and lifecycle
+- Reuse Horizon's meshes, normals, tint/AO, lighting, models, CPU entity/particle
+  culling and HUD. Sync/Async/Off culling runs before DX9 receives surviving vertices;
+  unsupported GPU occlusion is a separate feature. Pending sections are not current
+  occluders. Do not bypass conservative readiness checks.
+- Bulk SectionMesh ownership moves into the existing bounded staging worker. Recycle
+  buffers through the mesher's pool off the frame thread, including cancellation.
+  Keep epoch/revision guards, job/byte quotas, grouping and nearest-first pressure.
+- Edits remain immediately visible. Lossless CPU-shadow compression can run later on
+  the same worker: 64 queued keys / 8 MiB plus one active job; pressure falls back
+  synchronously. Apply completion only to the identical source Arc. Storage compression
+  does not change geometry revisions, native buffers or gameplay responsiveness.
+- FFP vertices are 32 bytes; HW VS2 uses exact 20/28-byte layouts when possible.
+  Shadows preserve all bits, including signed zero/NaN payloads. Demand uploads and
+  compaction assemble encoded bytes directly, avoiding expand/re-encode round trips.
+- Native VBs/IBs respect caps and 16-bit indices. Immutable region arenas and cached
+  tight index windows avoid needless updates and excessive software transforms.
+  Never restore the per-frame reupload or expensive globally sorted-alpha path.
+- Basic transparency is intentional. Do not implement improved transparency/OIT by
+  multiplying per-frame draws, sorting or uploads on GMA. Correctness fixes must be
+  evaluated for cost before being adopted. The ice fix's 23 -> 5 FPS regression was
+  rejected; a simpler path recovered about 42 FPS.
+- Cache sprite atlas transforms; ordinary UVs avoid polygon clipping, while repeating
+  and degenerate UVs keep the general path. Geometry/textures are not reduced in quality.
+- GUI uses exact bounded CPU reuse, batched streams, XYZRHW on software VP, and reused
+  depth for disjoint inventory models. Keep its fast path for ordinary HUD geometry.
+  Glint uses a separate masked path only when present; do not make every widget pay
+  for an offscreen enchantment composite. Three-stage FFP squares sampled RGB; on
+  two-stage hardware the small glint texture is pre-squared (filtering approximation).
+- Scale 100% has no extra target/resolve. Scaling the world selects its target before
+  Clear, then resolves before HUD. Release DEFAULT targets on Reset and when unused.
+  No CPU readback is involved. The saved option survives driver/allocation fallback.
+- Mip limits use upstream sprite_mipmap_limit, including resampling levels. Native
+  texture levels change only on option changes; preserve/refresh current animated
+  or frozen frames. Native anisotropy is capped by the driver. RGSS remains a linear
+  approximation. Do not silently rewrite unsupported settings or pretend they work.
+- Keep normal logs quiet: startup identity/capability and actionable warnings only.
+  Periodic renderer diagnostics require `HORIZON_D3D9_LOG_STATS=1`; per-frame
+  profiler spans remain.
 
-Only `Direct3DCreate9` / `IDirect3D9::CreateDevice(D3DDEVTYPE_HAL)` is used. Require
-HWRASTERIZATION, two texture stages, MODULATE, alpha test/blend, supported RGBA
-textures and a matching D24X8/D16 depth format, then test real texture/VB allocation.
-Use hardware fixed-function vertices when HWTRANSFORMANDLIGHT is exposed, otherwise
-software vertex processing on HAL. No hardware VS2 requirement and no REF/WARP path.
-GMA uses fixed-function world vertices and CPU-projected XYZRHW GUI vertices.
-Capable hardware may use the existing embedded VS2 compact terrain path. An
-embedded `ps_2_0` program combines the fog curves when PS2 and texture-coordinate
-generation are available; otherwise a fixed-function approximation is logged.
-No shader compiler or SDK runtime is required.
-Intel's [N400/N500 datasheet, section 3.2.1](https://www.intel.com/content/dam/www/public/us/en/documents/datasheets/atom-n400-vol-1-datasheet-.pdf)
-assigns transform/lighting to the CPU, with setup, texturing and rasterization on
-the GPU (two 200 MHz pixel pipelines). Its CPU feature list confirms Intel64,
-SSE2, SSE3 and SSSE3. This is why HAL software vertex processing is the expected
-GMA3150 baseline; a caps-exposed hardware mode still needs performance measurement.
+## Supported scope and explicit gaps
 
-Intel's [technical description](https://community.intel.com/t/atom-nm10-d510m0-graphic-details/59870/1)
-explicitly identifies hardware PS2.0. Its [summary table](https://www.intel.com/content/www/us/en/developer/articles/guide/hd-graphics-quick-reference-guide.html)
-labels GMA3150 SM3.0; this does not prove hardware VS3/PS3. Device caps, HAL creation
-and physical measurements decide the path. Microsoft documents
-[HAL with software vertices](https://learn.microsoft.com/en-us/windows/win32/direct3d9/device-types)
-as hardware rasterization. No GPU vendor IDs decide compatibility.
+Terrain/cutouts/basic transparency, models and CPU-skinned entities, held/dropped
+items, armour, enchantment shimmer, HUD/inventory/chat, particles/weather, overlays,
+lightmap, tint/AO, reverse world Z and forward GUI Z are supported. Sky/End effects
+are simplified. Verify glint on held items, GUI/inventory models, dropped items and
+armour, including alpha masks, occlusion, scrolling, strength zero and custom tint.
 
-A small implicit swapchain anchors the device. A window-size additional swapchain and explicit depth surface handle resize/vsync changes without Reset or terrain loss. Screenshots read the active render target. Managed textures/IBs survive a real Reset. On NOTRESET, additional surfaces and DEFAULT resources/bindings are released on the creating thread, then reconstructed from CPU shadows. LOST waits for cooperative recovery. Minimized windows skip drawing. Resources retain their
-device/window through owned COM handles and cannot move to another thread. Reverse Z
-uses a real depth surface; paired view/projection Z reflections keep the common clip
-coordinates and positive fixed-function fog depth.
+Clouds/star field, glowing outlines, shader packs/core shaders, PBR, LOD/BlueMap,
+GPU culling/skinning, HDR, TAA/FXAA, advanced upscaling, dynamic resolution,
+frame generation, improved transparency, menu blur, custom CIT glint and split-screen
+composition are not implemented. Upstream prepared GPU models fall back to CPU
+geometry; new multi-view and native GPU pipeline interfaces are explicitly
+unavailable. Empty mod pipeline sets remain valid. Leave unavailable controls visible and disabled
+with the API reason, preserving stored values. Do not claim OpenGL/Vulkan parity.
 
-Each VB is bounded by 16-bit indices and caps (at most 65,532 vertices); no 256 MiB
-arena pages. Section meshes convert once into lossless delta/byte-plane LZ4 CPU shadows (including exact floating-point bits).
-The cache decodes only to load missing GPU data or draw uncached geometry. Nearby
-sections share immutable VBs with positions local to a 128-block region;
-negative coordinates use Euclidean division and the dimension's minimum Y is kept.
-New pages upload once and are never modified while draws can reference them. This
-also avoids placing permanent terrain in dynamic/AGP storage on discrete GPUs.
-FFP software-VP input uses SYSTEMMEM; hardware-VP input uses DEFAULT. Microsoft
-documents [CPU-readable input for software vertex processing](https://learn.microsoft.com/en-us/windows/win32/direct3d9/device-types-and-vertex-processing-requirements).
-The memory pool changes input placement, not HAL rasterization.
+This is currently one DX9-only EXE. A combined executable with optional modern APIs
+is feasible, but requires runtime backend selection and a complete startup-import
+review. Missing modern DLLs must allow DX9 fallback. Source/build-time native bundles
+could carry the backend after an early seam is added; late render hooks cannot fix
+an EXE that the Windows loader already refused. These remain future integration work.
 
-On hardware vertex processing, visible solid quad ranges from multiple sections
-become one indexed batch per arena/page/alpha mode. The existing CPU column/frustum walk, vanilla portal visibility graph and Sides culling select geometry; spectator bypass is preserved. Visibility index buffers are retained until their canonical quad ranges change, with one bounded index scratch instead of permanent per-batch CPU index arrays. On software vertex processing, narrow direct draws
-avoid transforming holes between sparse index ranges; its visibility plan is
-cached too. Translucent sections draw far-to-near. Within each section, vertices
-are packed by texture page at upload; the few page ranges are ordered by bounds
-when the camera crosses a block boundary. Each resident draw uses a tight
-contiguous range and the shared quad IB, including on software VP. Alpha blends
-keep depth testing and back-face culling, but do not write depth between the
-approximately ordered batches. This is basic transparency, not Improved
-Transparency or exact interleaved-quad ordering. Camera motion never reuploads
-terrain vertices or allocates translucent index buffers.
-Dynamic index and transient vertex rings use
-NOOVERWRITE on append and DISCARD only on wrap, rather than renaming a full buffer
-for every small draw. Terrain GPU residency is bounded, with offscreen pages evicted
-first; an allocation failure still permits transient draws. Missing visible geometry is cached on its first draw instead of repeatedly streaming it for seconds behind a two-millisecond warmup cap. One CPU compaction worker consolidates small VBs into at most one 2 MiB page per job. Jobs/results are bounded, carry immutable shadows and revisions, and keep old GPU data until a successful replacement allocation. This avoids render-thread decompression for compaction. The automatic target is
-one third of the driver's available-memory hint, bounded by one eighth of system RAM
-and 16 MiB–2 GiB. It no longer imposes the GMA-scale 128 MiB ceiling on an RTX.
-Render distance and texture quality are never rewritten. CPU shadows, physical
-arena allocations, live GPU vertices and decode/index scratch are reported separately.
+## Profiling and TZ 3 baseline
 
-Sprite pages group native resolutions, undoing only array upscaling (a 16 px sprite
-in a 64 px CPU array keeps its original detail). Animated sprites have separate
-pages at most 256 px, except when the sprite itself needs more space. Static pages
-are at most 1024 px, subject to caps. GUI keeps the existing virtual atlas and packs used 128 px tiles, with neighbouring
-texel gutters, into physical pages of 1024 or 2048 px, subject to caps and the
-texture target. Access order keeps active fonts/fills/icons together. Unused tiles
-allocate no GPU storage; immutable CPU tiles compress and patched tiles stay raw.
-Glyph/map/skin patches update tile seams before resident cells are uploaded. Per-sprite
-extruded mip chains remain. Panorama uses the same dedicated camera matrix as the
-ordinary renderer and releases storage on entering a world. Advisory memory targets
-derive from the driver's available-memory hint. Exceeding the texture target warns;
-exceeding the GPU mesh target falls back to transient draws, not a fatal budget
-error. Optional environment overrides remain for diagnosis; ordinary use needs none.
+Use game chat, without --control or a separate binary:
 
-The first PE inspection found modern GPU dependencies despite never creating a wgpu
-device. Cargo now omits Vulkan/Metal/DX12/GLES **only for the Win7 vendor target**;
-ordinary platform feature sets are unchanged. `horizon-hdr` has a Win7 no-Vulkan
-adapter and the build enables `windows_slim_errors`, avoiding optional WinRT rich
-error origination. A second finding was arboard's static Win8 `PathCchStripPrefix`
-import. The Win7 input layer selects a small Unicode clipboard shim in the isolated
-presentation crate; normal platforms still use arboard. Keyboard/mouse/IME mappings
-and event handling are unchanged. The PE audit requires Direct3DCreate9 and rejects
-other graphics/shader DLLs in both normal and delay imports; unknown API contracts
-remain errors, not accepted wildcards.
-
-## Preview features
-
-| Feature | Legacy path |
-| --- | --- |
-| Solid/cutout/translucent terrain, non-cube models, fluid surfaces | Existing SectionMesh; paged textures, alpha/Z, section transparency sorting |
-| AO, biome tint, sky/block light, day/night, night vision/darkness | Existing vertex data and 16x16 lightmap; no all-section recoloring |
-| Title, menus, inventory, chat, glyph/map/skin updates, cursor | Existing HudBatch and input; GUI depth/scissor/blends |
-| Entities, block entities, hand/held items, world text, particles | Existing CPU vertices; basic normal shading and material blending |
-| Rain/snow, lightning, breaking cracks, block outline, border, screen overlays | CPU inputs and fixed-function geometry |
-| Nether/End, panorama, sun/moon | Octagonal sky-disc horizon gradient and dual PS2 fog; simplified textured End sky and portal |
-| Animated textures/filtering | Shared native-size/linear-light/alpha-coverage mip generation and level limit; nearest, linear/trilinear, caps-bounded anisotropy. RGSS is approximated by linear filtering; animation interpolation/Polytone expressions remain unavailable |
-| Clouds/star field, foil/glint, glowing outlines, pack core shaders | Omitted in this preview; base objects/items remain |
-| LOD, GPU occlusion/culling/skinning, shader packs, PBR, HDR, post chains, TAA/FXAA, frame generation | Unavailable; no corresponding GPU pipelines start; settings remain stored |
-| Split-screen compositor / GPU render capture | Explicitly unavailable; screenshots and DX9 log counters remain |
-
-Static block-entity snapshots currently use the dynamic entity draw path. GPU caching
-of those optional snapshots and CPU-transformed vertex
-A/B testing remain performance follow-ups requiring hardware evidence.
-
-## Current optimization and profiling pass
-
-The owner tested package `4b6f861fd3` on real N455/GMA3150: the same two-chunk
-ice scene rose from the good 23 FPS baseline, through the 5 FPS regression, to
-about 42 FPS. RTX returned to approximately its earlier settled performance.
-The supplied GMA log now has about 70 total draws, including 25 transparent
-page draws, instead of 3790 draws / 1994 binds. Basic transparency stays; exact
-per-quad ordering is deliberately outside this backend's performance target.
-
-The stationary 57.5-second capture averages 39.4 FPS: render wall 21.4 ms, solid
-9.8, translucent 7.6, GUI 2.4, prepare 2.7 ms. The moving 59.1-second capture
-averages 41.9 FPS: render wall 18.2, solid 13.5, translucent 1.1, GUI 0.9 and
-synchronous section uploads 0.3 ms. Both have 49 loaded columns; neither proves
-whether CPU vertex processing or GPU work dominates. The owner had Fog OFF.
-
-The former Windows health probe used `/proc` through the common CPU/RSS helpers,
-so those metrics were recorded as zero. This is missing diagnostics, not zero CPU
-use or zero resident memory. The legacy build now samples GetProcessTimes,
-GetSystemTimes and its existing Windows resident-memory API for .hzperf health.
-A five-second GetThreadTimes delta also logs `main_thread_busy_pct` for the render/
-game thread. It includes CPU work in the driver but excludes time not scheduled
-on CPU. Wall phase labels still include driver waits; GPU timestamps remain
-unavailable. These counters do not report a measured GPU utilization percentage.
-The strict PE policy explicitly reviews Kernel32's GetThreadTimes (XP+) and
-GetSystemTimes (XP SP1+) against Microsoft's minimum-client/DLL documentation;
-unreviewed APIs and modern graphics dependencies still fail closed.
-
-This pass makes two bounded renderer changes:
-
-- Fog OFF moves both ramps to `1e9..2e9`; it previously still ran the complete
-  22-slot PS2 program on every terrain pixel. Conservative geometry bounds now
-  select SDK-compiled equivalent programs: environmental-only (14 slots),
-  distance-only (17), unfogged (5) or fully fogged (4, one texture read). Unknown
-  bounds or a rejected optional program retain the dual path. Camera-position
-  texture generation is disabled when the selected program does not read it.
-  Inactive draw buckets release their cached IBs rather than retaining duplicate
-  visibility plans after a fog-program change; CPU range storage stays reusable.
-  This also removes wasted work with the owner's Fog OFF preset. Fog ranges,
-  colors, alpha, gameplay-significant fluid/effect fog and stored options stay
-  intact. CPU execution of the bytecode checks colors/alpha across the selected
-  bounds and keeps boundary/partial-density cases general. Logs show actual
-  draw counts by program and the fog parameters.
-- The ordinary renderer reuses a staging belt rather than allocating one native
-  upload per small write. DX9 now lets its existing conversion worker collect
-  ready sections with at most 2 ms waiting for more work, 32 results and a 2 MiB
-  encoded-data target before handing them to shared-page upload. An in-flight
-  conversion can finish past that wait deadline. Edits keep their synchronous
-  priority path. Both the existing 8 MiB charge and 64 outstanding-job limit
-  apply backpressure, including small meshes that previously filled the channel
-  before using its byte allowance. Only two output batches queue; compaction
-  boundaries, revisions and world-cancellation permits are preserved. Logs show
-  batch count and largest batch, alongside native page count and shared sections.
-
-The development branch fast-forwarded to the exact already-tested PR merge
-`4b6f861fd3`; it did not select another new upstream revision. Package and shader
-workflows now check out the explicit feature-branch SHA, so an advancing main
-cannot silently change the benchmark package's source.
-
-Existing GUI caches/projected SWVP stream, tight solid-side/portal/frustum
-culling, page-packed basic transparency, immutable input-buffer pools, compressed
-CPU shadows, bounded resident merging and animation cache remain. Source changes
-in this pass do not alter worldgen, server rules, saves, protocol or user graphics
-values. The requested offline admission fix and 854x480 default remain.
-
-Large-distance memory/loading is still unfinished: the previous 48-chunk report
-had about 1.3 GiB requested terrain storage and 560 MiB compressed CPU shadows.
-These counters are not physical VRAM. Baseline D3D9 still consumes full vertices;
-modern GPU-expanded packed quads, compute and indirect submission cannot be
-copied onto GMA fixed-function processing. No Vulkan RAM parity or new FPS gain
-is claimed before the owner's retest. GMA is the primary test target; RTX remains
-useful for large loading/reload checks, not a required duplicate of every test.
-
-Use the same scene/resolution/preset first. Capture through chat with
-`/profiler start client` then `/profiler stop client`; no launcher arguments are
-needed. Send latest.log and the .hzperf for an idle view and for movement/loading.
-Logs now distinguish wall time from sampled thread CPU consumption. At a 60 FPS
-cap, reaching 60 establishes only the cap; higher-rate comparisons need the owner
-to choose an uncapped limit. No limit is changed automatically. Windows stack/
-heap sampling and DX9 GPU pass timestamps remain unavailable.
-
-## Current DX9 loading and settings iteration
-
-The owner's preceding package reached 45 FPS in the controlled GMA3150 ice view
-(two chunks, 1024x600, Fog Off). Its log confirms RGB565 (`D3DFORMAT(23)`) with
-D24X8 depth and software VP on HAL. No new RTX captures were supplied in this
-iteration. The full new GMA captures, including slow frames, report:
-
-| Capture | Duration / frames | Average FPS | Render wall | Solid | Translucent | GUI |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| Stationary | 66.6 s / 2,668 | 40.3 | 20.0 ms | 9.1 ms | 7.2 ms | 2.2 ms |
-| Movement/loading | 92.8 s / 3,310 | 35.6 | 21.4 ms | 14.7 ms | 1.0 ms | 2.8 ms |
-
-The slowest 1% average about 67.7 / 66.7 ms respectively. GetThreadTimes reports
-88.3% / 90.0% main-thread execution in the log's five-second windows; process CPU
-use averages about 1.3 / 1.2 logical cores. Software vertex processing and driver
-CPU work count there. DX9 pass wall times include waits and are not GPU timestamps;
-these captures cannot isolate GPU execution from driver work inside a draw. Windows
-sampled stacks are absent. Fog was off and fog optimization is not the priority.
-
-The moving capture contains 1,495 completed staging jobs, with weighted average
-queue wait 41.0 ms and conversion 2.34 ms. At 46.87 s, a 98.75 ms frame includes
-6.17 ms of section upload, of which 4.28 ms is CPU-shadow compression on the frame
-thread. At 47.27 s compression costs 4.81 ms. These are spikes, not the average cost
-of every upload. Native terrain storage is only about 5-10 MiB, with small compressed
-shadows, well below the approximately 84 MiB advisory mesh target: two-chunk drops
-are not evidence of a 128 MiB cap or cache thrashing. Working set averages about
-573 / 562 MB; the moving capture grows about 22 MB, without an unbounded native
-geometry backlog. Capture-start/control and screenshot overhead are left alone.
-
-This iteration changes only DX9 presentation, transfer and its settings integration:
-
-- Immediate edits still convert and upload immediately. Only their lossless CPU
-  storage compression moves to the existing staging worker. A key-replacing queue
-  is bounded by 64 sections and 8 MiB, plus one active job. Overflow retains the
-  synchronous fallback. Raw shadows are drawable and recoverable before compression;
-  completed compression applies only if the section still owns that exact source.
-  Geometry revisions and GPU buffers do not change. Obsolete raw allocations are
-  released on the worker. Bulk transfers still use the owned inputs, recycling,
-  epoch guards and quotas introduced in the preceding package.
-- Cache each sprite's atlas transform and map ordinary unit-range UVs directly,
-  instead of repeatedly finding UV bounds, resolving page layout and entering
-  polygon handling. Repeated/degenerate UVs retain the general path. Side buckets
-  advance at their existing sorted boundaries. This removes DX9 conversion work;
-  the shared world generator, lighting, mesher and game loop are not optimized here.
-- A production-converter CPU probe compares exact GPU bytes, draw packets,
-  transparent ranges and decoded shadows in 48 cases: unit, fractional, collapsed
-  and repeated UVs, FFP and hardware layouts. All match. In one isolated Linux x64
-  run, a 10,240-vertex sample takes 0.80 ms before versus 0.67 ms with cached mapping
-  including compression, or 0.11 ms on the immediate path with compression deferred.
-  Host timings vary and do not establish Atom or gameplay FPS gains.
-- Entity/particle Off/Sync/Async culling already uses Horizon's shared conservative
-  CPU cullers before DX9 receives the surviving vertices. DX9 now reports a pending
-  replacement as not ready, so culling does not treat queued geometry as current.
-  These captures contain very little visible entity draw work; a representative
-  server capture is needed before targeting that path. No other client code is
-  optimized in this pass.
-- Manual Resolution Scale now creates a persistent native color/depth target in
-  the actual RGB565/32-bit format, then uses hardware StretchRect before drawing the
-  full-resolution HUD. 100% uses the original target without an extra resolve or
-  retained scaled allocation. Target selection precedes Clear, avoiding a redundant
-  full-window clear. Size changes recreate only those targets; Reset releases them.
-  Unsupported/allocation failures fall back without rewriting saved values.
-- Mipmap Levels now limits the real texture chain using Horizon's existing
-  `sprite_mipmap_limit`, including pack resampling levels. DX9 has no mip-range
-  views, so textures are replaced only when that setting changes. Level zero copies
-  directly; a compressed small tail permits restoration without a second base-image
-  copy. Animated and frozen current frames are refreshed after changing levels.
-  Anisotropic filtering now uses the native capped sampler rather than linear-only
-  approximation. RGSS remains an approximation; animation interpolation/expressions
-  and custom shader filtering are still unavailable.
-- Unsupported DX9 effects stay visible, disabled with the API reason, following
-  the ordinary settings UI. This includes HDR, AA/upscaling/frame generation,
-  dynamic resolution, shaders/LOD, clouds, improved transparency and glint effects.
-  Saved options are not reset. CPU culling, manual scale, supported filtering and
-  ordinary game settings remain available. The existing VP and 16/32-bit choices
-  remain; RGB565 is preferred and does not need exclusive fullscreen.
-
-Horizon's ordinary `[profile.release]` already uses Thin LTO and one codegen unit.
-Our separate `legacy` profile uses opt-level=3, panic=abort, 16 codegen units and
-LTO off to bound iterative linking time/memory. The preceding single-kernel LTO
-benchmark cannot justify a whole-game conclusion: a final release should compare
-representative loading, steady terrain, GUI and entity scenes with/without Thin
-LTO, including binary size and build cost. It is intentionally not enabled now.
-x64 retains SSE3/SSSE3 and x86 SSE3, without inheriting the host's later ISA.
-
-## Native-mod and shared-executable feasibility
-
-A single executable with DX9 and modern APIs is feasible. In the checked vendored
-wgpu HAL, `dx12/mod.rs` already loads d3d12.dll/dxgi.dll and their entry points
-through libloading; their absence is not by itself a reason to forbid a combined
-binary. The present limitation is the compile-time Renderer alias and the Win7
-manifest's exclusion of modern backend features. A combined implementation needs
-an early runtime renderer factory/fallback, shared facade operations, and an audit
-of **all** mandatory Win7 imports before startup. Auto can then try supported
-modern adapters and fall back to DX9; an explicit DX9 menu choice can select it.
-No second product or separate modern client is necessary. This is an integration
-project, not a switch already implemented by this performance pass.
-
-Horizon's [native bundles](native-mods.md#a-bundle) are source/build-time mods that
-may add crates and injection helpers. DX9 could be distributed that way after
-adding an early backend/build seam. Existing [render hooks](native-mods.md#render-hook-points)
-receive wgpu objects after the world has already rendered, so an ordinary
-world-drawn hook cannot substitute the DX9 device. Win7 also affects Rust std,
-EXE-wide imports, dependencies and the toolchain before a mod hook can run. A
-build-time bundle could rebuild the complete compatible executable; a late-loaded
-DLL cannot fix an EXE the Windows loader already rejected. No native-mod or XP
-refactor is included in this optimization iteration.
-
-## Build, package and test
-
-`tools/build_win7_client.sh` uses nightly-2026-11-11 with rust-src and
-`x86_64-win7-windows-gnu -Z build-std=std,panic_abort` ([Rust target documentation](https://doc.rust-lang.org/rustc/platform-support/win7-windows-gnu.html)).
-The pinned MinGW GCC14.2/binutils2.44 cross tools are shared with the existing launcher.
-The separate optimized `legacy` profile bounds linker memory; modern profiles stay intact.
-Rust flags permit SSE3/SSSE3, never host-native SSE4/POPCNT/AVX. CRT/native support is
-linked statically; no redistributable DLL is assumed without the PE audit.
-
-```sh
-tools/bootstrap_win7_cross.sh "$PWD/work/win7-client/cross"
-# Install rustup locally under work first; the script prints the required locations.
-tools/build_win7_client.sh
+```
+/profiler start client
+/profiler stop client
 ```
 
-The owner's optional 32-bit experiment uses the same source and DX9 path:
+Send the resulting local .hzperf and latest.log; do not upload automatically. DX9
+has no GPU pass timestamps. Draw phases measure wall time, including driver waits;
+Windows process CPU/RSS come from upstream probes. A high main-thread execution
+percentage can include software VP/driver CPU work. A partly idle Task Manager
+chart on the N455's two logical threads does not establish a purely GPU-bound scene.
 
-```sh
-tools/bootstrap_win7_cross.sh "$PWD/work/win7-client-x86/cross" x86
-WIN7_ARCH=x86 tools/build_win7_client.sh
-```
+| Capture (GMA3150) | Duration / frames | FPS (frames / seconds) | Render | Solid | Translucent | GUI | Entity draw / preparation |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Nov 15 movement, before 42f0b42d47 | 92.811 s / 3310 | 35.66 | 21.38 ms | 14.68 | 0.99 | 2.84 | little visible entity work |
+| Nov 18 movement, 42f0b42d47 | 64.891 s / 2254 | 34.73 | 22.06 ms | 15.55 | 0.72 | 2.73 | little visible entity work |
+| Nov 18 server route, 42f0b42d47 | 49.354 s / 557 | 11.29 | 64.11 ms | 35.50 | 3.71 | 2.87 | 16.61 / 5.45 ms |
 
-This builds `i686-win7-windows-gnu` with SSE3 enabled on the Pentium 4 target, static
-native support and large-address-aware PE32 executables. The default remains
-x64; the owner permits SSE3 for x86, without requiring SSSE3. CI produces separate flat x86/x64 archives and
-checks each architecture's imports. Both still target Win7 APIs and PE subsystem
-6.1. Running the x86 package on XP with OneCoreAPI is an unverified owner
-experiment, not an XP compatibility claim or a separate renderer implementation.
+The moving run's upload_queue averages 0.227 ms/frame versus about 0.4 ms earlier;
+retained CPU geometry is about 1.7 MiB, native arenas about 9 MiB. The log confirms
+background shadow work completes and drains. Overall movement is about 2.6% slower
+by frames/time, but the older route was not a fixed paired test: neither a whole-game
+regression nor its absence is proved. The server route is a new reproducible baseline,
+not a before/after comparison. Its entity cost is real and belongs in TZ 3, together
+with terrain submission, software VP, loading spikes and GUI costs. Keep these
+captures separate from a new upstream/LTO binary's results.
 
-The Actions artifact ZIP directly contains five files: `horizon-client.exe`,
-`TESTING.txt`, checksums, the client import report and exact build information; no inner ZIP. Select the client exe in the existing Win7 launcher's native-client
-setting. Direct launch: `horizon-client.exe --resources C:\path\to\26.3 --game-dir C:\path\to\test-game`.
-Resources and saves are never distributed in this archive.
+For every performance claim compare the same source pair, hardware, resolution,
+route, distance, settings, warmup and world state. Start with scale 100%, two chunks,
+Fog Off and RGB565 on GMA; compare 75/50% separately for pixel-cost sensitivity.
+Benchmark loading and steady scenes separately, including p99/slow frames and memory.
+A host CPU microbenchmark can validate a kernel, not establish GMA gameplay FPS.
 
-This iteration has twenty-six CPU tests (including bounded deferred compression and scale dimensions, equivalent bounded fog programs,
-bounded texture-page ranges,
-projected GUI coordinates, depth-clear reuse equivalence, ordered index windows,
-sparse-tile invalidation, tile seams/placement, executable SM2 arithmetic,
-all vertex layouts/partial codec blocks, RGB565/32-bit readback, VP selection,
-animation-cache eviction and shared-page source indices) and thirteen PE policy/parser tests. The packaging workflow builds
-the client ZIP and audits static/delay imports,
-architecture and subsystem version. Compiler warnings inherited from the current
-nightly/native dependencies are separate from a successful check. Full parity harnesses
-and a resource/world/launcher gameplay run were not performed in this environment.
-Windows DX9 renderer tests, including settings and saved values, are type-checked.
-Native scale/filter/mip calls require hardware verification; CPU tests do not
-execute COM or establish a new hardware FPS result.
+## Build, CI and validation
 
-Changed presentation files: `horizon-client-d3d9/device.rs` owns swapchains, depth,
-cached IBs and shader state; `screen.rs`/`gui_device.rs` own the projected GUI stream;
-`fog.rs` and its `fog*_program.rs` modules contain the
-SDK-generated SM2 programs; `thread_time.rs` isolates Win7 CPU accounting; `terrain.rs`, `terrain_device.rs`, `terrain_program.rs`
-implement hardware-only compact vertices; `animation.rs` caches prepared pixels;
-`geometry.rs` compresses CPU shadows; `texture_pages.rs` packs basic alpha ranges
-and caches page order; `tiles.rs` stores
-virtual atlas tiles; `atlas.rs` preserves transparent RGB. The optional development
-smoke example remains in source but is no longer built/shipped by the client package. In `horizon-client-render`, only
-`gfx.rs` helper visibility changes for normal builds. The legacy renderer and its
-`atlas`, `compat`, `frame`, `resident`, `solid_cache`, `mesh` and its
-`compact`, `convert`, `upload`, `arrival` helpers own culling, cached plans, shared mips, sky
-and bounded CPU staging/compaction; `frame/gui_cache.rs` reuses prepared HUD ranges. Cargo only adds the already-used
-glam dependency to the DX9 crate. CI and TESTING.txt carry reproducible checks. Small backend-selection, API-tooltip
-and checked-download helpers moved to sibling modules to satisfy the new upstream
-file-size guard without expanding already oversized files; their behavior is unchanged.
+`tools/build_win7_client.sh` pins nightly-2026-11-11, uses rust-src/build-std and the
+Win7 GNU target, static native support and the portable CPU flags above. Install
+its pinned cross tools with tools/bootstrap_win7_cross.sh. Set WIN7_ARCH=x86 for
+32 bit; default x64. The optimized legacy profile uses Thin LTO, one codegen unit,
+opt-level 3, panic=abort and stripped debug info. Keep linker memory bounded through
+build parallelism; do not turn LTO off silently. Benchmark its effect honestly.
 
-| Physical result | GMA3150 / N455 / Win7 x64 | HD4570 / Win7 x64 |
-| --- | --- | --- |
-| Actual driver caps and HAL rasterization | Owner game log: Chell 1.8b, vendor 8086/device a011, PS2, VS0, DevCaps 8ae50, 2048², 8 samplers/stages, HAL SWVP, X8R8G8B8/D24X8 | Pending user log |
-| Title/menu/world/input/save, resize/Alt+Tab/fullscreen | Owner ran title/world/inventory at two chunks; remaining transitions not certified | Not tested |
-| Screenshots and visual comparison | Owner supplied flat/normal world screenshots; ice issue reported | Not captured |
-| Median/1% low, CPU stages, draw/bind/upload/memory comparison | Owner .hzperf/log available; new-build comparison pending | Not measured |
+Actions keeps DX9 Win7 package/audit/tests and SDK shader validation. Upstream
+release/site/launcher/telemetry/mod publishing bots are not this fork's CI. Future
+merges must not reactivate them accidentally. Only x86 and x64 distribution
+artifacts are uploaded, as flat ZIPs containing EXE, TESTING.txt, build-info.txt,
+SHA256SUMS and the architecture's strict PE import report. No inner ZIP, smoke EXE,
+horizon-ctl, assets or saves. Artifact retention is finite.
 
-See `TESTING.txt` in the archive for the short game test and diagnostic variables.
-The log prints adapter/vendor/device, PS/VS versions, DevCaps, texture limits, stages,
-vertex mode and formats, plus periodic CPU/Present/draw/bind/upload/residency counters.
-The owner has established a physical GMA game run for the preceding build. Remaining
-visual/lifecycle coverage and this update still need hardware retests; neither CI,
-Wine nor VM results substitute for those.
+Validation must cover CPU geometry/queue/index/mask contracts, Win7 architecture,
+subsystem and static/delay imports, Windows DX9 compilation and SDK shader checks.
+Never solve an import rejection by allowing an unavailable Win8/10 API. A successful
+build does not verify rendering on GMA. Record actual hardware checks separately.

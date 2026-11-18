@@ -13,6 +13,7 @@ pub(super) struct GuiRun<'a> {
     pub state: DrawState,
     pub picture: Option<u64>,
     pub cache: bool,
+    pub glint_color: u32,
 }
 #[derive(Default)]
 struct Entry {
@@ -144,17 +145,44 @@ fn build(
     commands: &mut Vec<GuiCommand>,
 ) {
     batches.begin(run.state);
+    let mut previous_kind = 0;
     for tri in run.source.chunks_exact(3) {
-        if tri[0].uv[0] >= 2.0 {
+        let kind = if tri[0].uv[0] < 2.0 {
+            0
+        } else if tri[0].uv[0] < 4.0 {
+            1
+        } else {
+            2
+        };
+        if kind != 0 && run.glint_color & 0x00ff_ffff == 0 {
             continue;
-        } // optional foil over an already-emitted base item
+        }
+        let offset = if kind == 2 {
+            4.0
+        } else if kind == 1 {
+            2.0
+        } else {
+            0.0
+        };
+        if kind != previous_kind {
+            batches.begin(DrawState {
+                glint: kind,
+                equal_depth: kind != 0 && run.state.depth_test,
+                ..run.state
+            });
+            previous_kind = kind;
+        }
         let input: [dx::Vertex; 3] = std::array::from_fn(|i| {
             let v = &tri[i];
             dx::Vertex {
                 pos: [v.pos[0], v.pos[1], v.depth],
-                uv: v.uv,
-                color: dx::rgba_to_argb(v.color),
-                light: [0.0; 2],
+                uv: [v.uv[0] - offset, v.uv[1]],
+                color: if kind == 0 {
+                    dx::rgba_to_argb(v.color)
+                } else {
+                    run.glint_color & 0x00ff_ffff | v.color & 0xff00_0000
+                },
+                light: if kind == 0 { [0.0; 2] } else { v.glint_uv },
             }
         });
         run.pixels.polygon(&input, |page, p| batches.push(page, p));
