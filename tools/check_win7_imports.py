@@ -24,6 +24,13 @@ from pathlib import Path
 # (GetThreadTimes) and XP SP1 (GetSystemTimes), both before Win7:
 # https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes
 # https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes
+# Cache leases now use these documented pre-Win7 exports: SID conversion (XP,
+# Advapi32), pipe inspection (Windows 2000/Vista) and handle reopening (Vista,
+# Kernel32). Do not widen this to API-set contracts or post-Win7 replacements.
+# https://learn.microsoft.com/windows/win32/api/sddl/nf-sddl-convertsidtostringsidw
+# https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-getnamedpipeclientprocessid
+# https://learn.microsoft.com/windows/win32/api/namedpipeapi/nf-namedpipeapi-getnamedpipeinfo
+# https://learn.microsoft.com/windows/win32/api/winbase/nf-winbase-reopenfile
 SAFE_IMPORTS = {
     # Direct3DCreate9 is supplied by the Direct3D 9 runtime (Windows XP and later).
     "d3d9.dll": "Direct3DCreate9",
@@ -53,6 +60,7 @@ SAFE_IMPORTS = {
         GetFullPathNameA GetFullPathNameW GetLastError GetLocaleInfoEx GetLocaleInfoW
         GetLogicalDrives GetModuleFileNameA GetModuleFileNameW GetModuleHandleA
         GetModuleHandleW GetModuleHandleExW GetNativeSystemInfo GetNumberOfConsoleInputEvents
+        GetNamedPipeClientProcessId GetNamedPipeInfo
         GetOverlappedResult GetProcAddress GetProcessHeap GetProcessHeaps GetProcessId
         GetProcessTimes GetProcessVersion GetProcessWorkingSetSize GetStartupInfoA
         GetSystemTimes GetThreadTimes
@@ -77,7 +85,7 @@ SAFE_IMPORTS = {
         QueueUserWorkItem RaiseException ReadConsoleA ReadConsoleW ReadConsoleInputW
         ReadFile ReadFileEx ReadProcessMemory ReleaseMutex ReleaseSRWLockExclusive
         ReleaseSRWLockShared ReleaseSemaphore RemoveDirectoryW RemoveVectoredExceptionHandler
-        ResetEvent ResumeThread RtlCaptureContext RtlLookupFunctionEntry RtlUnwindEx
+        ReOpenFile ResetEvent ResumeThread RtlCaptureContext RtlLookupFunctionEntry RtlUnwindEx
         RtlVirtualUnwind SearchPathW SetConsoleCtrlHandler SetConsoleMode SetConsoleOutputCP
         SetConsoleTextAttribute SetCurrentDirectoryW SetEndOfFile SetEnvironmentVariableA
         SetEnvironmentVariableW SetErrorMode SetEvent SetFileAttributesW SetFileInformationByHandle
@@ -103,7 +111,7 @@ SAFE_IMPORTS = {
         RegCreateKeyExW RegDeleteKeyW RegDeleteTreeW RegDeleteValueW RegEnumKeyExW
         RegEnumValueW RegFlushKey RegGetValueW RegOpenKeyExW RegQueryInfoKeyW
         RegQueryValueExW RegSetValueExW SystemFunction036
-        ConvertStringSecurityDescriptorToSecurityDescriptorW GetFileSecurityW RegDeleteKeyExW
+        ConvertSidToStringSidW ConvertStringSecurityDescriptorToSecurityDescriptorW GetFileSecurityW RegDeleteKeyExW
         SetFileSecurityW
     """,
     "bcrypt.dll": """

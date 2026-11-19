@@ -211,11 +211,15 @@ pub fn run(mut settings: Settings, emit: &dyn Fn(Event)) -> Result<(), String> {
     // run in place: keep their chosen filename and avoid copying an entire user folder.
     #[cfg(windows)]
     if managed {
-        crate::windows_runtime::mark(&mut cmd, program.parent().unwrap());
+        crate::run_leases::mark(&mut cmd, program.parent().unwrap());
+        crate::run_leases::snapshot(&mut cmd);
     }
     #[cfg(not(windows))]
     let _ = (managed, &mut cmd);
-    let (mut cmd, _runtime) = backend::prepare_command(cmd)?;
+    let (mut cmd, mut runtime) = backend::prepare_command(cmd)?;
+    if let Some(warning) = runtime.warning.take() {
+        emit(Event::Log(warning));
+    }
     cmd.stdin(Stdio::null())
         .stderr(output.try_clone().map_err(|e| e.to_string())?)
         .stdout(output);
@@ -223,7 +227,7 @@ pub fn run(mut settings: Settings, emit: &dyn Fn(Event)) -> Result<(), String> {
         "Starting {path}",
         &[("path", &program.display().to_string())],
     )));
-    let mut child = cmd.spawn().map_err(|e| {
+    let mut child = backend::spawn_attached(&mut cmd).map_err(|e| {
         trf(
             "Could not start Horizon: {error}",
             &[("error", &e.to_string())],
