@@ -1,0 +1,76 @@
+name: Windows 7 Direct3D9 client
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'third_party/**'
+      - 'tools/d3d9/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'tools/*win7*'
+      - 'packaging/win7-client/**'
+      - '.github/workflows/client-win7.yml'
+      - 'AGENTS.md'
+      - 'docs/legacy-d3d9.md'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'third_party/**'
+      - 'tools/d3d9/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'tools/*win7*'
+      - 'packaging/win7-client/**'
+      - '.github/workflows/client-win7.yml'
+      - 'AGENTS.md'
+      - 'docs/legacy-d3d9.md'
+concurrency:
+  group: win7-d3d9-client-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        architecture: [x64, x86]
+    env:
+      WIN7_ARCH: ${{ matrix.architecture }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Cross compiler host libraries
+        run: sudo apt-get update && sudo apt-get install -y libmpc3 libisl23
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> work/win7-client/target"
+          shared-key: win7-d3d9-nov11-${{ matrix.architecture }}
+          cache-on-failure: true
+      - name: Install pinned cross compiler
+        run: tools/bootstrap_win7_cross.sh "$RUNNER_TEMP/win7-client/cross" "$WIN7_ARCH"
+      - name: Build DX9 client and audit Win7 imports
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/work/win7-client/target
+          WIN7_BUILD_ROOT: ${{ runner.temp }}/win7-client
+          WIN7_CROSS_ROOT: ${{ runner.temp }}/win7-client/cross
+          CARGO_HOME: /home/runner/.cargo
+          RUSTUP_HOME: /home/runner/.rustup
+        run: tools/build_win7_client.sh
+      - name: Check Win7 import policy
+        run: python3 -m unittest discover -s tests -p test_check_win7_imports.py
+      - name: Check CPU resource plans and embedded SM2 fog
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/work/win7-client/target
+        run: cargo +nightly-2026-11-11 test --locked -p horizon-client-d3d9 --lib
+      - uses: actions/upload-artifact@v4
+        with:
+          name: horizon-client-win7-${{ matrix.architecture }}
+          retention-days: 30
+          if-no-files-found: error
+          path: ${{ runner.temp }}/win7-client/artifacts/package/*

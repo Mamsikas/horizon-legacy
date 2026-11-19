@@ -264,16 +264,21 @@ impl PresentMode {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum GraphicsApi {
     /// Vulkan, then DirectX 12 (Windows), then OpenGL when neither has a surface, adapter or device.
-    #[default]
+    #[cfg_attr(not(all(windows, feature = "legacy-d3d9")), default)]
     Auto,
+    #[cfg(all(windows, feature = "legacy-d3d9"))]
+    #[default]
+    LegacyD3d9,
     Vulkan,
     Dx12,
     /// OpenGL, for GPUs with no Vulkan or DirectX 12 driver (Windows and Linux).
     OpenGl,
 }
 impl GraphicsApi {
-    pub const ALL: [GraphicsApi; 4] = [
+    pub const ALL: [GraphicsApi; 4 + cfg!(all(windows, feature = "legacy-d3d9")) as usize] = [
         GraphicsApi::Auto,
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        GraphicsApi::LegacyD3d9,
         GraphicsApi::Vulkan,
         GraphicsApi::Dx12,
         GraphicsApi::OpenGl,
@@ -281,6 +286,9 @@ impl GraphicsApi {
     /// The APIs this system offers, in the order the setting cycles through
     /// them: DirectX 12 is Windows' third backend, and macOS has no choice.
     pub fn choices() -> &'static [GraphicsApi] {
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        const WINDOWS: [GraphicsApi; 1] = [GraphicsApi::LegacyD3d9];
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
         const WINDOWS: [GraphicsApi; 4] = [
             GraphicsApi::Auto,
             GraphicsApi::Vulkan,
@@ -301,6 +309,8 @@ impl GraphicsApi {
     pub fn name(self) -> &'static str {
         match self {
             GraphicsApi::Auto => "auto",
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            GraphicsApi::LegacyD3d9 => "legacy-d3d9",
             GraphicsApi::Vulkan => "vulkan",
             GraphicsApi::Dx12 => "dx12",
             GraphicsApi::OpenGl => "opengl",
@@ -309,6 +319,8 @@ impl GraphicsApi {
     pub fn label(self) -> &'static str {
         match self {
             GraphicsApi::Auto => "Auto",
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            GraphicsApi::LegacyD3d9 => "Direct3D 9",
             GraphicsApi::Vulkan => "Vulkan",
             GraphicsApi::Dx12 => "DirectX 12",
             GraphicsApi::OpenGl => "OpenGL",
@@ -320,12 +332,25 @@ impl GraphicsApi {
             .into_iter()
             .find(|api| api.name().eq_ignore_ascii_case(s.trim()))
     }
-    /// `HORIZON_GRAPHICS_API` (auto, vulkan, dx12 or opengl) if set, else the setting.
+    /// The API offered by this executable, without rewriting a saved preference.
+    /// A Win7 build cannot import the modern APIs just to offer inactive choices.
+    pub fn selected(self) -> Self {
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        {
+            Self::LegacyD3d9
+        }
+        #[cfg(not(all(windows, feature = "legacy-d3d9")))]
+        {
+            self
+        }
+    }
+    /// `HORIZON_GRAPHICS_API` if set, else the setting, restricted to this build.
     pub fn with_env(self) -> Self {
         std::env::var("HORIZON_GRAPHICS_API")
             .ok()
             .and_then(|v| Self::from_name(&v))
             .unwrap_or(self)
+            .selected()
     }
 }
 
@@ -575,6 +600,29 @@ impl HdrMode {
             "auto" => Self::Auto,
             _ => default,
         }
+    }
+}
+
+/// What Horizon does with HDR's range above paper white, where no shader pack lights the world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum HdrLook {
+    /// Horizon's lift: light sources and the sun shine above paper white; lit surfaces stay at
+    /// it.
+    #[default]
+    Horizon,
+    /// Nothing lifted: HDR output shows the same picture as SDR.
+    Vanilla,
+}
+impl HdrLook {
+    pub const ALL: [Self; 2] = [Self::Horizon, Self::Vanilla];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Horizon => "horizon",
+            Self::Vanilla => "vanilla",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|look| look.name() == value)
     }
 }
 
@@ -902,9 +950,8 @@ pub struct Graphics {
     /// HDR brightness of the HUD and menus, in nits; 0 is Auto: at paper white
     /// ([`Graphics::ui_nits`]). The first-person hand stays at the world's.
     pub hdr_ui_nits: u32,
-    /// HDR Lighting: Horizon's own HDR look, light sources, the sun and sunlight above paper
-    /// white. Off, HDR output shows the same picture as SDR, for shader packs or the vanilla look.
-    pub hdr_lighting: bool,
+    /// HDR's look with no shader pack running.
+    pub hdr_look: HdrLook,
     /// The graphics driver whose last start ended before HDR output showed a frame (the
     /// marker found, [`HDR_MARKER`]): a window on it stays SDR whatever the mode, until the
     /// mode is changed or the window starts on another driver ([`Graphics::hdr_held`]).
@@ -920,6 +967,9 @@ pub struct Graphics {
     pub shadow_cache: bool,
     /// The graphics API (Windows only; see `GraphicsApi`).
     pub api: GraphicsApi,
+    /// Direct3D9 device choices; apply on the next client start.
+    #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+    pub d3d9: horizon_client_d3d9::Preferences,
     /// Translucent quads in vertex buffers of their own (`gfx`'s translucent arena), so their
     /// back-to-front draws go out in a few calls, for a little more video memory. On by
     /// default (Translucent Batching, Advanced graphics); read when a renderer is made (start,
@@ -927,11 +977,6 @@ pub struct Graphics {
     /// `batchTranslucent`: `translucentBatching`, which every save wrote as false while it was
     /// off by default and had no switch, stays ignored.
     pub translucent_batching: bool,
-    /// Smooth Gradients (HDR page, on by default): with HDR output on, the frame is drawn in
-    /// 16 bits, so dark gradients don't band (`Renderer::frame_format`). Read when a renderer
-    /// is made (start, resource-pack reload), like `translucent_batching`, where the renderer's
-    /// device draws it (`EffectiveOutput::wide_frame_supported`).
-    pub hdr_smooth_gradients: bool,
     /// The native `horizon:<manifest-id>` or classic filename picked in `shaderpacks/`; empty: none. Its key is
     /// not `shaderPack`, which versions before the clean-room rewrite saved and which stays
     /// ignored.
@@ -986,13 +1031,14 @@ impl Default for Graphics {
             hdr_peak: 0,
             hdr_black_level: 0,
             hdr_ui_nits: 0,
-            hdr_lighting: true,
+            hdr_look: HdrLook::Horizon,
             hdr_failed_start: None,
             battery: false,
             shadow_cache: false,
-            api: GraphicsApi::Auto,
+            api: GraphicsApi::default(),
+            #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+            d3d9: horizon_client_d3d9::Preferences::default(),
             translucent_batching: true,
-            hdr_smooth_gradients: true,
             shader_pack: String::new(),
         }
     }
@@ -1061,6 +1107,8 @@ impl Graphics {
         let mut g = Self::default();
         // UI Brightness: `hdrUiNits`, else an older file's share of Paper White.
         let (mut ui_nits, mut ui_share) = (None, None);
+        // The look: `hdrLook`, else an older file's `hdrLighting`, whose off was Vanilla.
+        let (mut look, mut lighting) = (None, None);
         for line in text.lines() {
             let Some((key, value)) = line.split_once(':') else {
                 continue;
@@ -1152,7 +1200,8 @@ impl Graphics {
                 }
                 "frameGeneration" => g.frame_generation = FrameGeneration::parse(value),
                 "hdr" => g.hdr = HdrMode::parse(value, g.hdr),
-                "hdrLighting" => g.hdr_lighting = flag(g.hdr_lighting),
+                "hdrLook" => look = HdrLook::parse(value),
+                "hdrLighting" => lighting = Some(flag(lighting.unwrap_or(true))),
                 "hdrPaperWhite" => g.hdr_paper_white = nits_setting(number(g.hdr_paper_white)),
                 "hdrUiNits" => ui_nits = value.parse().ok().map(nits_setting),
                 "hdrUiBrightness" => ui_share = value.parse::<u32>().ok(),
@@ -1167,8 +1216,19 @@ impl Graphics {
                 "batteryMode" => g.battery = flag(g.battery),
                 "shadowCache" => g.shadow_cache = flag(g.shadow_cache),
                 "batchTranslucent" => g.translucent_batching = flag(g.translucent_batching),
-                "hdrSmoothGradients" => g.hdr_smooth_gradients = flag(g.hdr_smooth_gradients),
                 "graphicsApi" => g.api = GraphicsApi::from_name(value).unwrap_or_default(),
+                #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+                "d3d9VertexProcessing" => {
+                    if let Some(vp) = horizon_client_d3d9::VertexProcessing::parse(value) {
+                        g.d3d9.vertex_processing = vp;
+                    }
+                }
+                #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+                "d3d9ColorBits" => {
+                    if let Some(bits) = horizon_client_d3d9::ColorDepth::parse(value) {
+                        g.d3d9.color_depth = bits;
+                    }
+                }
                 "pickedShaderPack" => g.shader_pack = value.to_owned(),
                 "overlay" => {
                     g.overlay = match value {
@@ -1189,11 +1249,15 @@ impl Graphics {
             }
             _ => 0,
         });
+        g.hdr_look = look.unwrap_or(match lighting {
+            Some(false) => HdrLook::Vanilla,
+            _ => HdrLook::Horizon,
+        });
         g
     }
     pub fn serialize(&self) -> String {
         let mut text = format!(
-            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLighting:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\nhdrSmoothGradients:{}\ngpuCulling:{}\nparallelTick:{}\n",
+            "preset:{}\nlodDistance:{}\nfarDetail:{}\ncaveCulling:{}\nentityCulling:{}\nentityCullingPrecheck:{}\nparticleCulling:{}\nleafCulling:{}\nopaqueIce:{}\nblockEntityCacheShulkerBoxes:{}\nblockEntityCacheSigns:{}\nblockEntityCacheDecoratedPots:{}\nblockEntityCacheBells:{}\nblockEntityCacheChests:{}\nblockEntityCacheBanners:{}\nblockEntityCacheCopperGolemStatues:{}\nchunkUpdates:{}\nuploadBudgetKiB:{}\ntextureBudgetMiB:{}\nsky:{}\nfog:{}\nweather:{}\nanimatedTextures:{}\nditherCutoutMips:{}\npresentMode:{}\nframePacing:{}\nworkers:{}\noverlay:{}\nresolutionScale:{}\ndynamicResolution:{}\ntargetFps:{}\nfxaa:{}\ntaa:{}\nupscaling:{}\nupscalingSharpness:{}\nscreenshotQuality:{}\nframeGeneration:{}\nhdr:{}\nhdrPaperWhite:{}\nhdrPeak:{}\nhdrBlackLevel:{}\nhdrUiNits:{}\nhdrLook:{}\nbatteryMode:{}\nshadowCache:{}\ngraphicsApi:{}\npickedShaderPack:{}\nbatchTranslucent:{}\ngpuCulling:{}\nparallelTick:{}\n",
             self.preset.name(),
             self.lod_distance,
             self.far_detail.name(),
@@ -1243,18 +1307,25 @@ impl Graphics {
             self.hdr_peak,
             self.hdr_black_level,
             self.hdr_ui_nits,
-            bool_text(self.hdr_lighting),
+            self.hdr_look.name(),
             bool_text(self.battery),
             bool_text(self.shadow_cache),
             self.api.name(),
             self.shader_pack,
             bool_text(self.translucent_batching),
-            bool_text(self.hdr_smooth_gradients),
             self.gpu_culling.key(),
             self.parallel_tick.name(),
         );
         if let Some(driver) = &self.hdr_failed_start {
             text += &format!("hdrFailedStart:{driver}\n");
+        }
+        #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+        {
+            text += &format!(
+                "d3d9VertexProcessing:{}\nd3d9ColorBits:{}\n",
+                self.d3d9.vertex_processing.name(),
+                self.d3d9.color_depth.name()
+            );
         }
         text += &self.blue_map.serialize();
         text
@@ -1338,6 +1409,29 @@ pub use preset::apply_preset;
 mod tests {
     use super::*;
 
+    #[cfg(all(target_os = "windows", feature = "legacy-d3d9"))]
+    #[test]
+    fn d3d9_device_preferences_survive_round_trip_and_invalid_values() {
+        use horizon_client_d3d9::{ColorDepth, Preferences, VertexProcessing};
+        let g = Graphics::parse("d3d9VertexProcessing:software\nd3d9ColorBits:32\n");
+        assert_eq!(
+            g.d3d9,
+            Preferences {
+                vertex_processing: VertexProcessing::Software,
+                color_depth: ColorDepth::Bits32,
+            }
+        );
+        assert_eq!(Graphics::parse(&g.serialize()).d3d9, g.d3d9);
+        assert_eq!(
+            Graphics::parse("d3d9ColorBits:bad").d3d9.color_depth,
+            ColorDepth::Bits16
+        );
+        assert_eq!(
+            Graphics::parse("").d3d9.vertex_processing,
+            VertexProcessing::Auto
+        );
+    }
+
     /// UI Brightness is saved in nits, 0 for Auto. An older file's share of Paper White reads
     /// as Auto at 100% or with Paper White on Auto, else as that share of it to the nearest step.
     #[test]
@@ -1386,6 +1480,37 @@ mod tests {
         assert_eq!(g.ui_nits(reported), 120);
         g.hdr_ui_nits = 400;
         assert_eq!((g.ui_nits(None), g.ui_nits(reported)), (400, 400));
+    }
+
+    /// HDR Lighting's On and Off became the looks Horizon and Vanilla: an older file keeps its
+    /// choice, and only the new key is written.
+    #[test]
+    fn hdr_look_reads_an_older_files_hdr_lighting() {
+        use HdrLook::{Horizon, Vanilla};
+        for (file, look) in [
+            ("", Horizon),
+            ("hdrLighting:true\n", Horizon),
+            ("hdrLighting:false\n", Vanilla),
+            ("hdrLook:vanilla\n", Vanilla),
+            ("hdrLook:horizon\n", Horizon),
+            // The new key wins wherever the old one stands; a look this build doesn't know
+            // doesn't.
+            ("hdrLook:horizon\nhdrLighting:false\n", Horizon),
+            ("hdrLighting:true\nhdrLook:vanilla\n", Vanilla),
+            ("hdrLighting:false\nhdrLook:filmic\n", Vanilla),
+            ("hdrLook:filmic\n", Horizon),
+            // A value that is neither keeps the one before it, as every switch does.
+            ("hdrLighting:false\nhdrLighting:unknown\n", Vanilla),
+        ] {
+            let g = Graphics::parse(file);
+            assert_eq!(g.hdr_look, look, "{file}");
+            let saved = g.serialize();
+            assert!(
+                saved.contains(&format!("hdrLook:{}\n", look.name())),
+                "{file}"
+            );
+            assert!(!saved.contains("hdrLighting"), "{file}");
+        }
     }
 
     #[test]
@@ -1440,7 +1565,9 @@ mod tests {
     #[test]
     fn the_api_choice_matches_the_system() {
         let choices = GraphicsApi::choices();
-        if cfg!(windows) {
+        if cfg!(all(windows, feature = "legacy-d3d9")) {
+            assert_eq!(choices, [GraphicsApi::default()]);
+        } else if cfg!(windows) {
             assert_eq!(choices, GraphicsApi::ALL);
         } else if cfg!(target_os = "macos") {
             assert_eq!(choices, [GraphicsApi::Auto]);
@@ -1584,7 +1711,7 @@ mod tests {
             hdr_peak: 1400,
             hdr_black_level: 12,
             hdr_ui_nits: 160,
-            hdr_lighting: false,
+            hdr_look: HdrLook::Vanilla,
             hdr_failed_start: Some(
                 "Vulkan 10de:2684 NVIDIA GeForce RTX 4090; NVIDIA; 581.57".into(),
             ),
@@ -1592,8 +1719,9 @@ mod tests {
             shadow_cache: true,
             api: GraphicsApi::Dx12,
             translucent_batching: false,
-            hdr_smooth_gradients: false,
             shader_pack: "Golden Hour".into(),
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            d3d9: horizon_client_d3d9::Preferences::default(),
         };
         assert_eq!(Graphics::parse(&g.serialize()), g);
         // A legacy marker's hold, which names no driver, round-trips too; none writes no line.
@@ -1643,9 +1771,17 @@ mod tests {
         // off by default, not a choice.
         assert!(Graphics::default().translucent_batching);
         assert!(!Graphics::parse("batchTranslucent:false\n").translucent_batching);
-        // Smooth Gradients is on; its 16-bit frame needs HDR on too (`output::resolve_frame`).
-        assert!(Graphics::default().hdr_smooth_gradients);
-        assert!(!Graphics::parse("hdr:true\nhdrSmoothGradients:false\n").hdr_smooth_gradients);
+        // Smooth Gradients went with its 16-bit frame: a file that still has its key reads as
+        // one without it, and no save writes the key.
+        assert_eq!(
+            Graphics::parse("hdrSmoothGradients:false\n"),
+            Graphics::default()
+        );
+        assert!(
+            !Graphics::default()
+                .serialize()
+                .contains("hdrSmoothGradients")
+        );
         assert!(Graphics::parse("translucentBatching:false\n").translucent_batching);
         // GPU Culling is opt-in: only the file or its switch turns it on.
         assert_eq!(Graphics::default().gpu_culling, GpuCullingMode::Off);

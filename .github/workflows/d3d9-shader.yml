@@ -1,0 +1,39 @@
+name: DX9 shaders and Windows compatibility
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', 'crates/horizon-client-d3d9/src/terrain*', 'crates/horizon-guest-stack/**', 'third_party/windows-link/**', '.github/workflows/d3d9-shader.yml']
+  pull_request:
+    branches: [main]
+    paths: ['tools/d3d9/**', 'crates/horizon-client-d3d9/src/fog*', 'crates/horizon-client-d3d9/src/terrain*', 'crates/horizon-guest-stack/**', 'third_party/windows-link/**', '.github/workflows/d3d9-shader.yml']
+jobs:
+  shader:
+    runs-on: windows-2022
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Compile and check the embedded ps_2_0 program
+        shell: pwsh
+        run: |
+          tools/d3d9/compile.ps1 -OutDir "$env:RUNNER_TEMP/sm2"
+          foreach ($name in 'fog_environment','fog_distance','fog_none','fog_full') {
+            tools/d3d9/compile.ps1 -OutDir "$env:RUNNER_TEMP/sm2" -Name $name
+          }
+          tools/d3d9/compile.ps1 -OutDir "$env:RUNNER_TEMP/sm2" -Name terrain -Profile vs_2_0
+      - name: Install compiler for Windows stack checks
+        shell: pwsh
+        run: rustup toolchain install nightly-2026-11-11 --profile minimal --target i686-pc-windows-msvc
+      - name: Compare Win7 stack query on x64 and x86
+        shell: pwsh
+        env:
+          CARGO_BUILD_JOBS: 2
+          CARGO_PROFILE_DEV_DEBUG: 0
+        run: |
+          foreach ($target in 'x86_64-pc-windows-msvc','i686-pc-windows-msvc') {
+            cargo +nightly-2026-11-11 test --locked -p horizon-guest-stack --lib --target $target
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }

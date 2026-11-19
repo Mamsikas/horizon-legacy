@@ -13,6 +13,9 @@ pub struct Sorter {
 }
 
 impl Sorter {
+    pub fn bytes(&self) -> usize {
+        self.order.capacity() * size_of::<(u32, f32)>() + self.indices.capacity() * size_of::<u32>()
+    }
     pub fn sort(&mut self, centers: &[[f32; 3]], camera: [f32; 3]) -> &[u32] {
         self.order.clear();
         self.order.extend(centers.iter().enumerate().map(|(i, c)| {

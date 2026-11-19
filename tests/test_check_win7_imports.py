@@ -59,6 +59,14 @@ def fixture(dll="kernel32.dll", symbol="GetLastError", *, x86=False, delayed=Fal
 
 
 class Win7Imports(unittest.TestCase):
+    def test_dx9_contract_requires_real_d3d9_and_rejects_other_graphics(self):
+        self.assertTrue(CHECK.audit(fixture("d3d9.dll", "Direct3DCreate9"), d3d9=True)["passed"])
+        self.assertFalse(CHECK.audit(fixture(), d3d9=True)["passed"])
+        for delayed in (False, True):
+            report = CHECK.audit(fixture("opengl32.dll", "wglCreateContext", delayed=delayed), d3d9=True)
+            self.assertIn("DX9 artifact imports a modern graphics/shader dependency: opengl32.dll", report["problems"])
+
+
     def test_reads_named_load_and_delay_imports(self):
         for delayed in (False, True):
             with self.subTest(delayed=delayed):
@@ -66,6 +74,9 @@ class Win7Imports(unittest.TestCase):
                 self.assertTrue(report["passed"], report["problems"])
                 self.assertEqual(report["imports"], [{"dll": "kernel32.dll",
                     "symbols": ["GetLastError"], "delayed": delayed}])
+            for symbol in ("DefSubclassProc", "SetWindowSubclass"):
+                report = CHECK.audit(fixture("comctl32.dll", symbol, delayed=delayed))
+                self.assertTrue(report["passed"], report["problems"])
 
     def test_pe32_and_legacy_delay_addresses(self):
         for legacy in (False, True):
@@ -87,10 +98,51 @@ class Win7Imports(unittest.TestCase):
         self.assertFalse(CHECK.audit(data)["passed"])
 
     def test_rejects_post_win7_api_in_both_import_tables(self):
-        for delayed in (False, True):
-            report = CHECK.audit(fixture(symbol="WaitOnAddress", delayed=delayed))
-            self.assertFalse(report["passed"])
-            self.assertIn("post-Win7 API", report["problems"][0])
+        for symbol in ("WaitOnAddress", "GetCurrentThreadStackLimits"):
+            for delayed in (False, True):
+                with self.subTest(symbol=symbol, delayed=delayed):
+                    report = CHECK.audit(fixture(symbol=symbol, delayed=delayed))
+                    self.assertFalse(report["passed"])
+                    self.assertIn("post-Win7 API", report["problems"][0])
+
+    def test_accepts_reviewed_kernel32_cpu_accounting_in_both_tables(self):
+        for symbol in ("GetProcessTimes", "GetSystemTimes", "GetThreadTimes"):
+            for delayed in (False, True):
+                with self.subTest(symbol=symbol, delayed=delayed):
+                    report = CHECK.audit(fixture(symbol=symbol, delayed=delayed))
+                    self.assertTrue(report["passed"], report["problems"])
+
+    def test_accepts_reviewed_win7_runtime_exports_on_both_architectures(self):
+        exports = [("kernel32.dll", "SetNamedPipeHandleState")]
+        exports += [("kernel32.dll", symbol) for symbol in
+                    ("AddVectoredContinueHandler", "RemoveVectoredContinueHandler")]
+        exports += [("msvcrt.dll", symbol) for symbol in
+                    ("_close", "_dup", "_dup2", "_get_osfhandle", "_open_osfhandle")]
+        for architecture in ("x64", "x86"):
+            for delayed in (False, True):
+                for dll, symbol in exports:
+                    with self.subTest(architecture=architecture, delayed=delayed, symbol=symbol):
+                        report = CHECK.audit(fixture(dll, symbol, x86=architecture == "x86",
+                                                     delayed=delayed), architecture)
+                        self.assertTrue(report["passed"], report["problems"])
+
+    def test_x64_unwind_exports_are_not_accepted_for_x86(self):
+        for symbol in ("RtlAddFunctionTable", "RtlDeleteFunctionTable"):
+            for delayed in (False, True):
+                with self.subTest(symbol=symbol, delayed=delayed):
+                    self.assertTrue(CHECK.audit(fixture(symbol=symbol, delayed=delayed))["passed"])
+                    self.assertFalse(CHECK.audit(fixture(symbol=symbol, x86=True,
+                                                        delayed=delayed), "x86")["passed"])
+
+    def test_accepts_reviewed_i686_crt_exports_only_for_x86(self):
+        for symbol in ("__p__commode", "__p__fmode", "_iob", "_setjmp3"):
+            for delayed in (False, True):
+                with self.subTest(symbol=symbol, delayed=delayed):
+                    report = CHECK.audit(fixture("msvcrt.dll", symbol, x86=True,
+                                                 delayed=delayed), "x86")
+                    self.assertTrue(report["passed"], report["problems"])
+                    self.assertFalse(CHECK.audit(fixture("msvcrt.dll", symbol,
+                                                        delayed=delayed))["passed"])
 
     def test_rejects_unreviewed_symbols_dlls_and_ordinals(self):
         for dll, symbol in (("kernel32.dll", "NewUnreviewedAPI"),

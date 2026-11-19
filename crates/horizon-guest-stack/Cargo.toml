@@ -1,0 +1,19 @@
+[package]
+name = "horizon-guest-stack"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Guest stack reservations and executable startup without allocator dependencies"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(all(windows, target_vendor = "win7"))'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory"] }
+
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = ["Win32_System_Memory", "Win32_System_Com"] }
+
+[lints]
+workspace = true

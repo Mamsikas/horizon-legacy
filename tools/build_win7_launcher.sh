@@ -85,7 +85,10 @@ cargo "+$toolchain" rustc --locked --manifest-path launcher/Cargo.toml --release
     --no-default-features --features win7 --bin horizon-launcher-win7 -- -L "native=$import_lib"
 binary="$CARGO_TARGET_DIR/$target/release/horizon-launcher-win7.exe"
 # Keep developer evidence out of the player archive.
-python3 tools/check_win7_imports.py --architecture "$arch" --json "$binary" > "$work/imports-win7-$arch.json"
+if ! python3 tools/check_win7_imports.py --architecture "$arch" --json "$binary" > "$work/imports-win7-$arch.json"; then
+    cat "$work/imports-win7-$arch.json" >&2
+    exit 1
+fi
 readme="$repo/packaging/win7/README.md"
 [[ "$arch" == x86 ]] && readme="$repo/packaging/win7/README-x86.md"
 python3 - "$binary" "$readme" "$out" "$arch" <<'PACK'

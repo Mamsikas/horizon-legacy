@@ -20,7 +20,13 @@ from pathlib import Path
 
 # Each name below exists on Win7 SP1. In particular, no API-set wildcard is allowed:
 # accepting every api-ms-win-* contract would silently accept Windows 8/10 imports.
+# CPU accounting additions: Microsoft documents Kernel32.dll exports since XP
+# (GetThreadTimes) and XP SP1 (GetSystemTimes), both before Win7:
+# https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getthreadtimes
+# https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemtimes
 SAFE_IMPORTS = {
+    # Direct3DCreate9 is supplied by the Direct3D 9 runtime (Windows XP and later).
+    "d3d9.dll": "Direct3DCreate9",
     "kernel32.dll": """
         AcquireSRWLockExclusive AcquireSRWLockShared AddVectoredExceptionHandler
         AllocConsole AreFileApisANSI AttachConsole Beep CancelIo CancelIoEx
@@ -49,6 +55,7 @@ SAFE_IMPORTS = {
         GetModuleHandleW GetModuleHandleExW GetNativeSystemInfo GetNumberOfConsoleInputEvents
         GetOverlappedResult GetProcAddress GetProcessHeap GetProcessHeaps GetProcessId
         GetProcessTimes GetProcessVersion GetProcessWorkingSetSize GetStartupInfoA
+        GetSystemTimes GetThreadTimes
         GetStartupInfoW GetStdHandle GetStringTypeW GetSystemDirectoryW GetSystemInfo
         GetSystemTime GetSystemTimeAsFileTime GetSystemTimeAdjustment GetTempFileNameW
         GetTempPathW GetThreadContext GetThreadLocale GetTickCount GetTickCount64
@@ -89,9 +96,6 @@ SAFE_IMPORTS = {
         CopyFileExW CreateToolhelp32Snapshot CreateWaitableTimerExW DeleteProcThreadAttributeList
         GetShortPathNameW InitializeProcThreadAttributeList IsThreadAFiber Module32FirstW
         Module32NextW SetThreadStackGuarantee UpdateProcThreadAttribute __C_specific_handler
-        CreateSemaphoreA GetCurrentProcessorNumber GetHandleInformation GetModuleHandleExA
-        GetProcessAffinityMask GetThreadPriority K32GetProcessMemoryInfo QueryThreadCycleTime
-        SuspendThread
     """,
     "advapi32.dll": """
         CredDeleteW CredFree CredReadW CredWriteW CryptAcquireContextW CryptGenRandom
@@ -100,7 +104,7 @@ SAFE_IMPORTS = {
         RegEnumValueW RegFlushKey RegGetValueW RegOpenKeyExW RegQueryInfoKeyW
         RegQueryValueExW RegSetValueExW SystemFunction036
         ConvertStringSecurityDescriptorToSecurityDescriptorW GetFileSecurityW RegDeleteKeyExW
-        SetFileSecurityW AdjustTokenPrivileges LookupPrivilegeValueA
+        SetFileSecurityW
     """,
     "bcrypt.dll": """
         BCryptCloseAlgorithmProvider BCryptCreateHash BCryptDestroyHash BCryptFinishHash
@@ -135,8 +139,10 @@ SAFE_IMPORTS = {
         BitBlt CreateCompatibleBitmap CreateCompatibleDC CreateFontIndirectW CreateFontW
         CreatePen CreateSolidBrush DeleteDC DeleteObject GetDeviceCaps GetObjectW GetStockObject
         GetTextExtentPoint32W GetTextMetricsW PatBlt Rectangle SelectObject SetBkColor
-        SetBkMode SetTextColor StretchBlt TextOutW AddFontMemResourceEx
+        SetBkMode SetTextColor StretchBlt TextOutW
     """,
+    # XP+, exported by Comctl32.dll 5.8+ (not the Windows 10 API-set contract).
+    # learn.microsoft.com/windows/win32/api/commctrl/nf-commctrl-{defsubclassproc,setwindowsubclass}
     "comctl32.dll": "InitCommonControls InitCommonControlsEx ImageList_Destroy DefSubclassProc SetWindowSubclass",
     "comdlg32.dll": "GetOpenFileNameW GetSaveFileNameW",
     "shell32.dll": """
@@ -178,27 +184,85 @@ SAFE_IMPORTS = {
         localeconv malloc memcmp memcpy memmove memset realloc setlocale signal strchr strcmp
         strlen strncmp strtol strtoul vfprintf wcslen wcscmp
         acos asin atan cosh frexp ldexp sinh tan tanh
-        _beginthreadex _endthreadex _setjmp _strdup _vscprintf _vsnprintf _wgetenv
-        fputs getenv longjmp printf
     """,
 }
-# Additional imports reached after the main sync: Microsoft SDK docs put the token,
-# semaphore, thread/handle, subclass and font APIs at XP/Vista or earlier (subclass:
-# Comctl32 >=5.8). K32GetProcessMemoryInfo is exported by Kernel32 starting with Win7
-# (sdk-api/psapi/nf-psapi-getprocessmemoryinfo.md). The added CRT names are legacy
-# MSVCRT C/runtime entrypoints, not UCRT/API-set contracts. Keep the forbidden list strict.
+# Native client additions: desktop COM/property conversions (Vista or earlier),
+# raw input/IME (XP or earlier), Win7 touch/display configuration/window affinity,
+# Vista IOCP/cancellation/thread accounting, Win7 K32 memory accounting, and the
+# system MSVCRT. Each symbol is explicit; no API-set/DLL-family wildcard is allowed.
+# Minimum-client contracts: learn.microsoft.com/windows/win32/api/ (individual API
+# reference pages, especially RegisterTouchWindow, QueryDisplayConfig,
+# SetWindowDisplayAffinity, GetQueuedCompletionStatusEx and K32GetProcessMemoryInfo).
+CLIENT_IMPORTS = {'advapi32.dll': 'AdjustTokenPrivileges LookupPrivilegeValueA ImpersonateAnonymousToken '
+                 'RevertToSelf',
+ 'dwmapi.dll': 'DwmEnableBlurBehindWindow DwmSetWindowAttribute',
+ 'gdi32.dll': 'AddFontMemResourceEx CreateBitmap CreateRectRgn SetBitmapBits ChoosePixelFormat '
+              'CreateDIBitmap DescribePixelFormat GetDIBits GetPixelFormat SetPixelFormat '
+              'SwapBuffers',
+ 'imm32.dll': 'ImmAssociateContextEx ImmGetCompositionStringW ImmGetContext ImmReleaseContext '
+              'ImmSetCandidateWindow ImmSetCompositionWindow',
+ 'kernel32.dll': 'CreateSemaphoreA GetHandleInformation GetModuleHandleExA GetProcessAffinityMask '
+                 'GetThreadPriority SuspendThread GetCurrentProcessorNumber GetDiskFreeSpaceW '
+                 'GetQueuedCompletionStatusEx GlobalSize K32GetProcessMemoryInfo '
+                 'QueryThreadCycleTime SetFileCompletionNotificationModes SetNamedPipeHandleState '
+                 'AddVectoredContinueHandler RemoveVectoredContinueHandler',
+ 'msvcrt.dll': '_beginthreadex _endthreadex _hypot _setjmp _vscprintf _vsnprintf _wgetenv fputs '
+               'getenv log10 longjmp printf strerror _strdup _close _dup _dup2 '
+               '_get_osfhandle _open_osfhandle',
+ 'ntdll.dll': 'NtCancelIoFileEx NtDeviceIoControlFile',
+ 'ole32.dll': 'PropVariantClear PropVariantCopy OleInitialize RegisterDragDrop RevokeDragDrop',
+ 'oleaut32.dll': 'VariantClear VariantCopy',
+ 'propsys.dll': 'PropVariantCompareEx PropVariantToBSTR PropVariantToBoolean PropVariantToDouble '
+                'PropVariantToInt16 PropVariantToInt32 PropVariantToInt64 PropVariantToUInt16 '
+                'PropVariantToUInt32 PropVariantToUInt64 PropVariantToVariant VariantToBoolean '
+                'VariantToDouble VariantToInt16 VariantToInt32 VariantToInt64 VariantToPropVariant '
+                'VariantToUInt16 VariantToUInt32 VariantToUInt64',
+ 'shell32.dll': 'ILCreateFromPathW ILFree SHOpenFolderAndSelectItems',
+ 'user32.dll': 'CloseTouchInputHandle GetAsyncKeyState GetKeyboardLayout GetKeyboardState '
+               'GetRawInputData GetRawInputDeviceInfoW GetTouchInputInfo MapVirtualKeyExW '
+               'RegisterRawInputDevices RegisterTouchWindow SendInput ToUnicode ToUnicodeEx '
+               'TrackMouseEvent ClipCursor CountClipboardFormats CreateIcon CreateIconIndirect '
+               'DestroyCursor EnableMenuItem EnumClipboardFormats EnumDisplayMonitors '
+               'GetClipCursor GetClipboardFormatNameW GetSystemMenu IsClipboardFormatAvailable '
+               'IsProcessDPIAware MonitorFromRect MsgWaitForMultipleObjectsEx '
+               'RegisterClipboardFormatW RegisterWindowMessageA SetMenuDefaultItem '
+               'SetWindowDisplayAffinity ShowCursor SystemParametersInfoA ChangeDisplaySettingsExW '
+               'CreateWindowExA DefWindowProcA DisplayConfigGetDeviceInfo EnumDisplaySettingsExW '
+               'GetClassInfoExA GetDisplayConfigBufferSizes GetWindowPlacement InvalidateRgn '
+               'QueryDisplayConfig RegisterClassExA SetCursorPos SetWindowPlacement'}
+for _dll, _names in CLIENT_IMPORTS.items():
+    SAFE_IMPORTS[_dll] = SAFE_IMPORTS.get(_dll, "") + " " + _names
+
+# Upstream's new wasm host uses the five classic CRT descriptor/handle functions
+# above: their exact exports are in https://win7dll.nirsoft.net/msvcrt_dll.html.
+# SetNamedPipeHandleState is a Kernel32 export since Windows 2000:
+# https://learn.microsoft.com/windows/win32/api/namedpipeapi/nf-namedpipeapi-setnamedpipehandlestate
+# Vectored continue handlers are Kernel32 exports since Vista (XP x64):
+# https://learn.microsoft.com/windows/win32/api/errhandlingapi/nf-errhandlingapi-addvectoredcontinuehandler
+# https://learn.microsoft.com/windows/win32/api/errhandlingapi/nf-errhandlingapi-removevectoredcontinuehandler
+
+# Standard COM IErrorInfo, available since Windows 2000 (not WinRT error origination).
+SAFE_IMPORTS["ole32.dll"] += " GetErrorInfo SetErrorInfo"
 SAFE_IMPORTS = {dll: frozenset(names.split()) for dll, names in SAFE_IMPORTS.items()}
-# x86 MinGW CRT entrypoints, also present in the pre-SP1 Windows 7 x86 export scan:
-# https://win7dll.nirsoft.net/msvcrt_dll.html (7.0.7100.0). Cross-checked against
-# mingw-w64 v12.0.0's msvcrt.def.in; these are not UCRT or newer API-set imports.
-ARCH_IMPORTS = {
-    "x86": {"msvcrt.dll": frozenset("__p__commode __p__fmode _iob _setjmp3".split())},
-}
+# i686 MinGW uses legacy MSVCRT mode accessors, the FILE array and setjmp.
+# These exact x86 exports are present in the Win7 MSVCRT export inventory:
+# https://win7dll.nirsoft.net/msvcrt_dll.html
+# Microsoft documents /cpp/c-runtime-library/p-{commode,fmode} and setjmp3.
+# MinGW's DEF_I386 import definitions also distinguish these from the x64 ABI.
+X86_IMPORTS = {"msvcrt.dll": frozenset(("__p__commode", "__p__fmode", "_iob", "_setjmp3"))}
+# Microsoft's SDK metadata names XP x64/Server 2003 x64 and Kernel32.dll for
+# these dynamic-unwind exports; do not accept them on 32-bit Windows.
+# https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winnt/nf-winnt-rtladdfunctiontable.md
+# https://github.com/MicrosoftDocs/sdk-api/blob/docs/sdk-api-src/content/winnt/nf-winnt-rtldeletefunctiontable.md
+X64_IMPORTS = {"kernel32.dll": frozenset(("RtlAddFunctionTable", "RtlDeleteFunctionTable"))}
+# GetCurrentThreadStackLimits requires Windows 8; the Win7 stack helper must be
+# used instead, not an import-policy exception.
+# https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadstacklimits
 FORBIDDEN_APIS = frozenset("""
     CreateDXGIFactory2 GetDpiForWindow GetDpiForMonitor GetSystemTimePreciseAsFileTime
     GetTempPath2W IsWow64Process2 ProcessPrng SetProcessDpiAwareness
     SetProcessDpiAwarenessContext SetThreadDescription GetThreadDescription
-    SetThreadDpiAwarenessContext WaitOnAddress WakeByAddressAll WakeByAddressSingle
+    SetThreadDpiAwarenessContext GetCurrentThreadStackLimits WaitOnAddress WakeByAddressAll WakeByAddressSingle
     GetOverlappedResultEx GetSystemTimePreciseAsFileTime DiscardVirtualMemory
     OfferVirtualMemory ReclaimVirtualMemory VirtualAlloc2 MapViewOfFile3
 """.split())
@@ -353,10 +417,17 @@ class PE:
         return imports
 
 
-def audit(data, architecture="x64"):
+def audit(data, architecture="x64", d3d9=False):
     pe = PE(data)
     imports = pe.imports()
     problems = []
+    if d3d9:
+        names = {item["dll"] for item in imports}
+        if not any(item["dll"] == "d3d9.dll" and "Direct3DCreate9" in item["symbols"] for item in imports):
+            problems.append("DX9 artifact does not import Direct3DCreate9")
+        for dll in sorted(names & {"vulkan-1.dll", "opengl32.dll", "dxgi.dll", "d3d11.dll", "d3d12.dll",
+                                   "d3dcompiler_43.dll", "d3dcompiler_47.dll", "dxcompiler.dll", "dxil.dll"}):
+            problems.append(f"DX9 artifact imports a modern graphics/shader dependency: {dll}")
     if (pe.machine, pe.magic) != MACHINES[architecture]:
         problems.append(f"wrong architecture: machine {pe.machine:#x}, magic {pe.magic:#x}; expected {architecture}")
     if pe.os_version > (6, 1) or pe.subsystem_version > (6, 1):
@@ -373,7 +444,7 @@ def audit(data, architecture="x64"):
             elif symbol.startswith("#"):
                 problems.append(f"ordinal import cannot be verified: {dll}!{symbol}")
             elif (dll in SAFE_IMPORTS and symbol not in SAFE_IMPORTS[dll]
-                  and symbol not in ARCH_IMPORTS.get(architecture, {}).get(dll, ())):
+                  and symbol not in (X86_IMPORTS if architecture == "x86" else X64_IMPORTS).get(dll, ())):
                 problems.append(f"API needs a Win7 export audit: {dll}!{symbol}")
     return {"architecture": architecture, "machine": pe.machine,
             "os_version": list(pe.os_version), "subsystem_version": list(pe.subsystem_version),
@@ -385,12 +456,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("binaries", nargs="+")
     parser.add_argument("--architecture", choices=MACHINES, default="x64")
+    parser.add_argument("--d3d9", action="store_true", help="require Direct3D9 and reject other graphics/shader DLLs")
     parser.add_argument("--json", action="store_true", help="print machine-readable audit results")
     args = parser.parse_args()
     reports = []
     for binary in args.binaries:
         try:
-            report = audit(Path(binary).read_bytes(), args.architecture)
+            report = audit(Path(binary).read_bytes(), args.architecture, args.d3d9)
         except (OSError, PEError) as error:
             report = {"passed": False, "problems": [str(error)]}
         report["file"] = binary

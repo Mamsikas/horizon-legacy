@@ -1,0 +1,52 @@
+Horizon DX9 - Windows 7 SP1 - x64/x86 Thin LTO distribution
+
+Extract this ZIP once: horizon-client.exe is directly inside. Select it as your
+launcher's native client. Supply your own legal prepared Minecraft 26.3 resources.
+No game assets, Java, shader compiler or external control tool are included.
+
+Requirements: D3D9 HAL driver, Win7 SP1; x64 SSE3/SSSE3 or x86 SSE3. x86 is
+large-address-aware. Subsystem/API target stays Win7. XP + OneCoreAPI is an
+owner experiment with known input/long-session issues, not native XP support.
+
+Default initial window: 854x480. Explicit --width/--height/fullscreen wins.
+Graphics > General > Direct3D 9 offers Auto/Hardware/Software VP and 16/32-bit
+color; these require restart. Software VP transforms on the CPU and rasterizes
+on the GPU. GMA3150 uses it automatically. RGB565 is preferred with 32-bit fallback;
+D24 depth takes priority. Exclusive fullscreen is not required. No fixed 128 MiB
+cap, forced low preset or render-distance/FPS reduction is installed.
+
+This integration updates Horizon, enables Thin LTO (opt=3, one codegen unit,
+panic=abort), restores enchantment shimmer and makes normal logs quiet. Check:
+- Enchanted held/dropped items, inventory/hotbar icons, GUI models and armour.
+  Shimmer should scroll, obey masks/depth, disappear at Glint Strength zero and
+  follow Glint Speed. Ordinary items should have no extra pass. Custom CIT glint
+  remains unsupported. Two-stage adapters approximate glint filtering.
+- Immediate breaking/placement, ice/water, F5 skin, depth and GUI transitions.
+- Resolution Scale 100/75/50: only the world changes resolution; HUD stays sharp.
+  Return to 100 for performance comparisons. Check resize/minimize/restore.
+- Mipmap Levels 0/2/4, including changes while Animated Textures is Off. Native
+  anisotropy follows driver caps; RGSS is still approximated by linear filtering.
+- CPU entity/particle culling Off/Sync/Async. Unsupported API effects stay disabled
+  with a reason, preserving saved values. New upstream interfaces must not silently
+  enable unsupported GPU pipelines or import newer mandatory Windows APIs.
+
+For a useful regression comparison, use the same hardware, route, world state,
+window, distance, warmup and settings against the previous 42f0b42d47 build.
+Start on GMA at two chunks, 1024x600, scale 100%, Fog Off and RGB565. Run the same
+server route too; entities/terrain there are the next deep-optimization baseline.
+A different scene or a successful CPU test does not establish hardware FPS parity.
+
+Profile through game chat, with no --control or other launcher argument:
+  /profiler start client
+Perform the fixed route for 60-90 seconds, then:
+  /profiler stop client
+Send the local .hzperf and latest.log. No upload occurs unless you choose it.
+Use no gpu/gpu_detail suffix: DX9 has no GPU pass timestamps. Detailed timeline
+can stop at its configured cap; ordinary longer phase/health captures still help.
+Phases include driver waits. Process CPU/RSS use upstream Windows probes.
+Periodic DX9 diagnostic logs are off; a developer can opt in with
+HORIZON_D3D9_LOG_STATS=1. Startup identification and actionable warnings remain.
+
+No new hardware FPS claim is made by this package. Shared generation/gameplay
+optimization is not the renderer task. See docs/legacy-d3d9.md in the repository
+for architecture, performance invariants, explicit gaps and the TZ 3 handoff.

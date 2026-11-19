@@ -1,7 +1,7 @@
 //! Shell links through Win7's ole32 COM ABI. The modern UI retains its windows-rs wrapper;
 //! its WinRT error/string support would otherwise import combase.dll into the legacy launcher.
 use crate::i18n::{tr, trf};
-use std::ffi::{c_void, OsStr};
+use std::ffi::{OsStr, c_void};
 use std::fs;
 use std::os::windows::ffi::OsStrExt;
 #[cfg(test)]
