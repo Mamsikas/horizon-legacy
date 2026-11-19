@@ -10,7 +10,7 @@ default-run = "horizon-launcher"
 
 [features]
 default = ["gui"]
-gui = ["dep:gpui", "dep:gpui_platform", "dep:wgpu", "dep:windows", "dep:trash"]
+gui = ["dep:gpui", "dep:gpui_platform", "dep:wgpu", "dep:windows", "dep:trash", "dep:horizon-launcher-scenery"]
 win7 = []
 
 [[bin]]
@@ -66,7 +66,7 @@ clap_complete = "4"
 horizon-server-launch = { path = "../crates/horizon-server-launch" }
 horizon-theme = { path = "../crates/horizon-theme" }
 # The sunset scene, painted skies, rain and frosted glass (`scenery/`).
-horizon-launcher-scenery = { path = "scenery" }
+horizon-launcher-scenery = { path = "scenery", optional = true }
 # The engine, through the platform's public API (docs/layers.md): the pinned version, No AI, the preparer,
 # level.dat and servers.dat (the worlds and server lists of instances), and the official server's SRV record.
 horizon-platform = { path = "../crates/horizon-platform", features = ["prepare", "protocol", "world", "mod-build", "mod-index", "mod-prebuilt", "mod-runtime-process"] }
@@ -130,6 +130,9 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globali
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"], optional = true }
 # Per-user setup: the Uninstall entry and the launcher's own key under HKCU (installer.rs).
 winreg = "0.56"
+
+[build-dependencies]
+sha2 = "0.10"
 
 [target.'cfg(windows)'.build-dependencies]
 # The icon resource in the .exe (build.rs).

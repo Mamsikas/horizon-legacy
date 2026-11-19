@@ -70,7 +70,7 @@ mod windows_runtime;
 pub mod worlds;
 
 pub mod jars;
-#[cfg(feature = "win7")]
+#[cfg(all(feature = "win7", not(target_arch = "x86")))]
 mod legacy_java;
 #[cfg(feature = "win7")]
 pub mod win7;

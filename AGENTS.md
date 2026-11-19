@@ -31,6 +31,14 @@ feature; performance work may differ inside as long as it stays compatible with 
 this page tells you where things are.
 Feature → files → harness for the most-changed areas: [docs/architecture.md](docs/architecture.md).
 
+## Fork launcher workflow
+
+- Keep all Win7 launcher work on `win7-lite-launcher` and update its pull request against `main`.
+- Integrate current `main` into that branch; keep `main` aligned with the original Horizon repository.
+- Do not create replacement launcher branches or pull requests for follow-up fixes.
+- Leave the separate DX9 client branch and renderer code untouched.
+- Write added documentation in English and keep player ZIPs limited to the launcher and its short guide.
+
 ## Rules that bite
 
 - **Never commit Mojang's files**: game jars, assets, decompiled source, prepared resources (`.local/`).

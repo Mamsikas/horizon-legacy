@@ -3,7 +3,12 @@
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 root=${1:-"$repo/work/win7/cross"}
-architecture=${2:-${WIN7_ARCH:-x64}}
+architecture=${2:-${WIN7_ARCH:-all}}
+if [[ "$architecture" == all ]]; then
+    "$0" "$root" x64
+    "$0" "$root" x86
+    exit
+fi
 case "$architecture" in
     x64)
         prefix=x86_64-w64-mingw32

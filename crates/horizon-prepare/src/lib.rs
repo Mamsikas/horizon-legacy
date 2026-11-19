@@ -588,7 +588,8 @@ impl Run<'_> {
         (self.log)(&format!("Exporting {what} ({})", mains.join(", ")));
         let fail = |e: String| format!("{e} while exporting {what}; see {}", log.display());
         // Compiled first, so the time is this step's (the JVM's start included).
-        self.bundle().map_err(fail)?;
+        self.bundle()
+            .map_err(|error| format!("{error}\nCould not compile exporters needed for {what}."))?;
         let started = Instant::now();
         mkdir(classes)?;
         let file = self.log_file(log)?;

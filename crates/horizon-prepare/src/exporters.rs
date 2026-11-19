@@ -3,29 +3,35 @@ use crate::*;
 
 const SETTINGS: &str = "exporters-v1 --release -proc:none -encoding UTF-8";
 const SERVER: &[&str] = &[
-    "VanillaHeightmapOracle",
-    "VanillaBlockLandingOracle",
-    "VanillaEntityAttributeOracle",
-    "VanillaPlayerHealthOracle",
-    "VanillaDamageSourceOracle",
-    "VanillaCollisionOracle",
-    "VanillaFaceVisibilityOracle",
-    "VanillaGameplayFactsExporter",
-    "VanillaEntityTypesExporter",
-    "VanillaBlockBehaviourExporter",
-    "VanillaDataFixTablesExporter",
-    "VanillaCommandParseOracle",
-    "VanillaCreativeTabsExporter",
-    "VanillaSimpleBlockOracle",
-    "VanillaStructureBlockExporter",
-    "PrepareWorker",
+    "VanillaHeightmapOracle.java",
+    "VanillaBlockLandingOracle.java",
+    "VanillaEntityAttributeOracle.java",
+    "VanillaPlayerHealthOracle.java",
+    "VanillaDamageSourceOracle.java",
+    "VanillaCollisionOracle.java",
+    "VanillaFaceVisibilityOracle.java",
+    "VanillaGameplayFactsExporter.java",
+    "VanillaEntityTypesExporter.java",
+    "VanillaBlockBehaviourExporter.java",
+    "VanillaDataFixTablesExporter.java",
+    "VanillaCommandParseOracle.java",
+    "VanillaCreativeTabsExporter.java",
+    "VanillaSimpleBlockOracle.java",
+    "VanillaStructureBlockExporter.java",
+    "PrepareWorker.java",
 ];
 const CLIENT: &[&str] = &[
-    "VanillaBlockStateBindingOracle",
-    "VanillaEntityModelExporter",
-    "VanillaMobDataExporter",
-    "PrepareWorker",
+    "VanillaBlockStateBindingOracle.java",
+    "VanillaEntityModelExporter.java",
+    "VanillaMobDataExporter.java",
+    "PrepareWorker.java",
 ];
+
+/// Java compilation inputs, also used to verify standalone launcher bundles.
+/// Keep filenames literal: release packaging discovers these original sources here.
+pub fn source_files() -> impl Iterator<Item = &'static str> {
+    SERVER.iter().chain(CLIENT).copied()
+}
 
 fn files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     let mut result = Vec::new();
@@ -129,7 +135,9 @@ pub(crate) fn classes(run: &Run) -> Result<PathBuf, String> {
         let started = std::time::Instant::now();
         let classes = cached.join(side);
         mkdir(&classes)?;
-        let log = run.log_file(&cached.join(format!("{side}.log")))?;
+        let log_path = cached.join(format!("{side}.log"));
+        (run.log)(&format!("Compiler log: {}", log_path.display()));
+        let log = run.log_file(&log_path)?;
         let mut args = vec![
             "-encoding".into(),
             "UTF-8".into(),
@@ -140,8 +148,9 @@ pub(crate) fn classes(run: &Run) -> Result<PathBuf, String> {
             "-d".into(),
             arg(&classes),
         ];
-        args.extend(mains.iter().map(|n| arg(&run.oracle(&format!("{n}.java")))));
-        jdk.javac(run.java_major, &args, &log)?;
+        args.extend(mains.iter().map(|name| arg(&run.oracle(name))));
+        jdk.javac(run.java_major, &args, &log)
+            .map_err(|error| java::export_failure(error, &jdk.javac, &log_path))?;
         let validate = vec![
             "-Xverify:all".into(),
             "-cp".into(),
@@ -156,7 +165,9 @@ pub(crate) fn classes(run: &Run) -> Result<PathBuf, String> {
             arg(&classes),
         ];
         // No exporter executes here: resolve every class and its signatures against pinned jars.
-        run.jdk.java(&validate, Some(&run.local), &log)?;
+        run.jdk
+            .java(&validate, Some(&run.local), &log)
+            .map_err(|error| java::export_failure(error, &run.jdk.java, &log_path))?;
         (run.log)(&format!(
             "Compiled {side} exporters{}",
             crate::took(started)

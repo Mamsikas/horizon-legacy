@@ -134,7 +134,9 @@ extern "system" {
         parameter: *mut c_void,
     ) -> Handle;
     fn DefWindowProcW(hwnd: Handle, message: u32, wparam: usize, lparam: isize) -> isize;
+    #[cfg_attr(target_pointer_width = "32", link_name = "SetWindowLongW")]
     fn SetWindowLongPtrW(hwnd: Handle, index: i32, value: isize) -> isize;
+    #[cfg_attr(target_pointer_width = "32", link_name = "GetWindowLongW")]
     fn GetWindowLongPtrW(hwnd: Handle, index: i32) -> isize;
     fn GetMessageW(message: *mut Message, hwnd: Handle, min: u32, max: u32) -> i32;
     fn TranslateMessage(message: *const Message) -> i32;
@@ -320,11 +322,19 @@ impl App {
     fn init(&mut self) {
         self.title = self.label("Horizon");
         send(self.title, 0x30, self.heading_font as usize, 1);
-        self.intro = self.label("Your Minecraft files. Your nickname. Ready to play.");
-        self.mc_label = self.label("Minecraft 26.3 folder");
+        self.intro = self.label(if cfg!(target_arch = "x86") {
+            "Your Horizon files. Your nickname. Ready to play."
+        } else {
+            "Your Minecraft files. Your nickname. Ready to play."
+        });
+        self.mc_label = self.label(if cfg!(target_arch = "x86") {
+            "Horizon resources or horizon-launcher folder"
+        } else {
+            "Minecraft 26.3 folder"
+        });
         self.minecraft = self.control(
             "EDIT",
-            &self.settings.minecraft.to_string_lossy(),
+            &self.settings.source().to_string_lossy(),
             TAB | BORDER | 0x80,
             MINECRAFT,
         );
@@ -336,7 +346,11 @@ impl App {
         self.client = self.control("EDIT", "", TAB | BORDER | 0x80 | 0x800, 0);
         self.choose_client = self.button("Choose…", CLIENT);
         self.automatic = self.button("Automatic", AUTOMATIC);
-        self.status = self.label("Choose your Minecraft 26.3 folder, then press Play.");
+        self.status = self.label(if cfg!(target_arch = "x86") {
+            "Choose your horizon-launcher folder, then press Play."
+        } else {
+            "Choose your Minecraft 26.3 folder, then press Play."
+        });
         self.progress = self.control("msctls_progress32", "", 0, 0);
         send(self.progress, 0x406, 0, 1000); // PBM_SETRANGE32
         self.play = self.control("BUTTON", tr("Play"), TAB | 1, PLAY);
@@ -408,7 +422,11 @@ impl App {
         set(
             self.client,
             if self.settings.client.as_os_str().is_empty() {
-                tr("Automatic — bundled or downloaded")
+                if cfg!(target_arch = "x86") {
+                    tr("Automatic — installed or bundled x86 client")
+                } else {
+                    tr("Automatic — bundled or downloaded")
+                }
             } else {
                 self.settings.client.to_str().unwrap_or("")
             },
@@ -420,11 +438,16 @@ impl App {
     }
     fn read_settings(&mut self) {
         self.settings.nickname = text(self.name).trim().into();
-        self.settings.minecraft = PathBuf::from(text(self.minecraft).trim());
+        self.settings
+            .set_source(PathBuf::from(text(self.minecraft).trim()));
     }
     fn add_log(&mut self, line: &str) {
         if let Some(log) = &mut self.log {
-            let _ = writeln!(log, "{line}");
+            let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+            for part in line.lines() {
+                let _ = writeln!(log, "[{timestamp}] {part}");
+            }
+            let _ = log.flush();
         }
         self.tail.push_str(&line.replace('\n', "\r\n"));
         self.tail.push_str("\r\n");
@@ -460,7 +483,20 @@ impl App {
             return;
         }
         let _ = fs::remove_file(flow::cancel_path());
-        self.log = fs::File::create(flow::log_path()).ok();
+        self.log.take();
+        let previous = flow::log_path().with_file_name("win7-launcher.previous.log");
+        let _ = fs::remove_file(&previous);
+        let _ = fs::rename(flow::log_path(), previous);
+        self.log = match fs::File::create(flow::log_path()) {
+            Ok(log) => Some(log),
+            Err(error) => {
+                self.error(&crate::i18n::trf(
+                    "Could not create the launcher log: {error}",
+                    &[("error", &error.to_string())],
+                ));
+                return;
+            }
+        };
         self.tail.clear();
         self.game_started = false;
         let (tx, rx) = mpsc::channel();
@@ -484,11 +520,20 @@ impl App {
     }
     fn error(&mut self, error: &str) {
         self.add_log(error);
-        set(self.status, error);
+        set(self.status, error.lines().next().unwrap_or(error));
+        // Keep the dialog usable on a small screen; the full diagnostics stay in the log.
+        let mut message = error.lines().take(16).collect::<Vec<_>>().join("\n");
+        message = message.chars().take(1800).collect();
+        if message.len() < error.len() {
+            message.push_str(&crate::i18n::trf(
+                "\n\nFull details: {path}",
+                &[("path", &flow::log_path().display().to_string())],
+            ));
+        }
         unsafe {
             MessageBoxW(
                 self.hwnd,
-                wide(error).as_ptr(),
+                wide(&message).as_ptr(),
                 wide(tr("Horizon")).as_ptr(),
                 0x10,
             );
@@ -661,9 +706,11 @@ unsafe extern "system" fn folder_init(hwnd: Handle, message: u32, _: isize, path
     0
 }
 fn browse(owner: Handle, initial: &str) -> Option<PathBuf> {
-    let title = wide(tr(
-        "Choose the folder containing your Minecraft 26.3 installation",
-    ));
+    let title = wide(tr(if cfg!(target_arch = "x86") {
+        "Choose Horizon resources or the horizon-launcher folder"
+    } else {
+        "Choose the folder containing your Minecraft 26.3 installation"
+    }));
     let initial = wide(initial);
     let mut display = [0u16; 260];
     let info = BrowseInfo {

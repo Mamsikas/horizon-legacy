@@ -12,6 +12,6 @@ fn main() {
     #[cfg(not(windows))]
     eprintln!(
         "{}",
-        horizon_launcher::i18n::tr("The native Win7 launcher runs on Windows x64.")
+        horizon_launcher::i18n::tr("The native Win7 launcher runs on Windows x86 or x64.")
     );
 }

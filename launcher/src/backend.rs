@@ -314,6 +314,11 @@ fn installed_game_architecture(tag: &str) -> Option<InstalledGameArchitecture> {
 }
 
 fn pe_architecture_file(path: &Path) -> Option<GameArchitecture> {
+    architecture_for_pe_machine(pe_machine_file(path)?)
+}
+
+/// Shared with the native x86 launcher, which must reject x64/ARM64 clients before spawning.
+pub(crate) fn pe_machine_file(path: &Path) -> Option<u16> {
     use std::io::{Read, Seek, SeekFrom};
 
     let mut file = fs::File::open(path).ok()?;
@@ -326,9 +331,7 @@ fn pe_architecture_file(path: &Path) -> Option<GameArchitecture> {
     file.seek(SeekFrom::Start(u64::from(pe))).ok()?;
     let mut header = [0u8; 6];
     file.read_exact(&mut header).ok()?;
-    (&header[..4] == b"PE\x00\x00")
-        .then(|| architecture_for_pe_machine(u16::from_le_bytes([header[4], header[5]])))
-        .flatten()
+    (&header[..4] == b"PE\x00\x00").then(|| u16::from_le_bytes([header[4], header[5]]))
 }
 
 fn architecture_for_pe_machine(machine: u16) -> Option<GameArchitecture> {
@@ -1413,7 +1416,7 @@ fn resources_compatible(from: &Path, to: &Path, manifest: &serde_json::Value) ->
 /// The `OUTPUT_VERSION` of a version folder's preparer: the constant in its sources, or for a
 /// preparer from before it, the number `LEGACY_OUTPUT_VERSIONS` gives its fingerprint. None for
 /// an unknown older preparer.
-fn output_version_at(dir: &Path) -> Option<u32> {
+pub(crate) fn output_version_at(dir: &Path) -> Option<u32> {
     output_version_in(dir, &LEGACY_OUTPUT_VERSIONS)
 }
 
@@ -1780,6 +1783,38 @@ const COMPLETIONS: [Completion; 5] = [
     ("The languages", "languages", prepare::languages),
     ("The sounds", "sounds", prepare::sounds),
 ];
+
+/// Finish an in-process installation using the same asset importers as the modern UI.
+/// Recheck every group on a retry: an interrupted copy may already have published sounds.json.
+#[cfg(all(feature = "win7", any(not(target_arch = "x86"), test)))]
+pub(crate) fn complete_preparation_assets(
+    root: &Path,
+    minecraft: &Path,
+    log: &dyn Fn(String),
+    progress: &dyn Fn(f32),
+) -> Result<(), String> {
+    for (index, (label, _, copy)) in COMPLETIONS.iter().enumerate() {
+        check_cancelled()?;
+        log(crate::i18n::trf(
+            "Copying {assets} from Minecraft…",
+            &[("assets", label)],
+        ));
+        progress(index as f32 / COMPLETIONS.len() as f32);
+        copy(root, Some(minecraft), &|line| log(line.to_string())).map_err(|error| {
+            crate::i18n::trf(
+                "Could not copy {assets} from {path}: {error}",
+                &[
+                    ("assets", label),
+                    ("path", &minecraft.display().to_string()),
+                    ("error", &error),
+                ],
+            )
+        })?;
+    }
+    check_cancelled()?;
+    progress(1.0);
+    Ok(())
+}
 
 /// Adds what a prepared version lacks of `COMPLETIONS`: a new version reuses the resources of the
 /// one before (`reuse_prepared`), which may come from a preparer that left them out. Without them
