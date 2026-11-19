@@ -16,7 +16,7 @@ D24 depth takes priority. Exclusive fullscreen is not required. No fixed 128 MiB
 cap, forced low preset or render-distance/FPS reduction is installed.
 
 This integration updates Horizon, enables Thin LTO (opt=3, one codegen unit,
-panic=abort), restores enchantment shimmer and makes normal logs quiet. Check:
+panic=abort), restores enchantment shimmer and keeps ordinary logs quiet. Check:
 - Enchanted held/dropped items, inventory/hotbar icons, GUI models and armour.
   Shimmer should scroll, obey masks/depth, disappear at Glint Strength zero and
   follow Glint Speed. Ordinary items should have no extra pass. Custom CIT glint
@@ -30,10 +30,10 @@ panic=abort), restores enchantment shimmer and makes normal logs quiet. Check:
   with a reason, preserving saved values. New upstream interfaces must not silently
   enable unsupported GPU pipelines or import newer mandatory Windows APIs.
 
-For a useful regression comparison, use the same hardware, route, world state,
-window, distance, warmup and settings against the previous 42f0b42d47 build.
-Start on GMA at two chunks, 1024x600, scale 100%, Fog Off and RGB565. Run the same
-server route too; entities/terrain there are the next deep-optimization baseline.
+For TZ3 use the same hardware, route, world state, window, distance, warmup and
+saved settings. The source baseline is 9ef29e6bba219e1805f5be1d6636b67a0cfce0c6;
+42f0b42d47 captures belong to an older integration. Record EXE/package hashes and
+build-info.txt. Repeat the standing scene and fixed server route independently.
 A different scene or a successful CPU test does not establish hardware FPS parity.
 
 Profile through game chat, with no --control or other launcher argument:
@@ -44,9 +44,13 @@ Send the local .hzperf and latest.log. No upload occurs unless you choose it.
 Use no gpu/gpu_detail suffix: DX9 has no GPU pass timestamps. Detailed timeline
 can stop at its configured cap; ordinary longer phase/health captures still help.
 Phases include driver waits. Process CPU/RSS use upstream Windows probes.
-Periodic DX9 diagnostic logs are off; a developer can opt in with
-HORIZON_D3D9_LOG_STATS=1. Startup identification and actionable warnings remain.
+Dev packages (build-info.txt: dev_diagnostics=1) log DX9 stats by default, including
+5-second per-pass submission totals. HORIZON_D3D9_LOG_STATS=0 disables diagnostics
+for an overhead comparison using the same EXE; restart before each run. Repeat
+the same scene with logs on/off, preferably A-B-B-A. No graphics settings change.
+Ordinary packages keep periodic logs off; HORIZON_D3D9_LOG_STATS=1 enables their
+existing coarse stats. GPU timings are not instrumented by the P0a counters.
 
 No new hardware FPS claim is made by this package. Shared generation/gameplay
 optimization is not the renderer task. See docs/legacy-d3d9.md in the repository
-for architecture, performance invariants, explicit gaps and the TZ 3 handoff.
+for architecture and docs/legacy-d3d9-perf.md for the P0a scope and TZ3 handoff.

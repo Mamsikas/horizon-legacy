@@ -141,6 +141,10 @@ an EXE that the Windows loader already refused. These remain future integration 
 
 ## Profiling and TZ 3 baseline
 
+The bounded P0 submission diagnostic and its hardware handoff are recorded in
+[legacy-d3d9-perf.md](legacy-d3d9-perf.md). Dev packages log by default; an explicit
+`HORIZON_D3D9_LOG_STATS=0` disables them for an overhead comparison.
+
 Use game chat, without --control or a separate binary:
 
 ```

@@ -27,6 +27,30 @@ const D3DTS_WORLD: D3DTRANSFORMSTATETYPE = D3DTRANSFORMSTATETYPE(256);
 const FVF: u32 = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2;
 const MAX_QUADS: u32 = 16_383;
 use crate::{EncodedVertices, Fog, IndexBatch, Ring, Vertex, VertexEncoding};
+// Evaluate the original COM expression exactly once, with unchanged error flow.
+// The normal build expands to just that expression, without a counter branch.
+macro_rules! profile_call {
+    ($inner:expr, $api:ident, $call:expr) => {{
+        #[cfg(feature = "submit-profile")]
+        $inner
+            .profile
+            .count(|c| c.calls[crate::submit_profile::Api::$api as usize] += 1);
+        let result = $call;
+        #[cfg(feature = "submit-profile")]
+        if result.is_err() {
+            $inner
+                .profile
+                .count(|c| c.failures[crate::submit_profile::Api::$api as usize] += 1);
+        }
+        result
+    }};
+}
+macro_rules! profile_count {
+    ($inner:expr, $update:expr) => {
+        #[cfg(feature = "submit-profile")]
+        $inner.profile.count($update);
+    };
+}
 #[path = "terrain_device.rs"]
 mod terrain_device;
 use terrain_device::TerrainPipeline;
@@ -105,6 +129,8 @@ pub struct Caps {
 }
 type MeshHandle = RefCell<Option<IDirect3DVertexBuffer9>>;
 struct Inner {
+    #[cfg(feature = "submit-profile")]
+    profile: crate::submit_profile::Profile,
     stream_sequence: Cell<u64>,
     default_meshes: RefCell<Vec<Weak<MeshHandle>>>,
     presentation: RefCell<Option<Presentation>>,
@@ -184,15 +210,17 @@ impl Default for StateCache {
 impl StateCache {
     fn render(
         &mut self,
-        device: &IDirect3DDevice9,
+        inner: &Inner,
         state: D3DRENDERSTATETYPE,
         value: u32,
     ) -> windows::core::Result<()> {
+        let device = &inner.device;
+        profile_count!(inner, |c| c.cache_requests[0] += 1);
         let slot = &mut self.render[state.0 as usize];
         if *slot != Some(value) {
             // SAFETY: a live owned device, with a documented render-state value.
             unsafe {
-                device.SetRenderState(state, value)?;
+                profile_call!(inner, SetRenderState, device.SetRenderState(state, value))?;
             }
             *slot = Some(value);
         }
@@ -200,16 +228,22 @@ impl StateCache {
     }
     fn stage(
         &mut self,
-        device: &IDirect3DDevice9,
+        inner: &Inner,
         index: u32,
         state: D3DTEXTURESTAGESTATETYPE,
         value: u32,
     ) -> windows::core::Result<()> {
+        let device = &inner.device;
+        profile_count!(inner, |c| c.cache_requests[2] += 1);
         let slot = &mut self.stage[index as usize][state.0 as usize];
         if *slot != Some(value) {
             // SAFETY: stages 0/1 were checked in caps; device and constants are live.
             unsafe {
-                device.SetTextureStageState(index, state, value)?;
+                profile_call!(
+                    inner,
+                    SetTextureStageState,
+                    device.SetTextureStageState(index, state, value)
+                )?;
             }
             *slot = Some(value);
         }
@@ -217,16 +251,22 @@ impl StateCache {
     }
     fn sampler(
         &mut self,
-        device: &IDirect3DDevice9,
+        inner: &Inner,
         index: u32,
         state: D3DSAMPLERSTATETYPE,
         value: u32,
     ) -> windows::core::Result<()> {
+        let device = &inner.device;
+        profile_count!(inner, |c| c.cache_requests[1] += 1);
         let slot = &mut self.sampler[index as usize][state.0 as usize];
         if *slot != Some(value) {
             // SAFETY: samplers 0/1 and their D3D9 values were checked in caps.
             unsafe {
-                device.SetSamplerState(index, state, value)?;
+                profile_call!(
+                    inner,
+                    SetSamplerState,
+                    device.SetSamplerState(index, state, value)
+                )?;
             }
             *slot = Some(value);
         }
@@ -282,6 +322,26 @@ pub struct Device {
     pub index_uploads: u64,
 }
 impl Device {
+    #[inline(always)]
+    pub fn profile_begin_frame(&self) {
+        #[cfg(feature = "submit-profile")]
+        self.inner.profile.begin();
+    }
+    #[inline(always)]
+    pub fn profile_pass(&self, _pass: crate::SubmitPass) {
+        #[cfg(feature = "submit-profile")]
+        self.inner.profile.pass(_pass);
+    }
+    #[inline(always)]
+    pub fn profile_end_frame(&self, _presented: bool) {
+        #[cfg(feature = "submit-profile")]
+        self.inner.profile.end(_presented);
+    }
+    #[inline(always)]
+    pub fn log_submit_profile(&self) {
+        #[cfg(feature = "submit-profile")]
+        self.inner.profile.log();
+    }
     pub fn fog_parameters(&self) -> Option<Fog> {
         self.fog_constants
     }
@@ -468,6 +528,8 @@ impl Device {
         );
         let mut result = Self {
             inner: Rc::new(Inner {
+                #[cfg(feature = "submit-profile")]
+                profile: crate::submit_profile::Profile::default(),
                 stream_sequence: Cell::new(0),
                 default_meshes: RefCell::new(Vec::new()),
                 presentation: RefCell::new(None),
@@ -583,6 +645,32 @@ impl Device {
         if result.terrain.is_none() {
             log::info!("D3D9 terrain: fixed-function 32-byte vertices; no vertex shader required");
         }
+        #[cfg(feature = "submit-profile")]
+        if crate::log_stats_enabled() {
+            log::info!(
+                "D3D9 submit_profile v=1 source_sha={} source_dirty={} compiler={} toolkit={} software_vertices={} terrain_ffp={} ps2={} hw_compact={} color_format={} depth_format={} index_bits=16 static_vb_pool={} transient_vb_pool=DEFAULT available_texture_bytes_advisory={}",
+                option_env!("HORIZON_D3D9_BUILD_SHA").unwrap_or("unknown"),
+                option_env!("HORIZON_D3D9_BUILD_DIRTY").unwrap_or("unknown"),
+                option_env!("HORIZON_D3D9_BUILD_RUSTC").unwrap_or("unknown"),
+                option_env!("HORIZON_D3D9_BUILD_CC").unwrap_or("unknown"),
+                software_vertices,
+                result.terrain.is_none(),
+                result.fog_shader.is_some(),
+                result.terrain.is_some(),
+                present.BackBufferFormat.0,
+                present.AutoDepthStencilFormat.0,
+                if software_vertices {
+                    "SYSTEMMEM"
+                } else {
+                    "DEFAULT"
+                },
+                result.caps.available_texture_bytes
+            );
+            log::info!(
+                "D3D9 submit_schema com_order={} cache_requests_order=render,sampler,tss upload_bytes_order=immutable_vb,transient_vb,ib,texture_patch dip_quantiles=power_of_two_upper_bounds gpu_timing=not_instrumented",
+                crate::submit_profile::API_NAMES
+            );
+        }
         // Test a real texture, VB and lightmap allocation before accepting the adapter.
         let _texture = result.texture(16, 16, 1, &[255; 1024])?;
         let _vertices = result.mesh(&[Vertex::zero(); 4])?;
@@ -653,7 +741,11 @@ impl Device {
             if self.terrain_encoding.take().is_some() || self.screen_active {
                 // SAFETY: the canonical FVF matches every transient/full vertex.
                 unsafe {
-                    self.inner.device.SetVertexShader(None)?;
+                    profile_call!(
+                        self.inner,
+                        SetVertexShader,
+                        self.inner.device.SetVertexShader(None)
+                    )?;
                     self.inner.device.SetFVF(FVF)?;
                 }
                 self.screen_active = false;
@@ -667,7 +759,11 @@ impl Device {
         if self.terrain_encoding != Some(encoding) {
             // SAFETY: encoding is private in Mesh/EncodedVertices and declarations match its stride.
             unsafe {
-                self.inner.device.SetVertexShader(&pipeline.shader)?;
+                profile_call!(
+                    self.inner,
+                    SetVertexShader,
+                    self.inner.device.SetVertexShader(&pipeline.shader)
+                )?;
                 self.inner.device.SetVertexDeclaration(match encoding {
                     VertexEncoding::Compact => &pipeline.compact,
                     _ => &pipeline.wide,
@@ -707,24 +803,33 @@ impl Device {
         let mut buffer = None;
         // SAFETY: length matches the input bytes; the lock is copied into and unlocked here.
         unsafe {
-            self.inner.device.CreateIndexBuffer(
-                (indices.len() * 2) as u32,
-                D3DUSAGE_WRITEONLY as u32,
-                D3DFMT_INDEX16,
-                D3DPOOL_MANAGED,
-                &mut buffer,
-                ptr::null_mut(),
+            profile_call!(
+                self.inner,
+                CreateIndexBuffer,
+                self.inner.device.CreateIndexBuffer(
+                    (indices.len() * 2) as u32,
+                    D3DUSAGE_WRITEONLY as u32,
+                    D3DFMT_INDEX16,
+                    D3DPOOL_MANAGED,
+                    &mut buffer,
+                    ptr::null_mut(),
+                )
             )?;
             let buffer = buffer.ok_or("D3D9 index buffer missing")?;
             let mut memory = ptr::null_mut();
-            buffer.Lock(0, (indices.len() * 2) as u32, &mut memory, 0)?;
+            profile_call!(
+                self.inner,
+                LockIndex,
+                buffer.Lock(0, (indices.len() * 2) as u32, &mut memory, 0)
+            )?;
             ptr::copy_nonoverlapping(
                 indices.as_ptr().cast::<u8>(),
                 memory.cast::<u8>(),
                 indices.len() * 2,
             );
-            buffer.Unlock()?;
+            profile_call!(self.inner, UnlockIndex, buffer.Unlock())?;
             self.indices = Some(buffer);
+            profile_count!(self.inner, |c| c.upload_bytes[2] += (indices.len() * 2) as u64);
         }
         Ok(())
     }
@@ -847,10 +952,22 @@ impl Device {
             self.index_ring.reset();
             // SAFETY: no outstanding lock, scene, stateblock or backbuffer reference exists.
             unsafe {
-                self.inner.device.SetStreamSource(0, None, 0, 0)?;
-                self.inner.device.SetIndices(None)?;
-                self.inner.device.SetTexture(0, None)?;
-                self.inner.device.SetTexture(1, None)?;
+                profile_call!(
+                    self.inner,
+                    SetStreamSource,
+                    self.inner.device.SetStreamSource(0, None, 0, 0)
+                )?;
+                profile_call!(self.inner, SetIndices, self.inner.device.SetIndices(None))?;
+                profile_call!(
+                    self.inner,
+                    SetTexture,
+                    self.inner.device.SetTexture(0, None)
+                )?;
+                profile_call!(
+                    self.inner,
+                    SetTexture,
+                    self.inner.device.SetTexture(1, None)
+                )?;
                 let mut primary = self.present;
                 primary.BackBufferWidth = 1;
                 primary.BackBufferHeight = 1;
@@ -910,30 +1027,68 @@ impl Device {
         self.select_world_target(scale)?;
         // SAFETY: state values are D3D9 constants; begin/finish pair on this thread.
         unsafe {
-            self.inner.device.SetVertexShader(None)?;
-            self.inner.device.SetPixelShader(None)?;
+            profile_call!(
+                self.inner,
+                SetVertexShader,
+                self.inner.device.SetVertexShader(None)
+            )?;
+            profile_call!(
+                self.inner,
+                SetPixelShader,
+                self.inner.device.SetPixelShader(None)
+            )?;
             self.inner.device.SetFVF(FVF)?;
-            self.inner.device.SetIndices(self.indices.as_ref())?;
-            self.inner.device.SetRenderState(D3DRS_LIGHTING, 0)?;
-            self.inner
-                .device
-                .SetRenderState(D3DRS_ZFUNC, D3DCMP_GREATEREQUAL.0 as u32)?;
-            self.inner
-                .device
-                .SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER.0 as u32)?;
-            self.inner.device.SetRenderState(D3DRS_ALPHAREF, 25)?;
-            self.inner.device.SetRenderState(D3DRS_DITHERENABLE, 1)?;
+            profile_call!(
+                self.inner,
+                SetIndices,
+                self.inner.device.SetIndices(self.indices.as_ref())
+            )?;
+            profile_call!(
+                self.inner,
+                SetRenderState,
+                self.inner.device.SetRenderState(D3DRS_LIGHTING, 0)
+            )?;
+            profile_call!(
+                self.inner,
+                SetRenderState,
+                self.inner
+                    .device
+                    .SetRenderState(D3DRS_ZFUNC, D3DCMP_GREATEREQUAL.0 as u32)
+            )?;
+            profile_call!(
+                self.inner,
+                SetRenderState,
+                self.inner
+                    .device
+                    .SetRenderState(D3DRS_ALPHAFUNC, D3DCMP_GREATER.0 as u32)
+            )?;
+            profile_call!(
+                self.inner,
+                SetRenderState,
+                self.inner.device.SetRenderState(D3DRS_ALPHAREF, 25)
+            )?;
+            profile_call!(
+                self.inner,
+                SetRenderState,
+                self.inner.device.SetRenderState(D3DRS_DITHERENABLE, 1)
+            )?;
             // Clear obeys the previous frame's scissor too, including GUI item clips.
-            self.inner
-                .device
-                .SetRenderState(D3DRS_SCISSORTESTENABLE, 0)?;
-            self.inner.device.Clear(
-                0,
-                ptr::null(),
-                D3DCLEAR_TARGET as u32 | D3DCLEAR_ZBUFFER as u32,
-                argb([color[0], color[1], color[2], 1.0]),
-                0.0,
-                0,
+            profile_call!(
+                self.inner,
+                SetRenderState,
+                self.inner.device.SetRenderState(D3DRS_SCISSORTESTENABLE, 0)
+            )?;
+            profile_call!(
+                self.inner,
+                Clear,
+                self.inner.device.Clear(
+                    0,
+                    ptr::null(),
+                    D3DCLEAR_TARGET as u32 | D3DCLEAR_ZBUFFER as u32,
+                    argb([color[0], color[1], color[2], 1.0]),
+                    0.0,
+                    0,
+                )
             )?;
             self.inner.device.BeginScene()?;
         }
@@ -949,13 +1104,17 @@ impl Device {
     fn clear_z(&mut self, far: f32) -> Result<()> {
         // Match a depth attachment clear, independently of the preceding draw's clip.
         self.state_cache
-            .render(&self.inner.device, D3DRS_SCISSORTESTENABLE, 0)?;
+            .render(&self.inner, D3DRS_SCISSORTESTENABLE, 0)?;
         self.cached_state = None;
         // SAFETY: live depth surface; clear to the caller's depth convention's far value.
         unsafe {
-            self.inner
-                .device
-                .Clear(0, ptr::null(), D3DCLEAR_ZBUFFER as u32, 0, far, 0)?;
+            profile_call!(
+                self.inner,
+                Clear,
+                self.inner
+                    .device
+                    .Clear(0, ptr::null(), D3DCLEAR_ZBUFFER as u32, 0, far, 0)
+            )?;
         }
         Ok(())
     }
@@ -1014,6 +1173,7 @@ impl Device {
         mut view: [f32; 16],
         mut projection: [f32; 16],
     ) -> Result<()> {
+        profile_count!(self.inner, |c| c.transform_requests += 1);
         let original_view = view;
         let original_projection = projection;
         // A pair of Z reflections preserves every clip-space coordinate while
@@ -1034,28 +1194,44 @@ impl Device {
         // column storage supplies the transpose for D3D's row-vector convention.
         unsafe {
             if previous.is_none_or(|p| p[0] != world) {
-                self.inner.device.SetTransform(
-                    D3DTS_WORLD,
-                    &std::mem::transmute::<[f32; 16], Matrix4x4>(world),
+                profile_call!(
+                    self.inner,
+                    SetTransform,
+                    self.inner.device.SetTransform(
+                        D3DTS_WORLD,
+                        &std::mem::transmute::<[f32; 16], Matrix4x4>(world),
+                    )
                 )?;
             }
             if previous.is_none_or(|p| p[1] != view) {
-                self.inner.device.SetTransform(
-                    D3DTS_VIEW,
-                    &std::mem::transmute::<[f32; 16], Matrix4x4>(view),
+                profile_call!(
+                    self.inner,
+                    SetTransform,
+                    self.inner.device.SetTransform(
+                        D3DTS_VIEW,
+                        &std::mem::transmute::<[f32; 16], Matrix4x4>(view),
+                    )
                 )?;
                 if self.fog_shader.is_some() {
                     let inverse = glam::Mat4::from_cols_array(&view).inverse().to_cols_array();
-                    self.inner.device.SetTransform(
-                        D3DTS_TEXTURE2,
-                        &std::mem::transmute::<[f32; 16], Matrix4x4>(inverse),
+                    profile_call!(
+                        self.inner,
+                        SetTransform,
+                        self.inner.device.SetTransform(
+                            D3DTS_TEXTURE2,
+                            &std::mem::transmute::<[f32; 16], Matrix4x4>(inverse),
+                        )
                     )?;
                 }
             }
             if previous.is_none_or(|p| p[2] != projection) {
-                self.inner.device.SetTransform(
-                    D3DTS_PROJECTION,
-                    &std::mem::transmute::<[f32; 16], Matrix4x4>(projection),
+                profile_call!(
+                    self.inner,
+                    SetTransform,
+                    self.inner.device.SetTransform(
+                        D3DTS_PROJECTION,
+                        &std::mem::transmute::<[f32; 16], Matrix4x4>(projection),
+                    )
                 )?;
             }
         }
@@ -1146,9 +1322,13 @@ impl Device {
         let mut locked = D3DLOCKED_RECT::default();
         // SAFETY: validated input length and rect. Copy rows using the runtime's pitch, converting RGBA to BGRA.
         unsafe {
-            texture.raw.LockRect(level, &mut locked, &rect, 0)?;
+            profile_call!(
+                self.inner,
+                LockTexture,
+                texture.raw.LockRect(level, &mut locked, &rect, 0)
+            )?;
             if locked.pBits.is_null() || locked.Pitch < (width * 4) as i32 {
-                texture.raw.UnlockRect(level)?;
+                profile_call!(self.inner, UnlockTexture, texture.raw.UnlockRect(level))?;
                 return Err("D3D9 invalid texture lock pitch".into());
             }
             for row in 0..height as usize {
@@ -1166,9 +1346,10 @@ impl Device {
                     d.copy_from_slice(&[s[2], s[1], s[0], s[3]]);
                 }
             }
-            texture.raw.UnlockRect(level)?;
+            profile_call!(self.inner, UnlockTexture, texture.raw.UnlockRect(level))?;
         }
         self.uploads += rgba.len() as u64;
+        profile_count!(self.inner, |c| c.upload_bytes[3] += rgba.len() as u64);
         Ok(())
     }
     pub fn mesh(&mut self, vertices: &[Vertex]) -> Result<Mesh> {
@@ -1216,34 +1397,43 @@ impl Device {
         let mut raw = None;
         // SAFETY: bounded allocation and matching lock length; the slice cannot escape the lock.
         unsafe {
-            self.inner.device.CreateVertexBuffer(
-                bytes.len() as u32,
-                D3DUSAGE_WRITEONLY as u32
-                    | if self.caps.software_vertices {
-                        D3DUSAGE_SOFTWAREPROCESSING as u32
+            profile_call!(
+                self.inner,
+                CreateVertexBuffer,
+                self.inner.device.CreateVertexBuffer(
+                    bytes.len() as u32,
+                    D3DUSAGE_WRITEONLY as u32
+                        | if self.caps.software_vertices {
+                            D3DUSAGE_SOFTWAREPROCESSING as u32
+                        } else {
+                            0
+                        },
+                    if encoding == VertexEncoding::Full {
+                        FVF
                     } else {
                         0
                     },
-                if encoding == VertexEncoding::Full {
-                    FVF
-                } else {
-                    0
-                },
-                if self.caps.software_vertices {
-                    D3DPOOL_SYSTEMMEM
-                } else {
-                    D3DPOOL_DEFAULT
-                },
-                &mut raw,
-                ptr::null_mut(),
+                    if self.caps.software_vertices {
+                        D3DPOOL_SYSTEMMEM
+                    } else {
+                        D3DPOOL_DEFAULT
+                    },
+                    &mut raw,
+                    ptr::null_mut(),
+                )
             )?;
             let raw = raw.ok_or("D3D9 vertex buffer missing")?;
             let mut memory = ptr::null_mut();
-            raw.Lock(0, bytes.len() as u32, &mut memory, 0)?;
+            profile_call!(
+                self.inner,
+                LockVertex,
+                raw.Lock(0, bytes.len() as u32, &mut memory, 0)
+            )?;
             ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
-            raw.Unlock()?;
+            profile_call!(self.inner, UnlockVertex, raw.Unlock())?;
             self.uploads += bytes.len() as u64;
             self.mesh_uploads += bytes.len() as u64;
+            profile_count!(self.inner, |c| c.upload_bytes[0] += bytes.len() as u64);
             let raw = Rc::new(RefCell::new(Some(raw)));
             let mut handles = self.inner.default_meshes.borrow_mut();
             if handles.len() >= 4096 && handles.len().is_power_of_two() {
@@ -1263,7 +1453,11 @@ impl Device {
         if self.using_dynamic_indices {
             // SAFETY: index buffer is owned by this device and survives Reset.
             unsafe {
-                self.inner.device.SetIndices(self.indices.as_ref())?;
+                profile_call!(
+                    self.inner,
+                    SetIndices,
+                    self.inner.device.SetIndices(self.indices.as_ref())
+                )?;
             }
             self.using_dynamic_indices = false;
         }
@@ -1287,18 +1481,22 @@ impl Device {
             let mut raw = None;
             // SAFETY: bounded DEFAULT index ring, released/unbound before Reset.
             unsafe {
-                self.inner.device.CreateIndexBuffer(
-                    CAPACITY as u32,
-                    (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32
-                        | if self.caps.software_vertices {
-                            D3DUSAGE_SOFTWAREPROCESSING as u32
-                        } else {
-                            0
-                        },
-                    D3DFMT_INDEX16,
-                    D3DPOOL_DEFAULT,
-                    &mut raw,
-                    ptr::null_mut(),
+                profile_call!(
+                    self.inner,
+                    CreateIndexBuffer,
+                    self.inner.device.CreateIndexBuffer(
+                        CAPACITY as u32,
+                        (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32
+                            | if self.caps.software_vertices {
+                                D3DUSAGE_SOFTWAREPROCESSING as u32
+                            } else {
+                                0
+                            },
+                        D3DFMT_INDEX16,
+                        D3DPOOL_DEFAULT,
+                        &mut raw,
+                        ptr::null_mut(),
+                    )
                 )?;
             }
             self.dynamic_indices = raw;
@@ -1318,38 +1516,64 @@ impl Device {
         // vertices above; NOOVERWRITE only appends to storage not used since DISCARD.
         unsafe {
             let mut memory = ptr::null_mut();
-            indices.Lock(
-                offset as u32,
-                bytes.len() as u32,
-                &mut memory,
-                if discard {
-                    D3DLOCK_DISCARD
-                } else {
-                    D3DLOCK_NOOVERWRITE
-                } as u32,
+            profile_call!(
+                self.inner,
+                LockIndex,
+                indices.Lock(
+                    offset as u32,
+                    bytes.len() as u32,
+                    &mut memory,
+                    if discard {
+                        D3DLOCK_DISCARD
+                    } else {
+                        D3DLOCK_NOOVERWRITE
+                    } as u32,
+                )
             )?;
             if memory.is_null() {
-                indices.Unlock()?;
+                profile_call!(self.inner, UnlockIndex, indices.Unlock())?;
                 return Err("D3D9 empty index lock".into());
             }
             ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
-            indices.Unlock()?;
-            self.inner.device.SetIndices(indices)?;
+            profile_call!(self.inner, UnlockIndex, indices.Unlock())?;
+            profile_count!(self.inner, |c| c.upload_bytes[2] += bytes.len() as u64);
+            profile_call!(
+                self.inner,
+                SetIndices,
+                self.inner.device.SetIndices(indices)
+            )?;
             self.using_dynamic_indices = true;
-            self.inner
-                .device
-                .SetStreamSource(0, raw, 0, mesh.stride() as u32)?;
-            self.inner.device.DrawIndexedPrimitive(
-                D3DPT_TRIANGLELIST,
-                0,
-                batch.start_vertex(),
-                batch.end_vertex() - batch.start_vertex(),
-                offset as u32 / 2,
-                batch.indices().len() as u32 / 3,
+            profile_call!(
+                self.inner,
+                SetStreamSource,
+                self.inner
+                    .device
+                    .SetStreamSource(0, raw, 0, mesh.stride() as u32)
+            )?;
+            profile_call!(
+                self.inner,
+                DrawIndexedPrimitive,
+                self.inner.device.DrawIndexedPrimitive(
+                    D3DPT_TRIANGLELIST,
+                    0,
+                    batch.start_vertex(),
+                    batch.end_vertex() - batch.start_vertex(),
+                    offset as u32 / 2,
+                    batch.indices().len() as u32 / 3,
+                )
             )?;
         }
         self.uploads += bytes.len() as u64;
         self.index_uploads += bytes.len() as u64;
+        profile_count!(self.inner, |c| {
+            c.draw(
+                true,
+                batch.end_vertex() - batch.start_vertex(),
+                batch.indices().len() as u32 / 3,
+                0,
+                false,
+            );
+        });
         self.record_draw();
         Ok(())
     }
@@ -1380,30 +1604,39 @@ impl Device {
         let mut raw = None;
         // SAFETY: complete validated quad indices and exact lock/copy sizes.
         unsafe {
-            self.inner.device.CreateIndexBuffer(
-                bytes.len() as u32,
-                D3DUSAGE_WRITEONLY as u32
-                    | if self.caps.software_vertices {
-                        D3DUSAGE_SOFTWAREPROCESSING as u32
+            profile_call!(
+                self.inner,
+                CreateIndexBuffer,
+                self.inner.device.CreateIndexBuffer(
+                    bytes.len() as u32,
+                    D3DUSAGE_WRITEONLY as u32
+                        | if self.caps.software_vertices {
+                            D3DUSAGE_SOFTWAREPROCESSING as u32
+                        } else {
+                            0
+                        },
+                    D3DFMT_INDEX16,
+                    if self.caps.software_vertices {
+                        D3DPOOL_SYSTEMMEM
                     } else {
-                        0
+                        D3DPOOL_MANAGED
                     },
-                D3DFMT_INDEX16,
-                if self.caps.software_vertices {
-                    D3DPOOL_SYSTEMMEM
-                } else {
-                    D3DPOOL_MANAGED
-                },
-                &mut raw,
-                ptr::null_mut(),
+                    &mut raw,
+                    ptr::null_mut(),
+                )
             )?;
             let raw = raw.ok_or("D3D9 cached index buffer missing")?;
             let mut memory = ptr::null_mut();
-            raw.Lock(0, bytes.len() as u32, &mut memory, 0)?;
+            profile_call!(
+                self.inner,
+                LockIndex,
+                raw.Lock(0, bytes.len() as u32, &mut memory, 0)
+            )?;
             ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
-            raw.Unlock()?;
+            profile_call!(self.inner, UnlockIndex, raw.Unlock())?;
             self.uploads += bytes.len() as u64;
             self.index_uploads += bytes.len() as u64;
+            profile_count!(self.inner, |c| c.upload_bytes[2] += bytes.len() as u64);
             Ok(Indices {
                 raw,
                 owner: self.inner.clone(),
@@ -1434,20 +1667,39 @@ impl Device {
         let raw = raw.as_ref().ok_or("D3D9 arena requires re-upload")?;
         // SAFETY: index/vertex ranges were validated against this device and mesh.
         unsafe {
-            self.inner.device.SetIndices(&indices.raw)?;
-            self.inner
-                .device
-                .SetStreamSource(0, raw, 0, mesh.stride() as u32)?;
-            self.inner.device.DrawIndexedPrimitive(
-                D3DPT_TRIANGLELIST,
-                0,
-                window.start,
-                window.end - window.start,
-                window.first,
-                window.count / 3,
+            profile_call!(
+                self.inner,
+                SetIndices,
+                self.inner.device.SetIndices(&indices.raw)
+            )?;
+            profile_call!(
+                self.inner,
+                SetStreamSource,
+                self.inner
+                    .device
+                    .SetStreamSource(0, raw, 0, mesh.stride() as u32)
+            )?;
+            profile_call!(
+                self.inner,
+                DrawIndexedPrimitive,
+                self.inner.device.DrawIndexedPrimitive(
+                    D3DPT_TRIANGLELIST,
+                    0,
+                    window.start,
+                    window.end - window.start,
+                    window.first,
+                    window.count / 3,
+                )
             )?;
         }
         self.using_dynamic_indices = true;
+        profile_count!(self.inner, |c| c.draw(
+            true,
+            window.end - window.start,
+            window.count / 3,
+            0,
+            false
+        ));
         self.record_draw();
         Ok(())
     }
@@ -1457,6 +1709,7 @@ impl Device {
         texture: &Texture,
         lightmap: Option<&Texture>,
     ) -> Result<()> {
+        profile_count!(self.inner, |c| c.state_requests += 1);
         if !Rc::ptr_eq(&texture.owner, &self.inner)
             || lightmap.is_some_and(|t| !Rc::ptr_eq(&t.owner, &self.inner))
         {
@@ -1476,12 +1729,12 @@ impl Device {
             let d = &self.inner.device;
             let cache = &mut self.state_cache;
             if cache.textures[0] != texture.raw.as_raw() as usize {
-                d.SetTexture(0, &texture.base)?;
+                profile_call!(self.inner, SetTexture, d.SetTexture(0, &texture.base))?;
                 cache.textures[0] = texture.raw.as_raw() as usize;
                 self.binds += 1;
             }
             cache.stage(
-                d,
+                &self.inner,
                 0,
                 D3DTSS_COLOROP,
                 if state.glint != 0 {
@@ -1491,12 +1744,12 @@ impl Device {
                 }
                 .0 as u32,
             )?;
-            cache.stage(d, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
-            cache.stage(d, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
-            cache.stage(d, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as u32)?;
-            cache.stage(d, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE)?;
-            cache.stage(d, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE)?;
-            cache.stage(d, 0, D3DTSS_TEXCOORDINDEX, 0)?;
+            cache.stage(&self.inner, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
+            cache.stage(&self.inner, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
+            cache.stage(&self.inner, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as u32)?;
+            cache.stage(&self.inner, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE)?;
+            cache.stage(&self.inner, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE)?;
+            cache.stage(&self.inner, 0, D3DTSS_TEXCOORDINDEX, 0)?;
             let glint_square = state.glint != 0 && self.caps.raw.MaxTextureBlendStages >= 3;
             let lm = if state.lightmap || state.glint != 0 {
                 lightmap
@@ -1506,12 +1759,12 @@ impl Device {
             let light_texture = lm.map(|t| &t.base);
             let light_id = light_texture.map_or(0, |t| t.as_raw() as usize);
             if cache.textures[1] != light_id {
-                d.SetTexture(1, light_texture)?;
+                profile_call!(self.inner, SetTexture, d.SetTexture(1, light_texture))?;
                 cache.textures[1] = light_id;
                 self.binds += 1;
             }
             cache.stage(
-                d,
+                &self.inner,
                 1,
                 D3DTSS_COLOROP,
                 if lm.is_some() {
@@ -1520,9 +1773,9 @@ impl Device {
                     D3DTOP_DISABLE.0
                 } as u32,
             )?;
-            cache.stage(d, 1, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
+            cache.stage(&self.inner, 1, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
             cache.stage(
-                d,
+                &self.inner,
                 1,
                 D3DTSS_COLORARG2,
                 if glint_square {
@@ -1532,7 +1785,7 @@ impl Device {
                 },
             )?;
             cache.stage(
-                d,
+                &self.inner,
                 2,
                 D3DTSS_COLOROP,
                 if glint_square {
@@ -1543,14 +1796,14 @@ impl Device {
                 .0 as u32,
             )?;
             if glint_square {
-                cache.stage(d, 2, D3DTSS_COLORARG1, D3DTA_CURRENT)?;
-                cache.stage(d, 2, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
-                cache.stage(d, 2, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32)?;
-                cache.stage(d, 2, D3DTSS_ALPHAARG1, D3DTA_CURRENT)?;
+                cache.stage(&self.inner, 2, D3DTSS_COLORARG1, D3DTA_CURRENT)?;
+                cache.stage(&self.inner, 2, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
+                cache.stage(&self.inner, 2, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32)?;
+                cache.stage(&self.inner, 2, D3DTSS_ALPHAARG1, D3DTA_CURRENT)?;
             }
-            cache.stage(d, 1, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2.0 as u32)?;
-            cache.stage(d, 1, D3DTSS_ALPHAARG2, D3DTA_CURRENT)?;
-            cache.stage(d, 1, D3DTSS_TEXCOORDINDEX, 1)?;
+            cache.stage(&self.inner, 1, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2.0 as u32)?;
+            cache.stage(&self.inner, 1, D3DTSS_ALPHAARG2, D3DTA_CURRENT)?;
+            cache.stage(&self.inner, 1, D3DTSS_TEXCOORDINDEX, 1)?;
             let (src, dst) = match state.blend {
                 Blend::Opaque | Blend::Alpha => (D3DBLEND_SRCALPHA, D3DBLEND_INVSRCALPHA),
                 Blend::Additive => (D3DBLEND_SRCALPHA, D3DBLEND_ONE),
@@ -1559,16 +1812,20 @@ impl Device {
                 Blend::Cracks => (D3DBLEND_DESTCOLOR, D3DBLEND_SRCCOLOR),
             };
             cache.render(
-                d,
+                &self.inner,
                 D3DRS_ALPHABLENDENABLE,
                 u32::from(state.blend != Blend::Opaque),
             )?;
-            cache.render(d, D3DRS_SRCBLEND, src.0 as u32)?;
-            cache.render(d, D3DRS_DESTBLEND, dst.0 as u32)?;
-            cache.render(d, D3DRS_ZENABLE, u32::from(state.depth_test))?;
-            cache.render(d, D3DRS_ZWRITEENABLE, u32::from(state.depth_write))?;
+            cache.render(&self.inner, D3DRS_SRCBLEND, src.0 as u32)?;
+            cache.render(&self.inner, D3DRS_DESTBLEND, dst.0 as u32)?;
+            cache.render(&self.inner, D3DRS_ZENABLE, u32::from(state.depth_test))?;
             cache.render(
-                d,
+                &self.inner,
+                D3DRS_ZWRITEENABLE,
+                u32::from(state.depth_write),
+            )?;
+            cache.render(
+                &self.inner,
                 D3DRS_ZFUNC,
                 if state.equal_depth {
                     D3DCMP_EQUAL
@@ -1579,10 +1836,14 @@ impl Device {
                 }
                 .0 as u32,
             )?;
-            cache.render(d, D3DRS_ALPHATESTENABLE, u32::from(state.alpha_test))?;
-            cache.render(d, D3DRS_ALPHAREF, u32::from(state.alpha_ref))?;
             cache.render(
-                d,
+                &self.inner,
+                D3DRS_ALPHATESTENABLE,
+                u32::from(state.alpha_test),
+            )?;
+            cache.render(&self.inner, D3DRS_ALPHAREF, u32::from(state.alpha_ref))?;
+            cache.render(
+                &self.inner,
                 D3DRS_CULLMODE,
                 if state.cull {
                     D3DCULL_CW.0
@@ -1591,7 +1852,7 @@ impl Device {
                 } as u32,
             )?;
             cache.render(
-                d,
+                &self.inner,
                 D3DRS_SCISSORTESTENABLE,
                 u32::from(state.scissor.is_some()),
             )?;
@@ -1613,24 +1874,38 @@ impl Device {
                 }
             });
             if mode != self.shader_active {
-                d.SetPixelShader(match mode {
-                    Some(crate::FogProgram::Dual) => self.fog_shader.as_ref(),
-                    Some(mode) => self.fog_variants[mode as usize - 1].as_ref(),
-                    None => None,
-                })?;
+                profile_call!(
+                    self.inner,
+                    SetPixelShader,
+                    d.SetPixelShader(match mode {
+                        Some(crate::FogProgram::Dual) => self.fog_shader.as_ref(),
+                        Some(mode) => self.fog_variants[mode as usize - 1].as_ref(),
+                        None => None,
+                    })
+                )?;
                 self.shader_active = mode;
             }
             if mode.is_some_and(crate::FogProgram::position) {
                 cache.stage(
-                    d,
+                    &self.inner,
                     2,
                     D3DTSS_TEXCOORDINDEX,
                     D3DTSS_TCI_CAMERASPACEPOSITION | 2,
                 )?;
-                cache.stage(d, 2, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_COUNT3.0 as u32)?;
+                cache.stage(
+                    &self.inner,
+                    2,
+                    D3DTSS_TEXTURETRANSFORMFLAGS,
+                    D3DTTFF_COUNT3.0 as u32,
+                )?;
             } else if self.fog_shader.is_some() {
-                cache.stage(d, 2, D3DTSS_TEXTURETRANSFORMFLAGS, D3DTTFF_DISABLE.0 as u32)?;
-                cache.stage(d, 2, D3DTSS_TEXCOORDINDEX, 2)?;
+                cache.stage(
+                    &self.inner,
+                    2,
+                    D3DTSS_TEXTURETRANSFORMFLAGS,
+                    D3DTTFF_DISABLE.0 as u32,
+                )?;
+                cache.stage(&self.inner, 2, D3DTSS_TEXCOORDINDEX, 2)?;
             }
             if shader_fog && self.fog_constants != state.fog {
                 let constants = state.fog.unwrap().constants();
@@ -1638,7 +1913,7 @@ impl Device {
                 self.fog_constants = state.fog;
             }
             cache.render(
-                d,
+                &self.inner,
                 D3DRS_FOGENABLE,
                 u32::from(state.fog.is_some() && !shader_fog),
             )?;
@@ -1650,16 +1925,20 @@ impl Device {
                     (fog.environment[0], fog.environment[1]),
                     (fog.distance[0], fog.distance[1]),
                 );
-                cache.render(d, D3DRS_FOGCOLOR, argb([color[0], color[1], color[2], 1.0]))?;
-                cache.render(d, D3DRS_FOGTABLEMODE, D3DFOG_NONE.0 as u32)?;
-                cache.render(d, D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR.0 as u32)?;
                 cache.render(
-                    d,
+                    &self.inner,
+                    D3DRS_FOGCOLOR,
+                    argb([color[0], color[1], color[2], 1.0]),
+                )?;
+                cache.render(&self.inner, D3DRS_FOGTABLEMODE, D3DFOG_NONE.0 as u32)?;
+                cache.render(&self.inner, D3DRS_FOGVERTEXMODE, D3DFOG_LINEAR.0 as u32)?;
+                cache.render(
+                    &self.inner,
                     D3DRS_RANGEFOGENABLE,
                     u32::from(self.caps.raw.RasterCaps & D3DPRASTERCAPS_FOGRANGE as u32 != 0),
                 )?;
-                cache.render(d, D3DRS_FOGSTART, start.to_bits())?;
-                cache.render(d, D3DRS_FOGEND, end.max(start + 0.01).to_bits())?;
+                cache.render(&self.inner, D3DRS_FOGSTART, start.to_bits())?;
+                cache.render(&self.inner, D3DRS_FOGEND, end.max(start + 0.01).to_bits())?;
             }
             for sampler in 0..2 {
                 let filter = if state.linear || sampler == 1 {
@@ -1669,7 +1948,7 @@ impl Device {
                 };
                 let anisotropic = sampler == 0 && state.linear && self.anisotropy > 1;
                 cache.sampler(
-                    d,
+                    &self.inner,
                     sampler,
                     D3DSAMP_MINFILTER,
                     if anisotropic {
@@ -1679,14 +1958,14 @@ impl Device {
                     },
                 )?;
                 cache.sampler(
-                    d,
+                    &self.inner,
                     sampler,
                     D3DSAMP_MAXANISOTROPY,
                     if anisotropic { self.anisotropy } else { 1 },
                 )?;
-                cache.sampler(d, sampler, D3DSAMP_MAGFILTER, filter.0 as u32)?;
+                cache.sampler(&self.inner, sampler, D3DSAMP_MAGFILTER, filter.0 as u32)?;
                 cache.sampler(
-                    d,
+                    &self.inner,
                     sampler,
                     D3DSAMP_MIPFILTER,
                     if state.mipmaps && sampler == 0 {
@@ -1707,8 +1986,8 @@ impl Device {
                 } else {
                     D3DTADDRESS_CLAMP
                 };
-                cache.sampler(d, sampler, D3DSAMP_ADDRESSU, address.0 as u32)?;
-                cache.sampler(d, sampler, D3DSAMP_ADDRESSV, address.0 as u32)?;
+                cache.sampler(&self.inner, sampler, D3DSAMP_ADDRESSU, address.0 as u32)?;
+                cache.sampler(&self.inner, sampler, D3DSAMP_ADDRESSV, address.0 as u32)?;
             }
         }
         Ok(())
@@ -1732,18 +2011,27 @@ impl Device {
             .ok_or("D3D9 terrain buffer needs re-upload after Reset")?;
         // SAFETY: range checked above; shared indices start at zero relative to the base vertex.
         unsafe {
-            self.inner
-                .device
-                .SetStreamSource(0, raw, 0, mesh.stride() as u32)?;
-            self.inner.device.DrawIndexedPrimitive(
-                D3DPT_TRIANGLELIST,
-                first as i32,
-                0,
-                count,
-                0,
-                count / 2,
+            profile_call!(
+                self.inner,
+                SetStreamSource,
+                self.inner
+                    .device
+                    .SetStreamSource(0, raw, 0, mesh.stride() as u32)
+            )?;
+            profile_call!(
+                self.inner,
+                DrawIndexedPrimitive,
+                self.inner.device.DrawIndexedPrimitive(
+                    D3DPT_TRIANGLELIST,
+                    first as i32,
+                    0,
+                    count,
+                    0,
+                    count / 2,
+                )
             )?;
         }
+        profile_count!(self.inner, |c| c.draw(true, count, count / 2, 0, false));
         self.record_draw();
         Ok(())
     }
@@ -1781,32 +2069,61 @@ impl Device {
                 .ok_or("D3D9 dynamic vertex buffer missing")?;
             // SAFETY: the staged range fits the live buffer and is a complete primitive.
             unsafe {
-                self.inner
-                    .device
-                    .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)?;
+                profile_call!(
+                    self.inner,
+                    SetStreamSource,
+                    self.inner
+                        .device
+                        .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)
+                )?;
                 if kind == 2 {
-                    self.inner.device.DrawPrimitive(
-                        D3DPT_LINELIST,
-                        base,
-                        chunk.len() as u32 / 2,
+                    profile_call!(
+                        self.inner,
+                        DrawPrimitive,
+                        self.inner.device.DrawPrimitive(
+                            D3DPT_LINELIST,
+                            base,
+                            chunk.len() as u32 / 2,
+                        )
                     )?;
                 } else if kind == 1 {
-                    self.inner.device.DrawPrimitive(
-                        D3DPT_TRIANGLELIST,
-                        base,
-                        chunk.len() as u32 / 3,
+                    profile_call!(
+                        self.inner,
+                        DrawPrimitive,
+                        self.inner.device.DrawPrimitive(
+                            D3DPT_TRIANGLELIST,
+                            base,
+                            chunk.len() as u32 / 3,
+                        )
                     )?;
                 } else {
-                    self.inner.device.DrawIndexedPrimitive(
-                        D3DPT_TRIANGLELIST,
-                        base as i32,
-                        0,
-                        chunk.len() as u32,
-                        0,
-                        chunk.len() as u32 / 2,
+                    profile_call!(
+                        self.inner,
+                        DrawIndexedPrimitive,
+                        self.inner.device.DrawIndexedPrimitive(
+                            D3DPT_TRIANGLELIST,
+                            base as i32,
+                            0,
+                            chunk.len() as u32,
+                            0,
+                            chunk.len() as u32 / 2,
+                        )
                     )?;
                 }
             }
+            profile_count!(self.inner, |c| c.draw(
+                kind == 0,
+                chunk.len() as u32,
+                if kind == 2 {
+                    0
+                } else if kind == 1 {
+                    chunk.len() as u32 / 3
+                } else {
+                    chunk.len() as u32 / 2
+                },
+                if kind == 2 { chunk.len() as u32 / 2 } else { 0 },
+                false
+            ));
             self.record_draw();
         }
         Ok(())
@@ -1849,15 +2166,30 @@ impl Device {
             .ok_or("D3D9 missing staged buffer")?;
         // SAFETY: owner, upload generation and bounds were checked; no raw resources escape.
         unsafe {
-            self.inner
-                .device
-                .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)?;
-            self.inner.device.DrawPrimitive(
-                D3DPT_TRIANGLELIST,
-                vertices.first + range.start,
-                range.len() as u32 / 3,
+            profile_call!(
+                self.inner,
+                SetStreamSource,
+                self.inner
+                    .device
+                    .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)
+            )?;
+            profile_call!(
+                self.inner,
+                DrawPrimitive,
+                self.inner.device.DrawPrimitive(
+                    D3DPT_TRIANGLELIST,
+                    vertices.first + range.start,
+                    range.len() as u32 / 3,
+                )
             )?;
         }
+        profile_count!(self.inner, |c| c.draw(
+            false,
+            range.len() as u32,
+            range.len() as u32 / 3,
+            0,
+            false
+        ));
         self.record_draw();
         Ok(())
     }
@@ -1871,18 +2203,22 @@ impl Device {
             self.transient_ring.reset();
             // SAFETY: bounded capacity, creator thread; released before Reset.
             unsafe {
-                self.inner.device.CreateVertexBuffer(
-                    self.transient_capacity as u32,
-                    (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32
-                        | if self.caps.software_vertices {
-                            D3DUSAGE_SOFTWAREPROCESSING as u32
-                        } else {
-                            0
-                        },
-                    FVF,
-                    D3DPOOL_DEFAULT,
-                    &mut buffer,
-                    ptr::null_mut(),
+                profile_call!(
+                    self.inner,
+                    CreateVertexBuffer,
+                    self.inner.device.CreateVertexBuffer(
+                        self.transient_capacity as u32,
+                        (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32
+                            | if self.caps.software_vertices {
+                                D3DUSAGE_SOFTWAREPROCESSING as u32
+                            } else {
+                                0
+                            },
+                        FVF,
+                        D3DPOOL_DEFAULT,
+                        &mut buffer,
+                        ptr::null_mut(),
+                    )
                 )?;
             }
             self.transient = buffer;
@@ -1908,26 +2244,31 @@ impl Device {
         // DISCARD lets the driver rename it when the bounded ring wraps.
         unsafe {
             let mut memory = ptr::null_mut();
-            buffer.Lock(
-                offset as u32,
-                bytes.len() as u32,
-                &mut memory,
-                if discard {
-                    D3DLOCK_DISCARD
-                } else {
-                    D3DLOCK_NOOVERWRITE
-                } as u32,
+            profile_call!(
+                self.inner,
+                LockVertex,
+                buffer.Lock(
+                    offset as u32,
+                    bytes.len() as u32,
+                    &mut memory,
+                    if discard {
+                        D3DLOCK_DISCARD
+                    } else {
+                        D3DLOCK_NOOVERWRITE
+                    } as u32,
+                )
             )?;
             if memory.is_null() {
-                buffer.Unlock()?;
+                profile_call!(self.inner, UnlockVertex, buffer.Unlock())?;
                 return Err("D3D9 empty transient lock".into());
             }
             ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
-            buffer.Unlock()?;
+            profile_call!(self.inner, UnlockVertex, buffer.Unlock())?;
         }
         self.uploads += bytes.len() as u64;
         self.stream_uploads += bytes.len() as u64;
         self.stream_locks += 1;
+        profile_count!(self.inner, |c| c.upload_bytes[1] += bytes.len() as u64);
         Ok((offset / size_of::<Vertex>()) as u32)
     }
     /// Capture only on request. Readback is deliberately absent from the normal frame path.

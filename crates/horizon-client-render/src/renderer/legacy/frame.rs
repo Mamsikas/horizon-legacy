@@ -204,6 +204,7 @@ impl Renderer {
             return Err(error.into());
         }
         let started = Instant::now();
+        self.device.profile_begin_frame();
         self.profile_laps = crate::spans::laps();
         self.timings.clear();
         let clear = if frame.end_sky {
@@ -219,15 +220,20 @@ impl Renderer {
         {
             Ok(true) => {}
             Ok(false) => {
+                self.device.profile_end_frame(false);
                 self.last_wait = started.elapsed();
                 self.last_encode = Duration::ZERO;
                 return Ok(false);
             }
             Err(error) if dx::is_device_lost(error.as_ref()) => {
+                self.device.profile_end_frame(false);
                 self.device.mark_lost();
                 return Ok(false);
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                self.device.profile_end_frame(false);
+                return Err(error);
+            }
         }
         self.timings
             .push(("begin/reset", started.elapsed().as_secs_f32() * 1000.0));
@@ -235,6 +241,7 @@ impl Renderer {
         self.device.mesh_uploads += std::mem::take(&mut self.pending_mesh_uploads);
         if let Err(error) = self.draw_frame(frame) {
             self.device.cancel_frame();
+            self.device.profile_end_frame(false);
             if dx::is_device_lost(error.as_ref()) {
                 self.device.mark_lost();
                 return Ok(false);
@@ -243,7 +250,10 @@ impl Renderer {
         }
         self.last_encode = started.elapsed();
         let wait = Instant::now();
-        let shown = self.device.finish()?;
+        self.device.profile_pass(dx::SubmitPass::Present);
+        let finished = self.device.finish();
+        self.device.profile_end_frame(matches!(&finished, Ok(true)));
+        let shown = finished?;
         self.profile_laps.lap("d3d9_present");
         self.last_wait = wait.elapsed();
         self.uploaded_bytes = std::mem::take(&mut self.device.uploads);
@@ -273,6 +283,7 @@ impl Renderer {
                 self.worst_stages.clone_from(&self.timings);
             }
             if self.last_log.elapsed() >= Duration::from_secs(5) {
+                self.device.log_submit_profile();
                 let cpu = dx::thread_cpu_time();
                 let busy = cpu
                     .zip(self.last_thread_cpu)
@@ -442,6 +453,7 @@ impl Renderer {
             + self.lightmap.bytes
     }
     fn draw_frame(&mut self, frame: &Frame) -> Result<()> {
+        self.device.profile_pass(dx::SubmitPass::Prepare);
         self.translucent_stats = [0; 3];
         let mut clock = Instant::now();
         self.update_lightmap(frame)?;
@@ -495,6 +507,7 @@ impl Renderer {
         self.section_draw_calls = 0;
         self.solid_reused = false;
         self.uncached_mesh_bytes = 0;
+        self.device.profile_pass(dx::SubmitPass::Effects);
         if frame.title {
             self.draw_panorama(frame)?;
         } else {
@@ -530,6 +543,7 @@ impl Renderer {
                     }),
             );
             self.stamp("sky", &mut clock);
+            self.device.profile_pass(dx::SubmitPass::Prepare);
             let mut visible = std::mem::take(&mut self.visible);
             visible.clear();
             if frame.cave_culling {
@@ -548,6 +562,7 @@ impl Renderer {
             self.stamp("visibility", &mut clock);
             self.prepare_sections(&visible)?;
             self.stamp("terrain cache", &mut clock);
+            self.device.profile_pass(dx::SubmitPass::Solid);
             self.uncached_mesh_bytes = visible
                 .iter()
                 .map(|v| self.sections.at(v.slot))
@@ -693,6 +708,7 @@ impl Renderer {
                 )?;
             }
             self.section_draws = (self.device.draws - before) as usize;
+            self.device.profile_pass(dx::SubmitPass::DynamicEntities);
             self.device.transform(
                 Mat4::IDENTITY.to_cols_array(),
                 view.view.to_cols_array(),
@@ -701,6 +717,7 @@ impl Renderer {
             self.stamp("terrain solid", &mut clock);
             self.draw_entities(frame, frame.entities, fog, 0)?;
             self.draw_entities(frame, frame.world_primitives.quads, fog, 2)?;
+            self.device.profile_pass(dx::SubmitPass::StaticEntities);
             for section in frame.static_block_entities {
                 if !frame
                     .visible_static_block_entity_sections
@@ -718,6 +735,7 @@ impl Renderer {
                 self.draw_entities(frame, &section.vertices, fog, 2)?;
             }
             self.stamp("entities", &mut clock);
+            self.device.profile_pass(dx::SubmitPass::Translucent);
             let before_translucent = self.device.draws;
             let before_translucent_binds = self.device.binds;
             for v in visible.iter().rev() {
@@ -783,12 +801,14 @@ impl Renderer {
             self.translucent_stats[1] = self.device.binds - before_translucent_binds;
             self.section_draws += (self.device.draws - before_translucent) as usize;
             self.section_draw_calls = self.section_draws;
+            self.device.profile_pass(dx::SubmitPass::DynamicEntities);
             self.device.transform(
                 Mat4::IDENTITY.to_cols_array(),
                 view.view.to_cols_array(),
                 projection.to_cols_array(),
             )?;
             self.draw_entities(frame, frame.entities, fog, 1)?;
+            self.device.profile_pass(dx::SubmitPass::Effects);
             self.draw_lightning(frame)?;
             self.draw_entities(frame, frame.additive, None, 2)?;
             self.draw_entities(frame, frame.see_through, None, 3)?;
@@ -816,6 +836,7 @@ impl Renderer {
         if self.device.finish_world()? {
             self.stamp("world resolve", &mut clock);
         }
+        self.device.profile_pass(dx::SubmitPass::Gui);
         self.draw_gui(frame)?;
         self.stamp("GUI draw", &mut clock);
         self.save_screenshot();

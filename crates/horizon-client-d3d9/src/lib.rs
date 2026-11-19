@@ -1,5 +1,10 @@
 //! Safe, render-thread-only Direct3D 9 HAL ownership.
 #![deny(unsafe_op_in_unsafe_fn)]
+// Pass markers compile to empty inline methods in ordinary Windows builds.
+#[cfg(any(windows, all(test, feature = "submit-profile")))]
+mod submit_profile;
+#[cfg(windows)]
+pub use submit_profile::SubmitPass;
 #[cfg(windows)]
 mod device;
 #[cfg(windows)]
@@ -42,3 +47,9 @@ pub use world_size::world_buffer_size;
 
 mod glint;
 pub use glint::{ArmorGlint, glint_color, glint_pixels};
+
+/// No settings file is read or written. Explicit runtime values take precedence.
+pub fn log_stats_enabled() -> bool {
+    std::env::var_os("HORIZON_D3D9_LOG_STATS")
+        .map_or(cfg!(feature = "dev-diagnostics"), |value| value == "1")
+}

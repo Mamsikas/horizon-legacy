@@ -79,6 +79,7 @@ wgpu = { version = "30.0.1", default-features = false, features = ["gles"] }
 
 [features]
 legacy-d3d9 = ["dep:horizon-client-d3d9"]
+legacy-d3d9-dev = ["legacy-d3d9", "horizon-client-d3d9/dev-diagnostics"]
 # Sound output: horizon-client's `audio` feature.
 audio = ["dep:cpal"]
 # Helpers horizon-client's tests build their fixtures with.

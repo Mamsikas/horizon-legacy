@@ -26,13 +26,17 @@ impl Device {
             // These vertices are already transformed, so DEFAULT is GPU input;
             // SOFTWAREPROCESSING is deliberately absent, even on a SWVP HAL.
             unsafe {
-                self.inner.device.CreateVertexBuffer(
-                    capacity as u32,
-                    (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32,
-                    SCREEN_FVF,
-                    D3DPOOL_DEFAULT,
-                    &mut self.screen.raw,
-                    ptr::null_mut(),
+                profile_call!(
+                    self.inner,
+                    CreateVertexBuffer,
+                    self.inner.device.CreateVertexBuffer(
+                        capacity as u32,
+                        (D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY) as u32,
+                        SCREEN_FVF,
+                        D3DPOOL_DEFAULT,
+                        &mut self.screen.raw,
+                        ptr::null_mut(),
+                    )
                 )?;
             }
         }
@@ -57,28 +61,33 @@ impl Device {
         // on wrap. No locked memory or raw COM resource escapes this function.
         unsafe {
             let mut memory = ptr::null_mut();
-            buffer.Lock(
-                offset as u32,
-                bytes.len() as u32,
-                &mut memory,
-                if discard {
-                    D3DLOCK_DISCARD
-                } else {
-                    D3DLOCK_NOOVERWRITE
-                } as u32,
+            profile_call!(
+                self.inner,
+                LockVertex,
+                buffer.Lock(
+                    offset as u32,
+                    bytes.len() as u32,
+                    &mut memory,
+                    if discard {
+                        D3DLOCK_DISCARD
+                    } else {
+                        D3DLOCK_NOOVERWRITE
+                    } as u32,
+                )
             )?;
             if memory.is_null() {
-                buffer.Unlock()?;
+                profile_call!(self.inner, UnlockVertex, buffer.Unlock())?;
                 return Err("D3D9 empty screen lock".into());
             }
             ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
-            buffer.Unlock()?;
+            profile_call!(self.inner, UnlockVertex, buffer.Unlock())?;
         }
         self.inner.stream_sequence.set(serial);
         self.screen.serial = serial;
         self.uploads += bytes.len() as u64;
         self.stream_uploads += bytes.len() as u64;
         self.stream_locks += 1;
+        profile_count!(self.inner, |c| c.upload_bytes[1] += bytes.len() as u64);
         Ok(ScreenTriangles {
             owner: self.inner.clone(),
             serial,
@@ -112,20 +121,39 @@ impl Device {
         // their FVF/shader through vertex_pipeline before using their streams.
         unsafe {
             if !self.screen_active {
-                self.inner.device.SetVertexShader(None)?;
+                profile_call!(
+                    self.inner,
+                    SetVertexShader,
+                    self.inner.device.SetVertexShader(None)
+                )?;
                 self.inner.device.SetFVF(SCREEN_FVF)?;
                 self.terrain_encoding = None;
                 self.screen_active = true;
             }
-            self.inner
-                .device
-                .SetStreamSource(0, buffer, 0, size_of::<ScreenVertex>() as u32)?;
-            self.inner.device.DrawPrimitive(
-                D3DPT_TRIANGLELIST,
-                vertices.first + range.start,
-                range.len() as u32 / 3,
+            profile_call!(
+                self.inner,
+                SetStreamSource,
+                self.inner
+                    .device
+                    .SetStreamSource(0, buffer, 0, size_of::<ScreenVertex>() as u32)
+            )?;
+            profile_call!(
+                self.inner,
+                DrawPrimitive,
+                self.inner.device.DrawPrimitive(
+                    D3DPT_TRIANGLELIST,
+                    vertices.first + range.start,
+                    range.len() as u32 / 3,
+                )
             )?;
         }
+        profile_count!(self.inner, |c| c.draw(
+            false,
+            range.len() as u32,
+            range.len() as u32 / 3,
+            0,
+            true
+        ));
         self.record_draw();
         Ok(())
     }

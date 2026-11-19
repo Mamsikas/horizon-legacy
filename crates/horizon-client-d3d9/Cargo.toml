@@ -6,6 +6,12 @@ license.workspace = true
 rust-version = "1.90"
 description = "Windows 7 HAL Direct3D 9 device and bounded resources, behind a safe API"
 
+[features]
+# Diagnostic build only; also requires HORIZON_D3D9_LOG_STATS=1 at runtime.
+submit-profile = []
+# Explicit dev packages log by default; runtime value 0 still disables it.
+dev-diagnostics = ["submit-profile"]
+
 [dependencies]
 bytemuck = { version = "1.24", features = ["derive"] }
 glam = "0.30"

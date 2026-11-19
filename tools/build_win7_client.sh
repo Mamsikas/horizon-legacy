@@ -3,6 +3,22 @@
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 toolchain=${WIN7_TOOLCHAIN:-nightly-2026-11-11}
+# dx9-dev packages carry opt-in instrumentation and log it by default. The same
+# EXE supports HORIZON_D3D9_LOG_STATS=0 for an instrumentation-overhead pair.
+default_dev=0
+build_branch=${GITHUB_HEAD_REF:-${GITHUB_REF_NAME:-$(git -C "$repo" branch --show-current)}}
+if [[ $build_branch == dx9-dev ]]; then default_dev=1; fi
+dev_build=${WIN7_D3D9_DEV:-$default_dev}
+metadata_features=horizon-game/legacy-d3d9,horizon-game/audio
+game_features=legacy-d3d9,audio
+case "$dev_build" in
+    1)
+        metadata_features+=,horizon-game/legacy-d3d9-dev
+        game_features+=,legacy-d3d9-dev
+        ;;
+    0) ;;
+    *) echo 'WIN7_D3D9_DEV must be 0 or 1.' >&2; exit 2 ;;
+esac
 architecture=${WIN7_ARCH:-x64}
 case "$architecture" in
     x64)
@@ -45,10 +61,15 @@ unset CARGO_ENCODED_RUSTFLAGS
 # Neither inherits the build host's SSE4/POPCNT/AVX.
 export RUSTFLAGS="--cfg windows_slim_errors $cpu_flags -C panic=abort -C link-arg=-Wl,--major-subsystem-version,6 -C link-arg=-Wl,--minor-subsystem-version,1 -C link-arg=-static"
 cd -- "$repo"
+export HORIZON_D3D9_BUILD_SHA=$(git rev-parse HEAD)
+export HORIZON_D3D9_BUILD_DIRTY=0
+if [[ -n $(git status --porcelain -- . ':(exclude)work/') ]]; then export HORIZON_D3D9_BUILD_DIRTY=1; fi
+export HORIZON_D3D9_BUILD_RUSTC=$(rustc "+$toolchain" --version)
+export HORIZON_D3D9_BUILD_CC=$("$cc" --version | head -1)
 # Older windows-targets build scripts do not recognize the win7 vendor. Supply their
 # checksum-verified import libraries without patching the registry or the modern build.
 cargo "+$toolchain" metadata --locked --format-version 1 --filter-platform "$target" \
-    --no-default-features --features horizon-game/legacy-d3d9,horizon-game/audio > "$work/cargo-metadata.json"
+    --no-default-features --features "$metadata_features" > "$work/cargo-metadata.json"
 mapfile -t import_dirs < <(python3 - "$work/cargo-metadata.json" "$import_package" <<'PY'
 import json, pathlib, sys
 for package in json.loads(pathlib.Path(sys.argv[1]).read_text())['packages']:
@@ -66,7 +87,7 @@ python3 tools/check_win7_imports.py --architecture "$architecture" \
     "$CARGO_TARGET_DIR/$target/legacy/examples/win7_com_imports.exe"
 cargo "+$toolchain" rustc --locked --profile legacy -p horizon-game --bin horizon-client \
     --target "$target" -Z build-std=std,panic_abort \
-    --no-default-features --features legacy-d3d9,audio -- "${link_args[@]}"
+    --no-default-features --features "$game_features" -- "${link_args[@]}"
 binary="$CARGO_TARGET_DIR/$target/legacy/horizon-client.exe"
 if ! python3 tools/check_win7_imports.py --architecture "$architecture" --d3d9 --json "$binary" > "$work/imports-client-win7-$architecture.json"; then
     cat "$work/imports-client-win7-$architecture.json" >&2
@@ -81,7 +102,8 @@ mkdir -p "$stage"
 rm -f "$stage/horizon-ctl.exe" "$stage"/imports-control-win7-*.json
 rustc "+$toolchain" -Vv > "$stage/build-info.txt"
 printf '%s\n' 'profile=legacy opt-level=3 lto=thin codegen-units=1' >> "$stage/build-info.txt"
-{ git rev-parse HEAD; "$cc" --version | head -1; printf '%s\n' "$target" "$RUSTFLAGS"; } >> "$stage/build-info.txt"
+printf '%s\n' "dev_diagnostics=$dev_build" "source_dirty=$HORIZON_D3D9_BUILD_DIRTY" >> "$stage/build-info.txt"
+{ printf '%s\n' "$HORIZON_D3D9_BUILD_SHA" "$HORIZON_D3D9_BUILD_CC" "$target" "$RUSTFLAGS"; } >> "$stage/build-info.txt"
 cp "$work/imports-client-win7-$architecture.json" "$stage/"
 python3 - "$binary" "$repo/packaging/win7-client/TESTING.txt" "$out" "$architecture" <<'PY'
 import hashlib, pathlib, shutil, sys, zipfile

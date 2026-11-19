@@ -25,6 +25,7 @@ test = false
 
 [features]
 legacy-d3d9 = ["horizon-client/legacy-d3d9"]
+legacy-d3d9-dev = ["legacy-d3d9", "horizon-client/legacy-d3d9-dev"]
 default = ["audio", "controllers", "horizon-extras"]
 audio = ["horizon-client/audio"]
 controllers = ["horizon-client/controllers"]

@@ -254,7 +254,7 @@ impl Renderer {
             },
             info,
             suspended: false,
-            diagnostics: std::env::var("HORIZON_D3D9_LOG_STATS").as_deref() == Ok("1"),
+            diagnostics: dx::log_stats_enabled(),
             paced_elsewhere: false,
             gpu_times: Vec::new(),
             lightmap_pixels: [0; 1024],
