@@ -9,6 +9,20 @@ The launcher has two editions using the same native controls and launch contract
 
 Both ZIPs contain only the launcher EXE and an English player guide. The modern launcher and the separate client branch are unchanged.
 
+## Resource updates
+
+The current preparer produces output version 5, including fluid state definitions.
+The preparation-cache identity combines the Rust preparer's source digest with the
+contents of the bundled Java exporters, their transitive helpers and research pins.
+An exporter-only change therefore selects a new cache, including when the numeric
+output version stays the same. Both architectures calculate the same identity;
+the x86 edition still embeds no Java sources and only reads compatible prepared data.
+
+On x64, Play prepares the new cache automatically from the player's Minecraft files.
+Old caches and game saves are not deleted. Clients with accompanying preparer metadata
+requiring a newer output version are rejected with an update message. A custom client
+without that metadata must be paired with a launcher built for its resource format.
+
 ## Reproducible cross build
 
 On a Debian/Ubuntu x64 build host with rustup, Python 3, curl, ripgrep and `dpkg-deb`:

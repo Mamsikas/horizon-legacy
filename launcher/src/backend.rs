@@ -1416,7 +1416,7 @@ fn resources_compatible(from: &Path, to: &Path, manifest: &serde_json::Value) ->
 /// The `OUTPUT_VERSION` of a version folder's preparer: the constant in its sources, or for a
 /// preparer from before it, the number `LEGACY_OUTPUT_VERSIONS` gives its fingerprint. None for
 /// an unknown older preparer.
-fn output_version_at(dir: &Path) -> Option<u32> {
+pub(crate) fn output_version_at(dir: &Path) -> Option<u32> {
     output_version_in(dir, &LEGACY_OUTPUT_VERSIONS)
 }
 

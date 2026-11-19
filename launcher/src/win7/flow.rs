@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(not(target_arch = "x86"), test))]
 use serde_json::Value;
 #[cfg(any(not(target_arch = "x86"), test))]
-use sha1::{Digest, Sha1};
+use sha1::Sha1;
+use sha2::Digest;
 #[cfg(not(target_arch = "x86"))]
 use std::io::{Read, Write};
 use std::{
@@ -21,6 +22,15 @@ use std::{
 
 mod support {
     include!(concat!(env!("OUT_DIR"), "/win7_support.rs"));
+}
+
+/// Both the Rust preparer and the complete bundled Java/pin inputs identify prepared output.
+fn preparation_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| {
+        let input = format!("{}\0{}", prepare::SOURCES_SHA256, support::INPUTS_SHA256);
+        format!("{:x}", sha2::Sha256::digest(input.as_bytes()))
+    })
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -159,6 +169,23 @@ pub fn run(mut settings: Settings, emit: &dyn Fn(Event)) -> Result<(), String> {
             ("arch", std::env::consts::ARCH),
         ],
     )));
+    emit(Event::Log(trf(
+        "Resource format {format}; preparation bundle {bundle}",
+        &[
+            ("format", &prepare::OUTPUT_VERSION.to_string()),
+            ("bundle", preparation_id()),
+        ],
+    )));
+    // Check available client metadata before starting a potentially lengthy preparation.
+    if !settings.client.as_os_str().is_empty() {
+        check_client_preparer(&settings.client)?;
+    } else if let Some(program) = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.join("horizon-client.exe")))
+        .filter(|p| p.is_file())
+    {
+        check_client_preparer(&program)?;
+    }
     let resources = resources(settings.source(), emit).map_err(|error| {
         trf(
             if cfg!(target_arch = "x86") {
@@ -172,6 +199,7 @@ pub fn run(mut settings: Settings, emit: &dyn Fn(Event)) -> Result<(), String> {
     backend::check_cancelled()?;
     emit(Event::Status(tr("Getting Horizon ready…").into()));
     let (program, managed) = client(&mut settings, emit)?;
+    check_client_preparer(&program)?;
     settings.save()?;
     backend::check_cancelled()?;
     let home = backend::game_home();
@@ -211,6 +239,18 @@ pub fn run(mut settings: Settings, emit: &dyn Fn(Event)) -> Result<(), String> {
             &[("status", &status.to_string())],
         ))
     }
+}
+
+fn check_client_preparer(program: &Path) -> Result<(), String> {
+    if let Some(required) = program.parent().and_then(backend::output_version_at) {
+        if required > prepare::OUTPUT_VERSION {
+            return Err(trf(
+                "This Horizon client requires resource format {client}; this launcher prepares format {launcher}. Update the Win7 launcher before preparing or launching this client.",
+                &[("client", &required.to_string()), ("launcher", &prepare::OUTPUT_VERSION.to_string())],
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// No Microsoft token, fake session or global graphics change. The stock client already
@@ -386,7 +426,7 @@ fn installed_resources(root: &Path, chosen: &Path) -> Result<PathBuf, String> {
     let found = super::resource_search::find(
         chosen,
         horizon_platform::version::VANILLA_VERSION,
-        prepare::SOURCES_SHA256,
+        preparation_id(),
         alternate_cache.as_deref(),
         |resources| {
             backend::check_cancelled()?;
@@ -424,7 +464,7 @@ fn support_root() -> Result<PathBuf, String> {
     } else {
         backend::build_dir()
             .join("win7-prepare")
-            .join(prepare::SOURCES_SHA256)
+            .join(preparation_id())
     };
     for &(name, bytes) in support::FILES {
         let file = root.join(name);

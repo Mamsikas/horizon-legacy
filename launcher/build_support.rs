@@ -5,6 +5,18 @@ use std::path::Path;
 
 pub const JAVA_ROOT: &str = "mods/horizon/src/test/java/dev/horizonlab/parity";
 
+/// Canonical inputs for the preparation cache, including the contents of implicit helpers.
+/// The SHA-256 is emitted for both architectures even though x86 ships no Java sources.
+pub fn preparation_inputs(root: &Path, files: &BTreeSet<String>) -> Result<Vec<u8>, String> {
+    let mut inputs = b"horizon-win7-preparation-inputs-v1\0".to_vec();
+    for name in files {
+        let bytes = read(&root.join(name))?.replace('\r', "").into_bytes();
+        inputs.extend_from_slice(format!("{name}\0{}\0", bytes.len()).as_bytes());
+        inputs.extend_from_slice(&bytes);
+    }
+    Ok(inputs)
+}
+
 pub fn collect_sources(root: &Path) -> Result<BTreeSet<String>, String> {
     let mut files = BTreeSet::from([
         "research-lock.json".to_string(),
@@ -78,6 +90,8 @@ mod tests {
         let java = root.join(JAVA_ROOT);
         fs::create_dir_all(&rust).unwrap();
         fs::create_dir_all(&java).unwrap();
+        fs::write(root.join("research-lock.json"), "{}").unwrap();
+        fs::write(rust.join("exporters.rs"), "// Exporter registry fixture\n").unwrap();
         fs::write(rust.join("lib.rs"), "const SOURCE: &str = \"Entry.java\";").unwrap();
         for (name, text) in [
             ("Entry", "class Entry { Helper helper; }"),
@@ -104,6 +118,16 @@ mod tests {
                 .map(|name| format!("{JAVA_ROOT}/{name}.java"))
                 .collect()
         );
+        let inputs = preparation_inputs(&root, &bundled).unwrap();
+        // A Java-only change leaves the Rust preparer and filename list unchanged, but
+        // must invalidate its prepared output. CRLF/LF checkouts have the same identity.
+        let helper = root.join(JAVA_ROOT).join("Helper.java");
+        let original = fs::read_to_string(&helper).unwrap();
+        fs::write(&helper, original.replace(' ', " \r\n")).unwrap();
+        let changed = preparation_inputs(&root, &collect_sources(&root).unwrap()).unwrap();
+        assert_ne!(inputs, changed);
+        fs::write(&helper, original.replace(' ', " \n")).unwrap();
+        assert_eq!(changed, preparation_inputs(&root, &bundled).unwrap());
         fs::remove_dir_all(root).unwrap();
     }
 }
