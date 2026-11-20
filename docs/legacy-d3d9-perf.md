@@ -147,10 +147,73 @@ both were checked against the baseline and are byte-identical. They are outside
 this patch. No shader bytecode changed; an SDK recompile and hardware visual,
 Reset/resize, x86/x64 runtime and HD4570 smoke tests have not been performed here.
 
-Hardware counters and diagnostic overhead are pending, so P0 is not accepted.
+The first GMA counters and on/off captures have now been supplied (see below).
+P0 as a whole is not accepted: the independent RTX control and remaining
+instrumentation are still open.
 Per-material/page/overlay/atlas-clipping counters, entity convert-vs-submit and
 GUI patch/cache attribution, solid density/reuse distributions, asynchronous
 GPU queries and synthetic controlled driver tests are still open. This patch
 does not infer their values from wall times. First use the split pass table and
 NumVertices/draw volumes to choose the next small measurement or gated SWVP
 dense-window experiment. No geometry/state optimization has been accepted yet.
+
+## GMA on/off results, analyzed 2026-11-21
+
+Owner supplied `standing_log.hzperf`, `walk_log.hzperf`, `latest_1.log` (logging
+on) and `standing.hzperf`, `walk.hzperf`, `latest_2.log` (off), recorded on
+2026-11-20. They report zero external background load and repeatable standing
+and walk scenes. These are two application launches with longer recordings.
+LOG1 confirms clean source `fc813ed9fece4e115380533c5c7d0827ab26c045`, pinned
+compiler, GMA3150/Chell 1.8b, HAL SWVP/FFP/PS2, RGB565, INDEX16 and SYSTEMMEM
+static VBs; both logs confirm the adapter/VP/formats and 1024×600 during captures.
+LOG0 suppresses the new SHA line, so its same-EXE identity also relies on the
+owner's pairing. No settings were changed by the diagnostic mode.
+
+| Scene | Logging | Seconds / frames | FPS | Renderer ms | Solid ms | Entity DRAW ms | Translucent ms | GUI ms |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| standing | on | 120.579 / 4915 | 40.762 | 19.055 | 8.487 | ~0.02 | 7.001 | 2.063 |
+| standing | off | 120.522 / 4395 | 36.466 | 22.503 | 10.343 | ~0.02 | 8.429 | 2.236 |
+| walk | on | 150.952 / 1707 | 11.308 | 63.131 | 32.888 | 15.831 | 3.792 | 5.023 |
+| walk | off | 153.371 / 1727 | 11.260 | 62.939 | 32.633 | 15.992 | 3.770 | 5.070 |
+
+Walk's differences (+0.43% FPS, +0.30% renderer wall with logging) show no large
+diagnostic slowdown in this pair; they do not establish exact zero overhead.
+Standing's higher logged FPS is not a logging speedup. In the unlogged capture,
+Solid changes from ~8.5 ms to ~12.1–12.5 ms over a long middle interval, then back
+to ~8.4 ms; translucent changes in parallel (~7 → ~10 → ~7 ms). This occurs within
+one recording, even with zero external background load. Frequencies/thermals/GPU
+clocks were not captured, so the cause is unknown. Longer runs expose this change
+but do not replace independent repetitions. No new calibration run is required
+to select the first experiment.
+
+Use complete native windows wholly inside capture boundaries, with a conservative
+one-second margin for log timestamp truncation: standing 23 windows / 4716 frames;
+walk 29 / 1646. All selected windows have zero aborted frames and zero recorded
+COM failures. Frame-weighted native means (new pass boundaries):
+
+| Scene / pass | Wall ms | DIP/frame | Sum NumVertices/frame | Mean DIP width | VB locks/frame | Transient bytes/frame |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| standing solid | 8.522 | 43.00 | 24624 | 573 | 0 | 0 |
+| standing translucent | 7.019 | 26.00 | 20108 | 773 | 0 | 0 |
+| walk solid | 32.734 | 285.59 | 86552 | 303 | 0 | 0 |
+| walk dynamic entities | 13.661 | 115.96 | 8401 | 72 | 115.96 | 268823 |
+| walk static entities | 2.896 | 18.03 | 1993 | 111 | 18.03 | 63763 |
+| walk translucent | 3.765 | 18.86 | 10234 | 543 | 0 | 0 |
+
+The heaviest logged dynamic window reaches 37.64 ms/frame and 362.3 DIP/VB locks
+per frame. Static windows can also reach 13.65 ms; they are not the average
+majority. A persistent static cache alone cannot remove the dynamic cost.
+Existing arenas/plan reuse and GUI preprojection are active; this is confirmation
+of existing features. Terrain performs no per-frame VB uploads in these windows.
+
+Terrain standing solid/translucent both take ~0.35 microseconds per requested
+vertex despite different texture-bind counts (2 vs 23/frame). Walk gives
+~0.38/~0.37. These descriptive ratios and the large vertex volume make blindly
+widening SWVP index windows risky; they do not prove pure transform cost or rule
+out GPU pixel work. Sparse per-pass CPU samples are too coarse for exact stage
+percentages (some CPU/wall ratios exceed 1). GPU timestamps remain unimplemented.
+
+Next bounded experiment: P1-B1 upload granularity for dynamic entities, before
+the separate persistent-static-cache change. Preserve existing material/alpha
+order, draw count and tight NumVertices; reduce ordinary base-geometry VB locks.
+Keep logging mode equal between baseline/candidate. No FPS gain is accepted yet.
