@@ -676,3 +676,96 @@ are 11.61 and 11.76 FPS. The 100–125 s interval is 8.48 and 8.96 FPS, with
 entity draw wall time of 36.12 and 33.39 ms/frame. Early long stalls contribute
 to the difference in the capture-wide slowest 1% mean. Use the stage and
 upload counters alongside route FPS to evaluate this separate experiment.
+
+## GMA static-cache result and entity pipeline, 2026-11-21
+
+The owner recorded `profile-20261121-111352Z.hzperf` (walk),
+`profile-20261121-111105Z.hzperf` (standing with the integrated server),
+`latest (15).log` and a standing `GetThreadTimes` CSV. The log identifies clean
+`1c7f54484286a4b3e907191a24928c8b39aeb56e` on GMA3150 HAL SWVP. Use
+`a2766b3517bebd7147e11623cdefbec4ee0a46de` as the static-cache reference.
+
+| Walk metric | Reference | Static cache |
+| --- | ---: | ---: |
+| FPS, whole recording | 11.674 | 11.605 |
+| DX9 wall, ms/frame | 60.824 | 61.213 |
+| Slowest 1% mean, ms | 179.664 | 235.894 |
+| Static pass wall, ms/frame | 2.173 | 1.071 |
+| Static pass index draws/frame | 4.52 | 4.60 |
+| Static pass vertex locks/frame | 4.52 | 0.11 |
+| Static pass vertex uploads, KiB/frame | 63.27 | 1.56 |
+| Dynamic pass wall, ms/frame | 13.437 | 14.338 |
+| Dynamic pass index draws/frame | 116.82 | 144.56 |
+
+The native comparisons use complete log windows (1,698 and 1,646 frames).
+The new walk has 1,759 frames in 151.568 s. The p50/p95/p99 frame buckets are
+still [75,100), [100,150) and [150,250) ms. Cache reuse cuts the measured static
+pass roughly in half at comparable vertex/draw counts. The reported retained
+payload peaks at 378,496 bytes. Whole-route FPS and frame tail do not establish
+a performance gain. The 0–20 s block averages 8.90 versus 10.95 FPS, with
+several of the new worst frames near 10–11 s including long `tick` and network
+work. The 20–150 s block averages 12.01 versus 11.76 FPS. The 100–125 s block
+averages 8.84 versus 8.96, and 115–120 s `entities` is 55.01 vs 45.11 ms/frame.
+These are route-time matches, with different work between runs.
+
+The heaviest native dynamic window ends near 18:15:54 local time. It has
+53.93 ms/frame, 678.10 indexed draws and 678.59 `SetTexture` calls per frame.
+The stream cache sends one stream bind per frame there. Render, sampler and
+texture-stage cache probes total about 26.7k/frame, though actual setters for
+these three groups total roughly 29/frame. Earlier staging and the static cache
+target different work. The dynamic structure now worth measuring is ordered
+material runs and texture page locality.
+
+In pinned upstream `df50a07e73accd45b6af17905ede4d5478e9fc48`, `EntityBatch`
+reuses its CPU allocations, packs ordered runs into a common vertex buffer,
+and draws the ordinary material with the same bound 2D entity atlas and
+lightmap. A scene without prepared models can draw that material in one indexed
+call. Prepared models and special passes have their own ranges. Static block
+entities reuse revisioned per-section buffers. The vertex shader applies face
+lighting, and the GPU poses supported models when the relevant path is enabled.
+GMA has a 2048×2048 texture limit and uses FFP software VP, so the DX9 version
+needs a physical page mapping and preserves its current alpha and phase order.
+Measure the HUD- and sprite-page working sets and adjacent same-state intervals.
+A compact 2D atlas for frequently used dynamic tiles could merge such intervals
+without permuting vertices. Tile padding, pixels, sampling, texture updates and
+fallback are part of that experiment. The data do not yet give a draw-count
+forecast for any layout.
+
+### Standing CPU attribution
+
+| Recording interval | FPS | Process CPU (logical cores) | Window thread | TID 2436 | Thread started in d3d9.dll |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 15–25 s | 42.10 | 1.251 | 0.952 | 0 | 0.251 |
+| 30–80 s | 29.44 | 1.902 | 0.750 | 0.837 | 0.167 |
+| 95–105 s | 42.10 | 1.248 | 0.959 | 0 | 0.243 |
+
+Only complete CPU sample intervals enter this table. The measured thread sum
+accounts for 1.899 of the 1.902 process CPU cores on the slow plateau. The probe
+uses roughly 0.008 logical cores there. TID 2436 starts in `horizon-client.exe`
+at the same generic entry RVA as multiple other Rust threads, so the active
+function remains unknown. The integrated server stays at 20 TPS and its tick
+spans show no comparable sustained increase. Terrain and entity submissions
+stay stable, DX9 staging is idle, and its compaction total is unchanged. Prior
+builds showed the plateau with DX9 logging disabled. The new trace localizes
+the contention to another client-process thread without proving its call stack.
+
+### Block-entity visibility and cache invalidation
+
+Terrain uses `in_view_distance` around the camera's column with a one-column
+margin per axis. Resident columns and block-entity visibility have separate
+life cycles. Both renderers get the same live block-state filter and each
+renderer keeps the coarse frustum and 64/256 block reach checks for block
+entities. A model beyond two nominal chunks can therefore still come from a
+loaded column. The captures do not contain the coordinates and draw identity
+for the reported object. They cannot distinguish that case from a stale model.
+
+DX9's column removal now advances the catalog revision when it removes a list
+of block entities, so the shared catalog and DX9 cache can release obsolete
+snapshots. The DX9 adapter also honors the existing piston-position invalidation
+hook. It removes the named entry and advances its section's block-entity
+revision while the terrain mesh revision stays valid for its worker and arena.
+That closes a demonstrable stale-snapshot path when another block entity in the
+section keeps the section visible before the remesh. The visibility radius and
+terrain geometry follow the existing rules. Win7 x64 with test compilation and
+the Win7 x86 optimized renderer check passed. Movement and unload smoke still
+require hardware.

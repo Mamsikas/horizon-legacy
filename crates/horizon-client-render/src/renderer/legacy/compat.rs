@@ -270,7 +270,6 @@ impl Renderer {
     pub fn skinned_models(&self) -> Option<u32> {
         None
     }
-    pub fn invalidate_block_entity_position(&mut self, _pos: [i32; 3]) {} // Dynamic CPU entities have no GPU snapshots.
     pub fn terrain_looks(&self) -> bool {
         false
     } // No shader material-map vertex payload.

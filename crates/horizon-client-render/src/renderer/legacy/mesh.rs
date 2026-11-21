@@ -22,7 +22,14 @@ pub(super) struct Section {
     pub sides: crate::mesher::Sides,
     pub blocks: Vec<([i32; 3], u32)>,
     pub revision: u64,
+    block_entity_revision: u64,
     pub bytes: u64,
+}
+impl Section {
+    fn invalidate_block_entity(&mut self, pos: [i32; 3], revision: u64) {
+        self.blocks.retain(|(at, _)| *at != pos);
+        self.block_entity_revision = revision;
+    }
 }
 pub(super) type RegionKey = (i32, i32, i32);
 pub(super) struct GpuSlice {
@@ -306,6 +313,7 @@ impl Renderer {
                 sides,
                 blocks,
                 revision: self.revision,
+                block_entity_revision: self.revision,
                 bytes,
             },
             bounds,
@@ -614,12 +622,18 @@ impl Renderer {
             .keys()
             .filter(|k| columns.contains(&(k.0, k.2)))
             .collect();
+        let mut removed_block_entities = false;
         for key in keys {
             self.release_gpu_section(key);
             if let Some(s) = self.sections.remove(&key) {
+                removed_block_entities |= !s.blocks.is_empty();
                 self.mesh_bytes -= s.bytes;
                 self.decoded_mesh_bytes -= s.vertices.len() as u64 * size_of::<dx::Vertex>() as u64;
             }
+        }
+        if removed_block_entities {
+            // The shared snapshot catalog prunes unloaded sections on membership changes.
+            self.revision = self.revision.wrapping_add(1);
         }
     }
     pub fn has_section(&self, key: SectionKey) -> bool {
@@ -687,6 +701,17 @@ impl Renderer {
     pub fn block_entity_revision(&self) -> u64 {
         self.revision
     }
+    /// A piston can move a block entity before an updated terrain mesh arrives.
+    pub fn invalidate_block_entity_position(&mut self, pos: [i32; 3]) {
+        let Some(y) = self.layout.section_index(pos[1]) else {
+            return;
+        };
+        let key = (pos[0] >> 4, y as i32, pos[2] >> 4);
+        if let Some(section) = self.sections.get_mut(&key) {
+            self.revision = self.revision.wrapping_add(1);
+            section.invalidate_block_entity(pos, self.revision);
+        }
+    }
     pub fn block_entity_section_revision(
         &self,
         section: [i32; 3],
@@ -695,7 +720,7 @@ impl Renderer {
             .get(&(section[0], section[1], section[2]))
             .map(|s| StaticSectionRevision {
                 mesh: s.revision,
-                block_entities: s.revision,
+                block_entities: s.block_entity_revision,
             })
     }
 }
@@ -741,4 +766,34 @@ pub(super) fn draw_range(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn moving_a_block_entity_invalidates_its_snapshot_without_invalidating_the_mesh() {
+        let moved = [-2, 5, 3];
+        let neighbour = ([-1, 5, 3], 20);
+        let mut section = Section {
+            solid: Vec::new(),
+            translucent: Vec::new(),
+            translucent_order: Default::default(),
+            vertices: Arc::new(dx::MeshData::new(&[])),
+            gpu: Vec::new(),
+            retry_after: 0,
+            sides: Default::default(),
+            blocks: vec![(moved, 20), neighbour],
+            revision: 41,
+            block_entity_revision: 41,
+            bytes: 0,
+        };
+
+        section.invalidate_block_entity(moved, 42);
+
+        assert_eq!(section.blocks, [neighbour]);
+        assert_eq!(section.block_entity_revision, 42);
+        assert_eq!(section.revision, 41);
+    }
 }
