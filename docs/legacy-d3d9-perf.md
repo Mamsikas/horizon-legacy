@@ -769,3 +769,17 @@ section keeps the section visible before the remesh. The visibility radius and
 terrain geometry follow the existing rules. Win7 x64 with test compilation and
 the Win7 x86 optimized renderer check passed. Movement and unload smoke still
 require hardware.
+
+## Win7 packages for 2129b7999a
+
+Both jobs of [Win7 run 44899838360](https://github.com/Mamsikas/horizon-legacy/actions/runs/44899838360)
+packaged source `2129b7999aa35922cacbcc2cd6c395e5197499c4` with the existing
+build-std/ThinLTO profile. The import audit, 15 import-policy tests and 29 DX9
+CPU tests passed on both architecture jobs. GitHub ZIP digests match the job
+logs. The block-entity regression test was compiled in the local Win7 x64
+renderer test check. The movement and unload behavior still needs a GMA smoke.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [14706330886](https://github.com/Mamsikas/horizon-legacy/actions/runs/44899838360/artifacts/14706330886) | `f320a4285ddf4d9b8f8b49d2ad658768b386b3b5508201912b761a4f9ec87bc4` |
+| x86 | [14705399052](https://github.com/Mamsikas/horizon-legacy/actions/runs/44899838360/artifacts/14705399052) | `6684d42f503043b0337f53594b115e3ada1ef10cbbfdb0e2a96c4375ef6bf72d` |
