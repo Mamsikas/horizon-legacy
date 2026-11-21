@@ -13,6 +13,9 @@ struct EntityBatches {
     sprites: Vec<Batch>,
     glints: Vec<Batch>,
 }
+// Wait for a pass with a material run that repeatedly crosses shared-atlas pages.
+// The cost of one extra managed page is unwarranted for a few small draws.
+const ENTITY_PAGE_BREAKS: usize = 16;
 #[derive(Clone)]
 pub(super) enum GuiCommand {
     ClearDepth,
@@ -128,7 +131,7 @@ fn batch(
 }
 fn draw_pixels(
     device: &mut dx::Device,
-    pixels: &Pixels,
+    pixels: atlas::PixelView<'_>,
     lightmap: &dx::Texture,
     batches: &[Batch],
     triangles: bool,
@@ -295,6 +298,15 @@ impl Renderer {
                         self.entity_stage_stats[0],
                         self.entity_stage_stats[1],
                         self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>()
+                    );
+                    log::info!(
+                        "D3D9 dynamic entity ranges pixels_total={} sprites_total={} foil_total={} page_breaks_total={} compact_passes_total={} compact_tiles={}",
+                        self.entity_ranges[0],
+                        self.entity_ranges[1],
+                        self.entity_ranges[2],
+                        self.entity_ranges[3],
+                        self.entity_ranges[4],
+                        self.hud.atlas.entity_page_tiles(),
                     );
                 }
                 self.static_entities.log();
@@ -478,14 +490,9 @@ impl Renderer {
         }
         self.stamp("sprite animation", &mut clock);
         for patch in &frame.hud.patches {
-            self.hud.atlas.patch(
-                &mut self.device,
-                patch.x,
-                patch.y,
-                patch.width,
-                patch.height,
-                &patch.rgba,
-            )?;
+            self.hud
+                .atlas
+                .patch(patch.x, patch.y, patch.width, patch.height, &patch.rgba)?;
         }
         for (rect, animation, old) in &mut self.hud.sprite_animations {
             let selected = animation.frame(frame.ticks);
@@ -494,15 +501,19 @@ impl Renderer {
             }
             let (x, y) = rect.texels((self.hud.atlas.width, self.hud.atlas.height));
             let pixels = animation.resized_pixels(selected, rect.w, rect.h);
-            self.hud
-                .atlas
-                .patch(&mut self.device, x, y, rect.w, rect.h, &pixels)?;
+            self.hud.atlas.patch(x, y, rect.w, rect.h, &pixels)?;
             *old = (selected, 0, 0);
         }
-        if self.texture_bytes() > self.texture_budget && !self.texture_target_warned {
+        let mut texture_bytes = self.texture_bytes();
+        if texture_bytes > self.texture_budget && self.hud.atlas.entity_view().is_some() {
+            self.hud.atlas.drop_entity_page();
+            texture_bytes = self.texture_bytes();
+            log::info!("D3D9 dynamic entity page released to stay within the texture budget");
+        }
+        if texture_bytes > self.texture_budget && !self.texture_target_warned {
             log::warn!(
                 "D3D9 textures exceed the advisory residency target: {} / {} MiB; continuing with managed paging",
-                self.texture_bytes() >> 20,
+                texture_bytes >> 20,
                 self.texture_budget >> 20
             );
             self.texture_target_warned = true;
@@ -872,7 +883,8 @@ impl Renderer {
         input: &[Vertex],
         fog: Option<dx::Fog>,
         phase: u8,
-    ) -> Result<EntityBatches> {
+        pixels: atlas::PixelView<'_>,
+    ) -> Result<Option<EntityBatches>> {
         let mut batches = Vec::new();
         let mut sprite_batches = Vec::new();
         let mut glints = Vec::new();
@@ -997,23 +1009,28 @@ impl Renderer {
                 }
                 if matches!(overlay, 11 | 12) {
                     let rect = frame.crumbling_sprite;
+                    let mut placed = true;
                     repeat_quad(&vertices, rect, |p| {
-                        self.hud.atlas.polygon(p, |page, poly| {
-                            batch(&mut batches, page, state, poly, false)
-                        })
+                        placed = placed
+                            && pixels.polygon(p, |page, poly| {
+                                batch(&mut batches, page, state, poly, false);
+                            });
                     });
-                } else {
-                    self.hud.atlas.polygon(&vertices, |page, p| {
-                        batch(&mut batches, page, state, p, false)
-                    });
+                    if !placed {
+                        return Ok(None);
+                    }
+                } else if !pixels.polygon(&vertices, |page, p| {
+                    batch(&mut batches, page, state, p, false);
+                }) {
+                    return Ok(None);
                 }
             }
         }
-        Ok(EntityBatches {
+        Ok(Some(EntityBatches {
             pixels: batches,
             sprites: sprite_batches,
             glints,
-        })
+        }))
     }
     fn draw_entities(
         &mut self,
@@ -1022,22 +1039,88 @@ impl Renderer {
         fog: Option<dx::Fog>,
         phase: u8,
     ) -> Result<()> {
-        let mut dynamic_laps = matches!(phase, 0 | 1).then(crate::spans::laps);
+        let dynamic = matches!(phase, 0 | 1);
+        let mut dynamic_laps = dynamic.then(crate::spans::laps);
+        let mut compact = dynamic && self.hud.atlas.entity_view().is_some();
+        let mut batches = self.entity_batches(
+            frame,
+            input,
+            fog,
+            phase,
+            self.hud.atlas.entity_or_main(compact),
+        )?;
+        if let Some(laps) = &mut dynamic_laps {
+            laps.lap("d3d9_dynamic_entity_convert");
+        }
+        if compact {
+            // Validate the complete placement and upload before submitting any
+            // draws, so recovery can always remap in the original order.
+            let ready = if batches.is_some() {
+                self.hud
+                    .atlas
+                    .entity_or_main(true)
+                    .prepare(&mut self.device)
+            } else {
+                Err("the single page is full".into())
+            };
+            if let Err(error) = ready {
+                if dx::is_device_lost(error.as_ref()) {
+                    return Err(error);
+                }
+                log::warn!(
+                    "D3D9 dynamic entity page unavailable ({error}); using the shared atlas"
+                );
+                self.hud.atlas.drop_entity_page();
+                compact = false;
+                batches = self.entity_batches(frame, input, fog, phase, self.hud.atlas.view())?;
+            }
+        }
         let EntityBatches {
             pixels: batches,
             sprites: sprite_batches,
             glints,
-        } = self.entity_batches(frame, input, fog, phase)?;
-        if let Some(laps) = &mut dynamic_laps {
-            laps.lap("d3d9_dynamic_entity_convert");
+        } = batches.ok_or("D3D9 shared atlas placement failed")?;
+        if dynamic && self.entity_staging {
+            let page_breaks = if !compact && (self.entity_page_pending || self.diagnostics) {
+                batches
+                    .windows(2)
+                    .filter(|pair| pair[0].state == pair[1].state && pair[0].page != pair[1].page)
+                    .count()
+            } else {
+                0
+            };
+            if self.diagnostics {
+                self.entity_ranges[0] += batches.len() as u64;
+                self.entity_ranges[1] += sprite_batches.len() as u64;
+                self.entity_ranges[2] += glints.len() as u64;
+                self.entity_ranges[3] += page_breaks as u64;
+                self.entity_ranges[4] += u64::from(compact && !batches.is_empty());
+            }
+            if self.entity_page_pending && page_breaks >= ENTITY_PAGE_BREAKS {
+                self.entity_page_pending = false;
+                if self.texture_budget.saturating_sub(self.texture_bytes())
+                    >= atlas::ENTITY_PAGE_BYTES
+                {
+                    match self.hud.atlas.enable_entity_page() {
+                        Ok(()) => log::info!(
+                            "D3D9 dynamic entity page enabled after {page_breaks} adjacent page breaks"
+                        ),
+                        Err(error) => {
+                            log::warn!("D3D9 dynamic entity page metadata unavailable ({error})")
+                        }
+                    }
+                } else {
+                    log::info!("D3D9 dynamic entity page skipped for the current texture budget");
+                }
+            }
         }
         let staged = self.entity_staging
-            && matches!(phase, 0 | 1)
-            && self.try_stage_entity_batches(&batches, &sprite_batches)?;
+            && dynamic
+            && self.try_stage_entity_batches(&batches, &sprite_batches, compact)?;
         if !staged {
             draw_pixels(
                 &mut self.device,
-                &self.hud.atlas,
+                self.hud.atlas.entity_or_main(compact),
                 &self.lightmap,
                 &batches,
                 false,
@@ -1056,12 +1139,18 @@ impl Renderer {
     }
     /// Preserve the existing HUD-page batches, then sprite batches, then foil.
     /// The experiment changes upload granularity, not material/alpha draw order.
-    fn try_stage_entity_batches(&mut self, batches: &[Batch], sprites: &[Batch]) -> Result<bool> {
+    fn try_stage_entity_batches(
+        &mut self,
+        batches: &[Batch],
+        sprites: &[Batch],
+        compact: bool,
+    ) -> Result<bool> {
         if batches.is_empty() && sprites.is_empty() {
             return Ok(false);
         }
-        self.hud.atlas.prepare(&mut self.device)?;
-        let textures = self.hud.atlas.textures();
+        let pixels = self.hud.atlas.entity_or_main(compact);
+        pixels.prepare(&mut self.device)?;
+        let textures = pixels.textures();
         let drawable = batches.iter().filter(|b| textures[b.page].is_some());
         let count = drawable
             .clone()
@@ -1174,7 +1263,13 @@ impl Renderer {
                 )
             });
         }
-        draw_pixels(&mut self.device, panorama, &self.lightmap, &batches, false)
+        draw_pixels(
+            &mut self.device,
+            panorama.view(),
+            &self.lightmap,
+            &batches,
+            false,
+        )
     }
     fn draw_gui(&mut self, frame: &Frame) -> Result<()> {
         let mut phases = crate::spans::laps();
@@ -1217,7 +1312,7 @@ impl Renderer {
         }
         draw_pixels(
             &mut self.device,
-            &self.hud.atlas,
+            self.hud.atlas.view(),
             &self.lightmap,
             &overlays,
             false,
@@ -1617,7 +1712,7 @@ impl Renderer {
         }
         draw_pixels(
             &mut self.device,
-            &self.hud.atlas,
+            self.hud.atlas.view(),
             &self.lightmap,
             &batches,
             false,
@@ -1836,7 +1931,7 @@ impl Renderer {
         }
         draw_pixels(
             &mut self.device,
-            &self.hud.atlas,
+            self.hud.atlas.view(),
             &self.lightmap,
             &batches,
             false,

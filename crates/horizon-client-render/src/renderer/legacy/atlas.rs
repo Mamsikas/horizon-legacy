@@ -1,4 +1,5 @@
 use super::*;
+use std::cell::RefCell;
 
 pub(super) struct Sprites {
     pub layout: Arc<dx::AtlasSet>,
@@ -291,17 +292,92 @@ fn sprite_mips(pixels: &[u8], settings: crate::mipmap::Settings) -> Vec<crate::m
 pub(super) struct Pixels {
     pub width: u32,
     pub height: u32,
-    side: u32,
-    state: std::cell::RefCell<PixelCache>,
-}
-struct PixelCache {
     image: dx::TileImage,
+    main: RefCell<PixelPages>,
+    entities: Option<RefCell<PixelPages>>,
+}
+struct PixelPages {
+    side: u32,
+    single_page: bool,
     locations: Vec<Option<(usize, u32, u32)>>,
     pages: Vec<Option<dx::Texture>>,
     slots: u32,
     pending: Vec<usize>,
     dirty: Vec<bool>,
 }
+
+/// Both layouts use the same virtual texels and clipping rules. Physical UVs
+/// belong to the layout they were built for.
+#[derive(Clone, Copy)]
+pub(super) struct PixelView<'a> {
+    image: &'a dx::TileImage,
+    layout: &'a RefCell<PixelPages>,
+}
+
+const ENTITY_PAGE_SIDE: u32 = 2048;
+pub(super) const ENTITY_PAGE_BYTES: u64 = ENTITY_PAGE_SIDE as u64 * ENTITY_PAGE_SIDE as u64 * 4;
+
+impl PixelPages {
+    fn new(image: &dx::TileImage, side: u32, single_page: bool) -> Result<Self> {
+        let mut locations = Vec::new();
+        let mut dirty = Vec::new();
+        let mut pending = Vec::new();
+        let mut pages = Vec::new();
+        locations.try_reserve_exact(image.len())?;
+        dirty.try_reserve_exact(image.len())?;
+        locations.resize(image.len(), None);
+        dirty.resize(image.len(), false);
+        if single_page {
+            pending.try_reserve_exact(((side / image.cell()).pow(2) as usize).min(image.len()))?;
+            pages.try_reserve_exact(1)?;
+        }
+        Ok(Self {
+            side,
+            single_page,
+            locations,
+            pages,
+            slots: 0,
+            pending,
+            dirty,
+        })
+    }
+
+    fn queue(&mut self, id: usize) {
+        if self.locations[id].is_some() && !self.dirty[id] {
+            self.pending.push(id);
+            self.dirty[id] = true;
+        }
+    }
+
+    fn place(&mut self, image: &dx::TileImage, id: usize) -> Option<(usize, u32, u32)> {
+        if let Some(location) = self.locations[id] {
+            return Some(location);
+        }
+        let location = image.placement(self.slots, self.side)?;
+        if self.single_page && location.0 != 0 {
+            return None;
+        }
+        self.slots += 1;
+        if location.0 == self.pages.len() {
+            self.pages.push(None);
+        }
+        self.locations[id] = Some(location);
+        self.queue(id);
+        Some(location)
+    }
+
+    fn bytes(&self) -> u64 {
+        self.pages.iter().flatten().map(|p| p.bytes).sum()
+    }
+
+    fn cpu_bytes(&self) -> usize {
+        self.locations.capacity() * size_of::<Option<(usize, u32, u32)>>()
+            + self.pending.capacity() * size_of::<usize>()
+            + self.dirty.capacity()
+            + self.pages.capacity() * size_of::<Option<dx::Texture>>()
+    }
+}
+
 impl Pixels {
     pub fn new(
         device: &mut dx::Device,
@@ -330,60 +406,128 @@ impl Pixels {
         if side < image.cell() {
             return Err("D3D9 caps/budget cannot hold a GUI tile".into());
         }
-        let len = image.len();
+        let main = RefCell::new(PixelPages::new(&image, side, false)?);
         Ok(Self {
             width,
             height,
-            side,
-            state: std::cell::RefCell::new(PixelCache {
-                image,
-                locations: vec![None; len],
-                pages: Vec::new(),
-                slots: 0,
-                pending: Vec::new(),
-                dirty: vec![false; len],
-            }),
+            image,
+            main,
+            entities: None,
         })
     }
+
+    pub fn view(&self) -> PixelView<'_> {
+        PixelView {
+            image: &self.image,
+            layout: &self.main,
+        }
+    }
+
+    pub fn entity_view(&self) -> Option<PixelView<'_>> {
+        Some(PixelView {
+            image: &self.image,
+            layout: self.entities.as_ref()?,
+        })
+    }
+
+    pub fn entity_or_main(&self, compact: bool) -> PixelView<'_> {
+        if compact && let Some(view) = self.entity_view() {
+            return view;
+        }
+        self.view()
+    }
+
+    pub fn supports_entity_page(&self, device: &dx::Device) -> bool {
+        self.main.borrow().side < ENTITY_PAGE_SIDE && device.caps.max_texture >= ENTITY_PAGE_SIDE
+    }
+
+    pub fn enable_entity_page(&mut self) -> Result<()> {
+        self.entities = Some(RefCell::new(PixelPages::new(
+            &self.image,
+            ENTITY_PAGE_SIDE,
+            true,
+        )?));
+        Ok(())
+    }
+
+    pub fn drop_entity_page(&mut self) {
+        self.entities = None;
+    }
+
+    pub fn entity_page_tiles(&self) -> u32 {
+        self.entities.as_ref().map_or(0, |page| page.borrow().slots)
+    }
+
     pub fn bytes(&self) -> u64 {
-        self.state
-            .borrow()
-            .pages
-            .iter()
-            .flatten()
-            .map(|p| p.bytes)
-            .sum()
+        self.main.borrow().bytes()
+            + self
+                .entities
+                .as_ref()
+                .map_or(0, |pages| pages.borrow().bytes())
     }
+
     pub fn cpu_bytes(&self) -> usize {
-        let s = self.state.borrow();
-        s.image.bytes()
-            + s.locations.capacity() * size_of::<Option<(usize, u32, u32)>>()
-            + s.pending.capacity() * size_of::<usize>()
-            + s.dirty.capacity()
+        self.image.bytes()
+            + self.main.borrow().cpu_bytes()
+            + self
+                .entities
+                .as_ref()
+                .map_or(0, |pages| pages.borrow().cpu_bytes())
     }
+
     pub fn textures(&self) -> std::cell::Ref<'_, [Option<dx::Texture>]> {
-        std::cell::Ref::map(self.state.borrow(), |s| s.pages.as_slice())
+        self.view().textures()
     }
+
     pub fn prepare(&self, device: &mut dx::Device) -> Result<()> {
-        let mut s = self.state.borrow_mut();
+        self.view().prepare(device)
+    }
+
+    pub fn patch(&mut self, x: u32, y: u32, width: u32, height: u32, rgba: &[u8]) -> Result<()> {
+        for id in self.image.patch(x, y, width, height, rgba)? {
+            self.main.get_mut().queue(id);
+            if let Some(pages) = &mut self.entities {
+                pages.get_mut().queue(id);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.image.presence_revision()
+    }
+
+    pub fn polygon(&self, input: &[dx::Vertex], emit: impl FnMut(usize, &[dx::Vertex])) {
+        let placed = self.view().polygon(input, emit);
+        debug_assert!(placed, "the main atlas can allocate another page");
+    }
+}
+
+impl<'a> PixelView<'a> {
+    pub fn textures(self) -> std::cell::Ref<'a, [Option<dx::Texture>]> {
+        std::cell::Ref::map(self.layout.borrow(), |s| s.pages.as_slice())
+    }
+
+    pub fn prepare(self, device: &mut dx::Device) -> Result<()> {
+        let mut s = self.layout.borrow_mut();
         if s.pending.is_empty() {
             return Ok(());
         }
         let mut scratch = Vec::new();
+        let side = s.side;
         // Remove only after all writes succeed; device-loss recovery may retry.
         for i in 0..s.pending.len() {
             let id = s.pending[i];
             let (page, x, y) = s.locations[id].unwrap();
             if s.pages[page].is_none() {
-                s.pages[page] = Some(device.texture(
-                    self.side,
-                    self.side,
-                    1,
-                    &vec![0; (self.side * self.side * 4) as usize],
-                )?);
+                let bytes = (side * side * 4) as usize;
+                let mut blank = Vec::new();
+                blank.try_reserve_exact(bytes)?;
+                blank.resize(bytes, 0);
+                s.pages[page] = Some(device.texture(side, side, 1, &blank)?);
             }
-            s.image.decode(id, &mut scratch)?;
-            let cell = s.image.cell();
+            self.image.decode(id, &mut scratch)?;
+            let cell = self.image.cell();
             device.patch(
                 s.pages[page].as_ref().unwrap(),
                 0,
@@ -399,33 +543,15 @@ impl Pixels {
         }
         Ok(())
     }
-    pub fn patch(
-        &mut self,
-        _device: &mut dx::Device,
-        x: u32,
-        y: u32,
-        width: u32,
-        height: u32,
-        rgba: &[u8],
-    ) -> Result<()> {
-        let s = self.state.get_mut();
-        for id in s.image.patch(x, y, width, height, rgba)? {
-            if s.locations[id].is_some() && !s.dirty[id] {
-                s.dirty[id] = true;
-                s.pending.push(id);
-            }
-        }
-        Ok(())
-    }
-    pub fn revision(&self) -> u64 {
-        self.state.borrow().image.presence_revision()
-    }
-    pub fn polygon(&self, input: &[dx::Vertex], mut emit: impl FnMut(usize, &[dx::Vertex])) {
+    /// False means the bounded layout ran out of slots. Discard all output for
+    /// that pass and remap through the main layout before submitting any draws.
+    pub fn polygon(self, input: &[dx::Vertex], mut emit: impl FnMut(usize, &[dx::Vertex])) -> bool {
         if input.is_empty() {
-            return;
+            return true;
         }
-        let mut s = self.state.borrow_mut();
-        let tile = s.image.tile;
+        let mut s = self.layout.borrow_mut();
+        let image = self.image;
+        let tile = image.tile;
         let min = std::array::from_fn::<_, 2, _>(|k| {
             input
                 .iter()
@@ -440,7 +566,7 @@ impl Pixels {
                 .fold(f32::NEG_INFINITY, f32::max)
                 .clamp(0.0, 1.0)
         });
-        let axis = [self.width, self.height];
+        let axis = [image.width, image.height];
         let start = std::array::from_fn::<_, 2, _>(|k| {
             ((min[k] * axis[k] as f32) as u32 / tile).min(axis[k].div_ceil(tile) - 1)
         });
@@ -451,24 +577,12 @@ impl Pixels {
         });
         for y in start[1]..=end[1] {
             for x in start[0]..=end[0] {
-                let id = (y * s.image.columns + x) as usize;
-                if !s.image.present(id) {
+                let id = (y * image.columns + x) as usize;
+                if !image.present(id) {
                     continue;
                 }
-                let (page, ox, oy) = match s.locations[id] {
-                    Some(location) => location,
-                    None => {
-                        let slot = s.slots;
-                        s.slots += 1;
-                        let location = s.image.placement(slot, self.side).unwrap();
-                        if location.0 == s.pages.len() {
-                            s.pages.push(None);
-                        }
-                        s.locations[id] = Some(location);
-                        s.pending.push(id);
-                        s.dirty[id] = true;
-                        location
-                    }
+                let Some((page, ox, oy)) = s.place(image, id) else {
+                    return false;
                 };
                 let mut polygon: smallvec::SmallVec<[dx::Vertex; 8]> = if start == end {
                     smallvec::SmallVec::from_slice(input)
@@ -476,10 +590,10 @@ impl Pixels {
                     clip_rect(
                         input.to_vec(),
                         [
-                            x as f32 * tile as f32 / self.width as f32,
-                            y as f32 * tile as f32 / self.height as f32,
-                            ((x + 1) * tile) as f32 / self.width as f32,
-                            ((y + 1) * tile) as f32 / self.height as f32,
+                            x as f32 * tile as f32 / image.width as f32,
+                            y as f32 * tile as f32 / image.height as f32,
+                            ((x + 1) * tile) as f32 / image.width as f32,
+                            ((y + 1) * tile) as f32 / image.height as f32,
                         ],
                     )
                     .into_iter()
@@ -490,21 +604,90 @@ impl Pixels {
                 }
                 for v in &mut polygon {
                     v.uv = [
-                        (v.uv[0] * self.width as f32 - x as f32 * tile as f32
+                        (v.uv[0] * image.width as f32 - x as f32 * tile as f32
                             + ox as f32
-                            + s.image.padding as f32)
-                            / self.side as f32,
-                        (v.uv[1] * self.height as f32 - y as f32 * tile as f32
+                            + image.padding as f32)
+                            / s.side as f32,
+                        (v.uv[1] * image.height as f32 - y as f32 * tile as f32
                             + oy as f32
-                            + s.image.padding as f32)
-                            / self.side as f32,
+                            + image.padding as f32)
+                            / s.side as f32,
                     ];
                 }
                 emit(page, &polygon);
             }
         }
+        true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compact_page_keeps_seam_texels_and_falls_back_when_full() {
+        // Nine padded 8px tiles fit in the compact page and one in each
+        // ordinary page. The quad covers the seam between the first two.
+        let image = dx::TileImage::new(&[255; 128 * 8 * 4], 128, 8, 8, 1).unwrap();
+        let mut pixels = Pixels {
+            width: 128,
+            height: 8,
+            main: RefCell::new(PixelPages::new(&image, 16, false).unwrap()),
+            entities: Some(RefCell::new(PixelPages::new(&image, 32, true).unwrap())),
+            image,
+        };
+        let quad = [[6.0, 2.0], [10.0, 2.0], [10.0, 6.0], [6.0, 6.0]].map(|[x, y]| dx::Vertex {
+            pos: [x, y, 0.0],
+            uv: [x / 128.0, y / 8.0],
+            color: 0xffffffff,
+            light: [0.5; 2],
+        });
+        for (view, side, pages, offsets) in [
+            (pixels.view(), 16.0, [0, 1], [0.0, 0.0]),
+            (pixels.entity_view().unwrap(), 32.0, [0, 0], [0.0, 10.0]),
+        ] {
+            let mut at = 0;
+            assert!(view.polygon(&quad, |page, poly| {
+                assert_eq!(page, pages[at]);
+                assert_eq!(poly.len(), 4);
+                for v in poly {
+                    assert_eq!(
+                        v.uv[0] * side - offsets[at],
+                        v.pos[0] - (8 * at) as f32 + 1.0
+                    );
+                    assert_eq!(v.uv[1] * side, v.pos[1] + 1.0);
+                    assert_eq!(v.light, [0.5; 2]);
+                    assert_eq!(v.color, 0xffffffff);
+                }
+                at += 1;
+            }));
+            assert_eq!(at, 2);
+        }
+        // Simulate completion of those uploads, then change texels across the
+        // gutter boundary. Both layouts must queue both existing tiles.
+        for layout in [&mut pixels.main, pixels.entities.as_mut().unwrap()] {
+            let layout = layout.get_mut();
+            layout.pending.clear();
+            layout.dirty.fill(false);
+        }
+        pixels.patch(7, 3, 2, 1, &[23; 8]).unwrap();
+        assert_eq!(pixels.main.borrow().pending, [0, 1]);
+        assert_eq!(pixels.entities.as_ref().unwrap().borrow().pending, [0, 1]);
+
+        let mut full = quad;
+        full[0].uv[0] = 0.0;
+        full[3].uv[0] = 0.0;
+        full[1].uv[0] = 80.0 / 128.0;
+        full[2].uv[0] = 80.0 / 128.0;
+        assert!(!pixels.entity_view().unwrap().polygon(&full, |_, _| {}));
+        assert_eq!(pixels.entity_page_tiles(), 9);
+        let mut pages = Vec::new();
+        assert!(pixels.view().polygon(&full, |page, _| pages.push(page)));
+        assert_eq!(pages, (0..10).collect::<Vec<_>>());
+    }
+}
+
 fn blit(dest: &mut [u8], stride: u32, x: u32, y: u32, width: u32, height: u32, src: &[u8]) {
     for row in 0..height {
         let start = ((y + row) * stride + x) as usize * 4;

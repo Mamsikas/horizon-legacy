@@ -109,6 +109,8 @@ pub struct Renderer {
     entity_stage_vertices: Vec<dx::Vertex>,
     entity_stage_stats: [u64; 2],
     entity_stage_warned: bool,
+    entity_page_pending: bool,
+    entity_ranges: [u64; 5],
     static_entities: frame::static_entities::Cache,
     gui_batches: frame::GuiBatches,
     gui_cache: frame::gui_cache::GuiCache,
@@ -246,6 +248,7 @@ impl Renderer {
         } else {
             0
         };
+        let entity_page_pending = entity_staging && atlas.supports_entity_page(&device);
         if dx::development_build() {
             log::info!(
                 "D3D9 entity quad staging enabled={entity_staging} software_vertices={} capacity_vertices={}",
@@ -346,6 +349,8 @@ impl Renderer {
             entity_stage_vertices,
             entity_stage_stats: [0; 2],
             entity_stage_warned: false,
+            entity_page_pending,
+            entity_ranges: [0; 5],
             static_entities: frame::static_entities::Cache::new(static_entity_budget),
             gui_batches: frame::GuiBatches::new(dx::DrawState::default()),
             gui_cache: frame::gui_cache::GuiCache::default(),
