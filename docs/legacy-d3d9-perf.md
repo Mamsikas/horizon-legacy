@@ -426,3 +426,36 @@ binding coherence across buffer/layout changes, failed calls, invalidation and
 disabled mode), Clippy with warnings denied on Linux and Win7 x64, diagnostics-off
 Win7 x64 compile, module formatting, repository hygiene and 15 import-policy
 tests. Native package audits and actual GMA/HD4570 smoke are separate checks.
+
+## Package validation for 27cfa36de1
+
+Executable source: `27cfa36de122bcee9b97a2cb7e5b168838466fbd`, following the
+separate rollback `e21b18494f984bc51319dd40a27c7c6f0741319e`. Both jobs of
+[Win7 run 44878880554](https://github.com/Mamsikas/horizon-legacy/actions/runs/44878880554)
+passed full build-std/ThinLTO client compilation, Win7 client import audit, COM ABI
+probe, 28 normal D3D9 CPU tests and 15 import-policy tests.
+
+| Package | Artifact | GitHub uploaded-ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [14697666951](https://github.com/Mamsikas/horizon-legacy/actions/runs/44878880554/artifacts/14697666951) | `d9bda76fa5cd6b5e91f3df3f0a871ebc94801d08c130ab1e5797171e3088b67c` |
+| x86 | [14698311086](https://github.com/Mamsikas/horizon-legacy/actions/runs/44878880554/artifacts/14698311086) | `92af47b427243fc091b4e7f72cdf21b2f9b9d1c70d850f3ea6fa31ea9bd20ac3` |
+
+API digests match the CI upload logs; no independent local ZIP rehash was
+performed because file-storage access returned HTTP 403 in the previous
+iteration. Retain the package's build-info and internal SHA256SUMS.
+
+Full local `pr_ready --quick --base e21b18494f984bc51319dd40a27c7c6f0741319e`
+finished on the unchanged candidate worktree in 3m18s: 28 D3D9 tests, public tree,
+repository hygiene, layers, addresses, export lists and test stand-ins passed.
+The broad gate is **not green**: the same inherited standalone-format/Clippy
+issues and Python 1985 run / 4 failures / 63 errors / 13 skips remain. No upstream
+code/tests were changed to hide them. No prepared-data tests or GPU hardware
+smoke were run here. Actual GMA time/image/Reset and HD4570 acceptance is pending.
+
+The owner's ordinary standing and full fixed walk, with default dev logging and
+the same settings, are sufficient for the next diagnostic comparison. No hotkey,
+new runtime variable, extra A recording solely for a toggle, or renewed logging
+calibration is required. If a useful time reduction appears, repeat it before
+acceptance. If stream setters fall without a wall-time gain, investigate the
+remaining conversion and draw/SWVP/pixel costs with a controlled standalone
+benchmark rather than treating fewer calls as proof of higher FPS.
