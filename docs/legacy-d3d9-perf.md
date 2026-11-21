@@ -545,3 +545,106 @@ Use this combined dev build for the next standing and walk recordings. Both
 paths are selected automatically on software VP. The existing reference
 and individual captures supply comparison data. A GMA timing, image and
 lifecycle result for the combined build and an HD4570 smoke remain pending.
+
+## Combined GMA measurements and the standing slowdown, 2026-11-21
+
+The owner supplied `profile-20261121-090522Z.hzperf` (standing),
+`profile-20261121-090813Z.hzperf` (walk) and `latest (14).log`. The log identifies
+clean `a2766b3517bebd7147e11623cdefbec4ee0a46de`, GMA3150 Chell 1.8b HAL SWVP,
+1024×600 RGB565 and both dev policies enabled. Complete diagnostic windows cover
+4,202 standing frames and 1,698 walk frames without an abort or recorded COM
+failure. These new captures have the client side only.
+
+| Scene | Frames / seconds | FPS | Frame p50 / p95 / p99 buckets (ms) | Slowest 1% mean (ms) | DX9 wall (ms/frame) |
+| --- | ---: | ---: | --- | ---: | ---: |
+| Standing | 4,454 / 121.416 | 36.684 | [25,30) / [30,40) / [40,50) | 67.294 | 22.258 |
+| Walk | 1,775 / 152.048 | 11.674 | [75,100) / [100,150) / [150,250) | 179.664 | 60.824 |
+
+Walk dynamic draws average 116.82 with 8,461 requested vertices per frame.
+Actual VB locks and stream binds fall to 4.32 and 1.13 per frame. Both reductions
+appear together in the combined build. Native dynamic entity time is 13.437 ms
+per frame, close to the staging-only result of 13.433 ms. Compared with the
+logged reference, FPS is 3.2% higher and the slowest 1% mean is 19.0% lower in
+this recording. The 115–120 s route interval still averages 45.11 ms for the
+renderer `entities` span (54.56 ms on the logged reference). Its dynamic world
+subspans include 12.49 ms of conversion and 23.93 ms of submit wall time. These
+samples support keeping both experiments together on `dx9-dev` for now.
+Repeatability, image/lifecycle validation and HD4570 smoke remain open.
+
+### Standing
+
+| Metric | 30–85 s | 90–110 s |
+| --- | ---: | ---: |
+| FPS | 31.95 | 43.40 |
+| Renderer wall (ms/frame) | 25.66 | 18.73 |
+| Solid / translucent wall (ms/frame) | 11.73 / 9.35 | 8.35 / 6.82 |
+| Present wall (ms/frame) | 0.69 | 0.51 |
+| Process CPU (logical cores) | 1.89 | 1.26 |
+| System CPU (logical cores) | 1.99 | 1.36 |
+| Render thread CPU (% of one logical CPU) | 80.8 | 97.8 |
+
+The two terrain passes send 43 and 26 draws with 24,624 and 20,108 summed
+`NumVertices` per frame throughout all 23 complete windows. Their per-frame
+COM counter signatures agree. The solid plan is reused, there are no terrain
+buffer uploads, and entity staging processes zero groups. The slowdown adds
+about 6.9 ms of renderer wall time per frame while render-thread CPU per unit
+wall time falls. Independent CPU windows put the increase on other Horizon
+process threads at roughly 0.8 of a logical CPU. That is an estimate on the
+N455's one physical core with SMT. DX9 spans include driver and scheduling time.
+
+A similar minute-long saturation interval occurred on the `fc813ed9fe`
+reference with `HORIZON_D3D9_LOG_STATS=0`. The baseline dev log also has a 29 FPS
+frozen standing window before the recording starts. Across the reference and
+three candidates, the sustained episode starts roughly 44–49 seconds after the
+freeze message in recordings that contain it. These observations rule out a
+requirement for the new submission policies, DX9 logging, or active capture
+for the slowdowns. The identity of the busy thread and the trigger are open.
+DX9 runtime or driver work on another thread is still possible.
+
+The client capture also shows separate 49–58 ms `control` spikes near its
+10-second memory snapshots. `poll_profile` collects the memory report and can
+wait for the integrated server. This upstream capture overhead accounts for
+individual spikes. For the sustained slowdown, existing Windows captures have
+no per-thread CPU samples, server spans or GPU timestamps. A single standing
+trace with both `/profiler` sides and external process/thread CPU deltas can
+correlate the additional work with the server and renderer on the same EXE.
+No rendering or game behavior is changed for this diagnosis.
+
+## Static block-entity buffer experiment
+
+On the combined-build route, complete log windows near 115–125 s put dynamic
+entities at 29–35 ms/frame and static block entities at 8–9.3 ms/frame. The
+static pass repeatedly uploads up to 302 KiB of converted vertices per frame.
+Dynamic draws are still small and texture-heavy, with 341 draws and 340 actual
+texture binds per frame in one heavy window. Static reuse is a separate test
+that can save conversion and uploads without regrouping those blended draws.
+
+The dev SWVP path retains one immutable system-memory VB for a supported
+visible section. It runs the same entity conversion and atlas clipping on a
+cache miss, and keeps the original ordered page/state ranges. On a hit it
+uses the current transform, lightmap, filtering and fog. The first trial covers
+plain block-entity quads (low overlay bits zero). Sections with other overlays
+take the existing transient path. The same INDEX16 quad buffer is reused and
+each draw's `NumVertices` stays as tight as before. Static cache hits can incur
+a stream bind per section where the transient path shares a VB across sections.
+
+The existing published catalog revision gates pruning of unloaded or changed
+sections. Each entry also checks its section revision. Cache storage belongs to
+the renderer and is cleared on world clear, device Reset, atlas tile-presence
+changes and Nether lighting mode changes. Pack reload constructs a new
+renderer. Current atlas pixels and lightmap updates still reach existing
+ranges. Allocation failure or exhausted budget falls back to existing draws.
+The cache holds at most 256 entries, with vertex and range payload bounded by
+the lesser of 8 MiB and one eighth of the existing mesh budget. Cache uploads
+are limited to four section builds and 512 KiB per frame. Builds reuse the
+existing entity staging scratch. Hits keep no CPU vertex copy besides D3D9's
+system-memory VB. The hardware VS2 path continues to use the previous renderer.
+
+Compare the next route with `a2766b3517`. Use `StaticEntities` draw, lock, bind
+and byte counters, `d3d9_static_entity_build` and `d3d9_static_entity_submit`
+spans, and the hit/miss/fallback totals in `D3D9 static entity cache`. Track
+first encounters and stationary reuse, plus changed models, block lighting,
+unload/reload, resource pack and resize/Reset. Capture standing on the same
+build with both profiler sides and the separate thread CPU utility. The standing
+probe can be analyzed independently of the static experiment because the
+reference standing scene has no material static-entity draws.
