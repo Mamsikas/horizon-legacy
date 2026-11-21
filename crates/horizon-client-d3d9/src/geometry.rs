@@ -9,6 +9,29 @@ pub struct Vertex {
     pub light: [f32; 2],
 }
 
+/// The shared quad IB starts at zero; its base must include the ring offset,
+/// while software VP sees only the drawn subrange, not the whole staged stream.
+#[cfg(any(windows, test))]
+pub(crate) fn staged_quad_range(
+    first: u32,
+    count: u32,
+    range: std::ops::Range<u32>,
+) -> Option<(i32, u32)> {
+    if count % 4 != 0
+        || range.start > range.end
+        || range.end > count
+        || range.start % 4 != 0
+        || range.end % 4 != 0
+    {
+        return None;
+    }
+    let end = first.checked_add(range.end)?;
+    if end > i32::MAX as u32 {
+        return None;
+    }
+    Some(((first + range.start) as i32, range.end - range.start))
+}
+
 pub struct MeshData {
     bytes: Vec<u8>,
     vertices: usize,
@@ -279,6 +302,19 @@ pub fn fog_interval(environment: (f32, f32), distance: (f32, f32)) -> (f32, f32)
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn staged_quads_keep_tight_bounds_at_a_non_quad_aligned_ring_offset() {
+        // A preceding triangle/line upload can leave a non-quad-aligned base.
+        assert_eq!(super::staged_quad_range(5, 20, 4..12), Some((9, 8)));
+        assert_eq!(super::staged_quad_range(5, 20, 20..20), Some((25, 0)));
+        assert_eq!(super::staged_quad_range(5, 20, 4..24), None);
+        assert_eq!(super::staged_quad_range(5, 20, 3..12), None);
+        assert_eq!(
+            super::staged_quad_range(5, 20, std::ops::Range { start: 12, end: 4 }),
+            None
+        );
+        assert_eq!(super::staged_quad_range(u32::MAX, 4, 0..4), None);
+    }
     use super::*;
     #[test]
     fn ordered_groups_preserve_quad_order_and_tight_per_draw_vertex_bounds() {

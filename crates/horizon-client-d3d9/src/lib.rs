@@ -1,5 +1,11 @@
 //! Safe, render-thread-only Direct3D 9 HAL ownership.
 #![deny(unsafe_op_in_unsafe_fn)]
+#[cfg(any(all(windows, feature = "dev-diagnostics"), test))]
+mod dev_control;
+
+pub const fn development_build() -> bool {
+    cfg!(feature = "dev-diagnostics")
+}
 // Pass markers compile to empty inline methods in ordinary Windows builds.
 #[cfg(any(windows, all(test, feature = "submit-profile")))]
 mod submit_profile;

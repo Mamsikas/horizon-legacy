@@ -48,7 +48,7 @@ impl Renderer {
     pub fn gpu_memory_by_label(&self) -> Option<(u64, u64, Vec<(String, u64)>)> {
         None
     }
-    pub fn cpu_census(&self) -> [(&'static str, usize); 5] {
+    pub fn cpu_census(&self) -> [(&'static str, usize); 6] {
         [
             (
                 "D3D9 section metadata",
@@ -81,6 +81,10 @@ impl Renderer {
                     + self.gui_depth.bytes(),
             ),
             ("D3D9 retained CPU geometry", self.mesh_bytes as usize),
+            (
+                "D3D9 entity staging scratch",
+                self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>(),
+            ),
             ("D3D9 animation cache/scratch", self.sprites.cpu_bytes()),
             (
                 "D3D9 index/mesh scratch",

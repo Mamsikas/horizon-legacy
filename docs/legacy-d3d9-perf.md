@@ -217,3 +217,74 @@ Next bounded experiment: P1-B1 upload granularity for dynamic entities, before
 the separate persistent-static-cache change. Preserve existing material/alpha
 order, draw count and tight NumVertices; reduce ordinary base-geometry VB locks.
 Keep logging mode equal between baseline/candidate. No FPS gain is accepted yet.
+
+## Dynamic entity staging experiment (dev default, hardware result pending)
+
+The first candidate changes only upload granularity for `draw_entities` phases
+0/1 on software VP. Existing per-quad conversion, HUD-page batches followed by
+sprite batches, state/texture draws and final glint order stay intact. It copies
+already converted base vertices into one scratch vector, calls the existing
+DISCARD/NOOVERWRITE ring once, then draws each original batch using a checked
+base offset and tight `MinIndex=0` / `NumVertices=batch length`. The shared INDEX16
+quad IB and full 32-byte FFP vertices are unchanged. It neither expands quads to
+six vertices nor merges material draws. Glint, static block entities (phase 2),
+hand, effects and hardware VS2 retain the previous submission path.
+
+Only dev SWVP starts with staging enabled (`B_staged`). The owner requested dev
+defaults instead of additional experiment environment variables. Focused
+`Ctrl+Shift+F12` switches between `B_staged` and `A_baseline` at frame boundaries,
+without restart or saving settings. The mode is logged; an existing native
+counter window is emitted before switching, and the next five-second window
+starts afresh. Chat captures contain corresponding `d3d9_entity_mode_*` parent
+spans and `d3d9_dynamic_entity_convert` / `d3d9_dynamic_entity_submit` children.
+The latter submit span includes consolidation, buffer upload, draws and glint;
+it is elapsed wall time, not pure CPU or GPU time. Dev/production selection uses
+the existing `legacy-d3d9-dev` feature; normal packages do not select this path.
+
+The scratch reservation is bounded by `Device::max_vertices()` (at most 65532
+vertices / 2097024 payload bytes), accounted in the renderer CPU census. There
+is one extra CPU copy and no additional native VB, immutable shadow or geometry
+cache. A whole phase exceeding the limit or a failed reservation uses baseline
+unchanged. A failed stage before any draw falls back; device-lost errors propagate
+to the existing lifecycle. Staged tokens hold only the owner/generation/range,
+no DEFAULT COM resource. Another upload or Reset invalidates them; they are
+consumed before glint uploads. No cross-frame geometry survives to require pose,
+lighting, resource-pack or section-revision invalidation.
+
+Expected result to test, not an accepted gain: fewer DynamicEntities VB locks at
+the same route locations, with unchanged draw count, sum NumVertices, triangles,
+payload bytes and image. Base geometry needs at most one lock per eligible
+early/late call; glint/world-primitive uploads and whole-phase fallbacks remain,
+so total DynamicEntities locks need not equal two. Texture binds and SWVP work
+are deliberately preserved. Extra copying, larger DISCARD reservations or driver
+behavior can make this slower. Static entities and solid terrain are separate
+experiments and have not been optimized by this patch.
+
+Use the same new dev EXE for both live modes with logs on. Record the warmed-up
+fixed route separately in B/A/A/B where practical, returning to its same start;
+do not repeat the old log-on/off calibration. Check the nearly entity-free
+standing scene for regression, plus skins, glint/armour/items, alpha/depth,
+resource/world changes, resize and minimize/restore. Preserve the `.hzperf`
+captures and the shared log. GMA, HD4570, visual/Reset and hardware pacing
+acceptance remains pending. Work is committed directly to `dx9-dev` at the
+owner's request; no integration PR to `main` is part of this iteration.
+
+Changed implementation files: D3D9 `device.rs` / `geometry.rs` add checked staged
+quad submission; `dev_control.rs`, `lib.rs` and its Cargo feature list provide
+the focused dev hotkey and dev-build selection; legacy `frame.rs` / `legacy.rs` add
+the bounded stream, fallback, mode labels and wall spans; `legacy/compat.rs`
+accounts for its CPU storage. Packaging `TESTING.txt` describes the live pair.
+No shaders, game inputs, settings files or upstream preparation change. The
+existing Win7 package workflow also runs on pushes to `dx9-dev`, so direct dev
+commits produce both packages without a PR. Its build/audit steps are unchanged.
+
+Local candidate checks: 31 D3D9 CPU unit tests passed (including ring-offset
+range validation and one-toggle-per-key-press behavior); D3D9 Clippy with warnings
+denied passed on Linux and Win7 x64 with diagnostics, as did a Win7 x64
+diagnostics-off compile. The Windows dev renderer compiles. Workspace module
+formatting, 15 import-policy tests, layer and public-tree checks passed. These
+checks establish neither a driver speedup nor the visual/Reset cases above.
+An unfiltered renderer/dependency Clippy run stops on the inherited
+`unnecessary_lazy_evaluations` in
+`horizon-world/src/worldgen/structure/piece_limited.rs:534`; that file is
+byte-identical to the tested baseline and is outside this renderer patch.

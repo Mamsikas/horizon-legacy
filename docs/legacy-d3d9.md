@@ -114,8 +114,10 @@ lighting inputs and player choices. Deep performance work is the next task (TZ 3
   or frozen frames. Native anisotropy is capped by the driver. RGSS remains a linear
   approximation. Do not silently rewrite unsupported settings or pretend they work.
 - Keep normal logs quiet: startup identity/capability and actionable warnings only.
-  Periodic renderer diagnostics require `HORIZON_D3D9_LOG_STATS=1`; per-frame
-  profiler spans remain.
+  Dev packages enable periodic renderer diagnostics by default; the existing
+  `HORIZON_D3D9_LOG_STATS=0/1` override remains. Per-frame profiler spans remain.
+  The dev SWVP entity-upload experiment and live baseline switch are described
+  in [legacy-d3d9-perf.md](legacy-d3d9-perf.md); its hardware gain is not accepted.
 
 ## Supported scope and explicit gaps
 
