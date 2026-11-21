@@ -51,28 +51,23 @@ the first diagnostic-overhead pair has already been collected.
 Ordinary packages keep periodic logs off; HORIZON_D3D9_LOG_STATS=1 enables their
 existing coarse stats. GPU timings are not instrumented by the P0a counters.
 
-The a974320ab6 entity-upload experiment reduced VB locks on GMA but did not
-establish a stable renderer/FPS gain. Its consolidation copy, scratch reservation
-and unhelpful live hotkey have been removed. Per-batch uploads are restored;
-dynamic entity conversion/submission profiler spans remain for diagnosis.
+The dev software VP package combines the two measured changes. Dynamic entity
+base draws share a transient upload per eligible early or late phase. Identical
+stream-0 bindings reuse the current VB. The startup log says
+"D3D9 entity quad staging enabled=true" and "D3D9 stream0_cache enabled=true".
+Both strategies are selected at startup from the dev feature and software VP caps.
 
-Compare builds by the source SHA in build-info.txt and the startup log. Restarting
-between reference/candidate builds is valid: a same-EXE switch is not required.
 Use the same full previous walk (~150 seconds), standing position, warmup, window
-and graphics settings, with diagnostics enabled. Keep each chat profile and its
-latest.log before restarting. Previous fc813ed baseline captures remain useful;
-small differences need repeated evidence before claiming a gain.
+and graphics settings, with default dev logging. Preserve each chat profile and
+its latest.log. SHA identifies each build. Restarting between builds is valid.
+Use the existing captures for fc813ed9fe (reference), a974320ab6 (entity uploads)
+and 27cfa36de1 (stream binding reuse) for comparison. Small differences need
+repeated evidence before claiming a gain.
 
-Current dev candidate: redundant stream-0 binds are skipped on software VP when
-the same VB, offset and stride are already bound in the current frame. Startup
-logs show "D3D9 stream0_cache enabled=true"; there is no live switch or new launch
-variable. Hardware VP and ordinary packages retain their previous setter calls.
-The five-second pass lines add stream_requests (requested binds); the existing
-SetStreamSource COM counter counts actual calls. Compare both along with draws,
-NumVertices and uploaded bytes. Draw order, geometry, textures and shaders stay
-the same. The cache is invalidated at frame/Reset/DISCARD boundaries and after a
-failed bind. Check world/GUI/glint transitions, resizing, minimize/restore and
-resource/world changes as well as the fixed walk and standing scene.
+Check DynamicEntities VB locks and SetStreamSource calls against stream_requests,
+draws, NumVertices and upload payload. The entity staging log also reports total
+groups and fallbacks. Check entity skins, items, armour and glint, alpha order,
+HUD transitions, resize and minimize/restore as part of hardware smoke testing.
 
 No new hardware FPS claim is made by this package. Shared generation/gameplay
 optimization is not the renderer task. See docs/legacy-d3d9.md in the repository

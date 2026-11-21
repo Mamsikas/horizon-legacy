@@ -116,8 +116,8 @@ lighting inputs and player choices. Deep performance work is the next task (TZ 3
 - Keep normal logs quiet: startup identity/capability and actionable warnings only.
   Dev packages enable periodic renderer diagnostics by default; the existing
   `HORIZON_D3D9_LOG_STATS=0/1` override remains. Per-frame profiler spans remain.
-  The dev SWVP entity-upload experiment and live baseline switch are described
-  in [legacy-d3d9-perf.md](legacy-d3d9-perf.md); its hardware gain is not accepted.
+  The dev SWVP entity-upload and stream-binding trials are tracked in
+  [legacy-d3d9-perf.md](legacy-d3d9-perf.md), including their GMA measurements.
 
 ## Supported scope and explicit gaps
 

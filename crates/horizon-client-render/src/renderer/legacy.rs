@@ -105,6 +105,10 @@ pub struct Renderer {
     solid_reused: bool,
     translucent_stats: [u64; 3],
     index_scratch: dx::IndexBatch,
+    entity_staging: bool,
+    entity_stage_vertices: Vec<dx::Vertex>,
+    entity_stage_stats: [u64; 2],
+    entity_stage_warned: bool,
     gui_batches: frame::GuiBatches,
     gui_cache: frame::gui_cache::GuiCache,
     gui_vertices: Vec<dx::Vertex>,
@@ -226,6 +230,23 @@ impl Renderer {
         };
         let compactor = mesh::Compactor::new(sprites.layout.clone(), device.compact_vertices());
         let glint = glint::Glint::new(&mut device, glint_pixels, glint_armor)?;
+        let mut entity_staging = dx::development_build() && device.caps.software_vertices;
+        let mut entity_stage_vertices = Vec::new();
+        if entity_staging
+            && entity_stage_vertices
+                .try_reserve_exact(device.max_vertices())
+                .is_err()
+        {
+            log::warn!("D3D9 entity staging scratch unavailable; keeping per-batch uploads");
+            entity_staging = false;
+        }
+        if dx::development_build() {
+            log::info!(
+                "D3D9 entity quad staging enabled={entity_staging} software_vertices={} capacity_vertices={}",
+                device.caps.software_vertices,
+                entity_stage_vertices.capacity()
+            );
+        }
         Ok(Self {
             device,
             sprites,
@@ -314,6 +335,10 @@ impl Renderer {
             solid_reused: false,
             translucent_stats: [0; 3],
             index_scratch: dx::IndexBatch::default(),
+            entity_staging,
+            entity_stage_vertices,
+            entity_stage_stats: [0; 2],
+            entity_stage_warned: false,
             gui_batches: frame::GuiBatches::new(dx::DrawState::default()),
             gui_cache: frame::gui_cache::GuiCache::default(),
             gui_vertices: Vec::new(),

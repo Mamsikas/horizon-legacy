@@ -312,6 +312,13 @@ pub struct StagedTriangles {
     first: u32,
     count: u32,
 }
+/// A token only: it retains no DEFAULT buffer and cannot obstruct Reset.
+pub struct StagedQuads {
+    owner: Rc<Inner>,
+    serial: u64,
+    first: u32,
+    count: u32,
+}
 pub struct Device {
     inner: Rc<Inner>,
     pub caps: Caps,
@@ -2161,6 +2168,65 @@ impl Device {
             ));
             self.record_draw();
         }
+        Ok(())
+    }
+    /// Upload ordered entity quad batches once without expanding them to triangles.
+    pub fn stage_quads(&mut self, vertices: &[Vertex]) -> Result<StagedQuads> {
+        if !vertices.len().is_multiple_of(4) {
+            return Err("D3D9 incomplete staged quad".into());
+        }
+        let first = self.stage_vertices(vertices)?;
+        Ok(StagedQuads {
+            owner: self.inner.clone(),
+            serial: self.transient_serial,
+            first,
+            count: vertices.len() as u32,
+        })
+    }
+    pub fn draw_staged_quads(
+        &mut self,
+        vertices: &StagedQuads,
+        range: std::ops::Range<u32>,
+    ) -> Result<()> {
+        if !Rc::ptr_eq(&vertices.owner, &self.inner) || vertices.serial != self.transient_serial {
+            return Err("D3D9 stale staged quad stream".into());
+        }
+        let (base, count) =
+            crate::geometry::staged_quad_range(vertices.first, vertices.count, range)
+                .ok_or("D3D9 invalid staged quad range")?;
+        if count == 0 {
+            return Ok(());
+        }
+        self.vertex_pipeline(VertexEncoding::Full)?;
+        self.shared_indices()?;
+        let buffer = self
+            .transient
+            .as_ref()
+            .ok_or("D3D9 missing staged quad buffer")?;
+        // SAFETY: checked device/generation/range; stage_vertices bounds the
+        // stream to shared INDEX16 capacity. NumVertices stays tight per draw.
+        unsafe {
+            self.state_cache.bind_stream(
+                &self.inner,
+                buffer,
+                size_of::<Vertex>() as u32,
+                crate::development_build() && self.caps.software_vertices,
+            )?;
+            profile_call!(
+                self.inner,
+                DrawIndexedPrimitive,
+                self.inner.device.DrawIndexedPrimitive(
+                    D3DPT_TRIANGLELIST,
+                    base,
+                    0,
+                    count,
+                    0,
+                    count / 2
+                )
+            )?;
+        }
+        profile_count!(self.inner, |c| c.draw(true, count, count / 2, 0, false));
+        self.record_draw();
         Ok(())
     }
     /// Upload a complete HUD once, then draw its ordered state/texture ranges.

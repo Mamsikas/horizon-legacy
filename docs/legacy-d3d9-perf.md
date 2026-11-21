@@ -459,3 +459,62 @@ calibration is required. If a useful time reduction appears, repeat it before
 acceptance. If stream setters fall without a wall-time gain, investigate the
 remaining conversion and draw/SWVP/pixel costs with a controlled standalone
 benchmark rather than treating fewer calls as proof of higher FPS.
+
+## Stream binding result and combined candidate, 2026-11-21
+
+The owner supplied `profile-20261121-080627Z.hzperf` (standing),
+`profile-20261121-080941Z.hzperf` (walk) and `latest (13).log`. The startup log
+confirms clean `27cfa36de122bcee9b97a2cb7e5b168838466fbd`, stream cache enabled,
+the same GMA3150 Chell 1.8b HAL SWVP and 1024×600 RGB565. Complete native
+windows inside the recordings cover 5354 standing and 1700 walk frames, with
+zero aborted frames and zero recorded COM failures.
+
+| Recorded build | Standing FPS | Walk FPS | Walk DX9 ms/frame | Walk dynamic native ms/frame | Walk slowest 1% mean ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `fc813ed9fe` reference, log on | 40.762 | 11.308 | 63.131 | 13.661 | 221.711 |
+| `a974320ab6` entity staging | 35.340 | 11.529 | 61.787 | 13.433 | 218.829 |
+| `27cfa36de1` stream binding reuse | 37.877 | 11.249 | 63.193 | 14.366 | 211.645 |
+
+`27cfa36de1` sent 4 of 43 standing solid stream requests, 1 of 26 standing
+translucent requests, 44.78 of 286.35 walk solid requests and 1.25 of 143.31
+walk dynamic requests per frame. The measured reduction in actual calls is
+84% for walk solid and 99% for walk dynamic. Standing solid/translucent retain
+24624/20108 requested vertices and 43/26 draws across all three builds. Walk
+solid stays near 86.6–87.0k requested vertices and 32.7–33.0 ms in native
+windows. Walk dynamic draws and texture binds are higher in the latest run
+(143 against 114 in the staging run), despite similar vertex volumes. The
+latest dynamic submit span is 9.19 ms/frame against 8.09 in the staging run,
+and conversion is 4.82 against 4.89. These elapsed measurements include waits.
+Differences in work between runs prevent attributing the time changes to the
+two setters and upload strategies alone. The walk percentile buckets agree,
+while its slowest 1% mean is 3.3% lower than the staging run.
+
+The staging rollback made the stream comparison independent. Its +1.95% walk
+FPS result remains a small measured improvement, with a 96% reduction in VB
+locks and no regression attributed to staging. Standing FPS varied across
+captures that performed zero staged entity groups. Each individual trial has
+one logged capture per scene, so a repeatable frame time gain is still open.
+
+The owner approved measuring individual changes before combining them. The
+next dev SWVP build restores the tested entity staging path on top of stream
+binding reuse. It keeps the same 65532-vertex maximum reservation, phase and
+material order, tight `NumVertices`, fallback and device loss handling as the
+staging run. Its staged draws use the same binding cache as other draws. They
+consume their frame-local token before glint or another upload. Both policies
+are chosen at startup through the existing dev feature and SWVP caps. The log
+records both policies, staged groups, fallbacks and binding calls. The earlier
+hotkey is omitted. Compact hardware VS2, asset inputs and presentation settings
+follow the existing paths.
+
+Use the existing three recordings as references for a combined walk and
+standing run with default dev diagnostics. Walk VB locks and actual stream
+binds should fall together while requested vertices and draws track scene
+workload. Compare renderer and pass wall time and the slowest 1% frames before
+making a keep or revert decision. GMA image and device lifecycle checks and
+HD4570 smoke for the combined build are pending.
+
+The combined candidate passed 31 diagnostic D3D9 CPU tests, including the
+restored indexed range test and the stream binding coherence test. D3D9 Clippy
+passed with warnings denied on Linux and Win7 x64. The Win7 x64 dev renderer
+compiled with its existing `NativePack: Send` warning. Module formatting, 15
+import policy tests, layers, public tree and repository hygiene also passed.

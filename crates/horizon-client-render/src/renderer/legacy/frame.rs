@@ -283,6 +283,14 @@ impl Renderer {
                 self.worst_stages.clone_from(&self.timings);
             }
             if self.last_log.elapsed() >= Duration::from_secs(5) {
+                if self.entity_staging {
+                    log::info!(
+                        "D3D9 entity quad staging groups_total={} fallback_total={} scratch_bytes={}",
+                        self.entity_stage_stats[0],
+                        self.entity_stage_stats[1],
+                        self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>()
+                    );
+                }
                 self.device.log_submit_profile();
                 let cpu = dx::thread_cpu_time();
                 let busy = cpu
@@ -994,23 +1002,87 @@ impl Renderer {
         if let Some(laps) = &mut dynamic_laps {
             laps.lap("d3d9_dynamic_entity_convert");
         }
-        draw_pixels(
-            &mut self.device,
-            &self.hud.atlas,
-            &self.lightmap,
-            &batches,
-            false,
-        )?;
-        for b in sprite_batches {
-            self.device
-                .state(b.state, &self.sprites.pages[b.page], Some(&self.lightmap))?;
-            self.device.draw_transient(&b.vertices)?;
+        let staged = self.entity_staging
+            && matches!(phase, 0 | 1)
+            && self.try_stage_entity_batches(&batches, &sprite_batches)?;
+        if !staged {
+            draw_pixels(
+                &mut self.device,
+                &self.hud.atlas,
+                &self.lightmap,
+                &batches,
+                false,
+            )?;
+            for b in sprite_batches {
+                self.device
+                    .state(b.state, &self.sprites.pages[b.page], Some(&self.lightmap))?;
+                self.device.draw_transient(&b.vertices)?;
+            }
         }
         self.draw_glints(&glints, frame.pvp.glint)?;
         if let Some(laps) = &mut dynamic_laps {
             laps.lap("d3d9_dynamic_entity_submit");
         }
         Ok(())
+    }
+    /// Preserve the existing HUD-page batches, then sprite batches, then foil.
+    /// The experiment changes upload granularity, not material/alpha draw order.
+    fn try_stage_entity_batches(&mut self, batches: &[Batch], sprites: &[Batch]) -> Result<bool> {
+        if batches.is_empty() && sprites.is_empty() {
+            return Ok(false);
+        }
+        self.hud.atlas.prepare(&mut self.device)?;
+        let textures = self.hud.atlas.textures();
+        let drawable = batches.iter().filter(|b| textures[b.page].is_some());
+        let count = drawable
+            .clone()
+            .chain(sprites.iter())
+            .try_fold(0usize, |n, b| n.checked_add(b.vertices.len()));
+        let Some(count) = count.filter(|&n| n <= self.device.max_vertices()) else {
+            self.entity_stage_stats[1] += 1;
+            return Ok(false);
+        };
+        if count == 0 {
+            return Ok(false);
+        }
+        self.entity_stage_vertices.clear();
+        for b in drawable.chain(sprites.iter()) {
+            self.entity_stage_vertices.extend_from_slice(&b.vertices);
+        }
+        // One bounded extra CPU consolidation copy; native uploaded bytes and
+        // draw NumVertices remain unchanged. Measure this cost in the A/B.
+        let stream = match self.device.stage_quads(&self.entity_stage_vertices) {
+            Ok(stream) => stream,
+            Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
+            Err(error) => {
+                self.entity_stage_stats[1] += 1;
+                if !self.entity_stage_warned {
+                    log::warn!("D3D9 entity staging failed ({error}); keeping per-batch uploads");
+                    self.entity_stage_warned = true;
+                }
+                return Ok(false);
+            }
+        };
+        let mut first = 0;
+        for b in batches {
+            let Some(texture) = &textures[b.page] else {
+                continue;
+            };
+            self.device.state(b.state, texture, Some(&self.lightmap))?;
+            let end = first + b.vertices.len() as u32;
+            self.device.draw_staged_quads(&stream, first..end)?;
+            first = end;
+        }
+        for b in sprites {
+            self.device
+                .state(b.state, &self.sprites.pages[b.page], Some(&self.lightmap))?;
+            let end = first + b.vertices.len() as u32;
+            self.device.draw_staged_quads(&stream, first..end)?;
+            first = end;
+        }
+        debug_assert_eq!(first as usize, count);
+        self.entity_stage_stats[0] += 1;
+        Ok(true)
     }
     fn draw_panorama(&mut self, frame: &Frame) -> Result<()> {
         if self.panorama.is_none() {
