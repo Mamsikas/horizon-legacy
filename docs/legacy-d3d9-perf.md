@@ -518,3 +518,30 @@ restored indexed range test and the stream binding coherence test. D3D9 Clippy
 passed with warnings denied on Linux and Win7 x64. The Win7 x64 dev renderer
 compiled with its existing `NativePack: Send` warning. Module formatting, 15
 import policy tests, layers, public tree and repository hygiene also passed.
+
+## Package validation for a2766b3517
+
+Executable source `a2766b3517bebd7147e11623cdefbec4ee0a46de` combines the two
+individually measured changes. Both jobs of
+[Win7 run 44884858572](https://github.com/Mamsikas/horizon-legacy/actions/runs/44884858572)
+passed pinned build-std and ThinLTO compilation, client and COM ABI import audits,
+29 ordinary D3D9 CPU tests and 15 import policy tests per architecture.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [14700117916](https://github.com/Mamsikas/horizon-legacy/actions/runs/44884858572/artifacts/14700117916) | `b1075f5609289924f8469fa82e305c9268e6c671b5686596e49f073083bb3643` |
+| x86 | [14700500331](https://github.com/Mamsikas/horizon-legacy/actions/runs/44884858572/artifacts/14700500331) | `8b39b5b1ec1905ec05cd54ef5a5a80fb27639f2e3cccf9ddf0e78b742aa03dbe` |
+
+The API digests match the CI upload logs. The package carries internal
+`SHA256SUMS` and `build-info.txt` for the executable and its provenance.
+
+The ordinary Win7 x64 renderer also compiled locally with the existing
+`NativePack: Send` warning. The full `pr_ready --quick` check remains red
+with the previously recorded workspace fmt, Clippy and Python issues and
+32 modern/wgpu renderer failures. It reports 2690 Rust tests passed and ten
+doc tests passed. The focused DX9 tests and the Win7 package workflow passed.
+
+Use this combined dev build for the next standing and walk recordings. Both
+paths are selected automatically on software VP. The existing reference
+and individual captures supply comparison data. A GMA timing, image and
+lifecycle result for the combined build and an HD4570 smoke remain pending.
