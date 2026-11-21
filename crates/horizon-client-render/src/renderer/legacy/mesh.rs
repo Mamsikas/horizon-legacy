@@ -579,6 +579,7 @@ impl Renderer {
         Ok(())
     }
     pub fn clear_sections(&mut self, layout: ColumnLayout) {
+        self.static_entities.clear();
         self.pending_sections.clear();
         if let Some(worker) = &mut self.compactor {
             worker.cancel_uploads();

@@ -1,11 +1,17 @@
 use super::*;
 use dx::{Blend, DrawState};
 pub(super) mod gui_cache;
+pub(super) mod static_entities;
 
 pub(super) struct Batch {
     pub(super) page: usize,
     pub(super) state: DrawState,
     pub(super) vertices: Vec<dx::Vertex>,
+}
+struct EntityBatches {
+    pixels: Vec<Batch>,
+    sprites: Vec<Batch>,
+    glints: Vec<Batch>,
 }
 #[derive(Clone)]
 pub(super) enum GuiCommand {
@@ -291,6 +297,7 @@ impl Renderer {
                         self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>()
                     );
                 }
+                self.static_entities.log();
                 self.device.log_submit_profile();
                 let cpu = dx::thread_cpu_time();
                 let busy = cpu
@@ -726,6 +733,10 @@ impl Renderer {
             self.draw_entities(frame, frame.entities, fog, 0)?;
             self.draw_entities(frame, frame.world_primitives.quads, fog, 2)?;
             self.device.profile_pass(dx::SubmitPass::StaticEntities);
+            if self.static_entities.enabled() {
+                self.static_entities
+                    .begin(frame, self.device.resets, self.hud.atlas.revision());
+            }
             for section in frame.static_block_entities {
                 if !frame
                     .visible_static_block_entity_sections
@@ -740,7 +751,7 @@ impl Renderer {
                     view.view.to_cols_array(),
                     projection.to_cols_array(),
                 )?;
-                self.draw_entities(frame, &section.vertices, fog, 2)?;
+                self.draw_static_entity_section(frame, section, fog)?;
             }
             self.stamp("entities", &mut clock);
             self.device.profile_pass(dx::SubmitPass::Translucent);
@@ -855,14 +866,13 @@ impl Renderer {
         }
         Ok(())
     }
-    fn draw_entities(
-        &mut self,
+    fn entity_batches(
+        &self,
         frame: &Frame,
         input: &[Vertex],
         fog: Option<dx::Fog>,
         phase: u8,
-    ) -> Result<()> {
-        let mut dynamic_laps = matches!(phase, 0 | 1).then(crate::spans::laps);
+    ) -> Result<EntityBatches> {
         let mut batches = Vec::new();
         let mut sprite_batches = Vec::new();
         let mut glints = Vec::new();
@@ -999,6 +1009,25 @@ impl Renderer {
                 }
             }
         }
+        Ok(EntityBatches {
+            pixels: batches,
+            sprites: sprite_batches,
+            glints,
+        })
+    }
+    fn draw_entities(
+        &mut self,
+        frame: &Frame,
+        input: &[Vertex],
+        fog: Option<dx::Fog>,
+        phase: u8,
+    ) -> Result<()> {
+        let mut dynamic_laps = matches!(phase, 0 | 1).then(crate::spans::laps);
+        let EntityBatches {
+            pixels: batches,
+            sprites: sprite_batches,
+            glints,
+        } = self.entity_batches(frame, input, fog, phase)?;
         if let Some(laps) = &mut dynamic_laps {
             laps.lap("d3d9_dynamic_entity_convert");
         }

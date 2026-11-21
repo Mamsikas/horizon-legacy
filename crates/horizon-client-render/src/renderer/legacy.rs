@@ -109,6 +109,7 @@ pub struct Renderer {
     entity_stage_vertices: Vec<dx::Vertex>,
     entity_stage_stats: [u64; 2],
     entity_stage_warned: bool,
+    static_entities: frame::static_entities::Cache,
     gui_batches: frame::GuiBatches,
     gui_cache: frame::gui_cache::GuiCache,
     gui_vertices: Vec<dx::Vertex>,
@@ -240,12 +241,18 @@ impl Renderer {
             log::warn!("D3D9 entity staging scratch unavailable; keeping per-batch uploads");
             entity_staging = false;
         }
+        let static_entity_budget = if entity_staging {
+            (mesh_budget / 8).min(8 << 20) as usize
+        } else {
+            0
+        };
         if dx::development_build() {
             log::info!(
                 "D3D9 entity quad staging enabled={entity_staging} software_vertices={} capacity_vertices={}",
                 device.caps.software_vertices,
                 entity_stage_vertices.capacity()
             );
+            log::info!("D3D9 static entity cache budget_bytes={static_entity_budget}");
         }
         Ok(Self {
             device,
@@ -339,6 +346,7 @@ impl Renderer {
             entity_stage_vertices,
             entity_stage_stats: [0; 2],
             entity_stage_warned: false,
+            static_entities: frame::static_entities::Cache::new(static_entity_budget),
             gui_batches: frame::GuiBatches::new(dx::DrawState::default()),
             gui_cache: frame::gui_cache::GuiCache::default(),
             gui_vertices: Vec::new(),

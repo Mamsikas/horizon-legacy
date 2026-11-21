@@ -32,6 +32,10 @@ impl Renderer {
                 self.gpu_mesh_bytes,
             ),
             (
+                "D3D9 static block entity VB (system memory)",
+                self.static_entities.vertex_bytes(),
+            ),
+            (
                 "D3D9 cached visibility indices (caps-selected pool)",
                 self.solid_batches
                     .values()
@@ -48,7 +52,7 @@ impl Renderer {
     pub fn gpu_memory_by_label(&self) -> Option<(u64, u64, Vec<(String, u64)>)> {
         None
     }
-    pub fn cpu_census(&self) -> [(&'static str, usize); 6] {
+    pub fn cpu_census(&self) -> [(&'static str, usize); 7] {
         [
             (
                 "D3D9 section metadata",
@@ -84,6 +88,10 @@ impl Renderer {
             (
                 "D3D9 entity staging scratch",
                 self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>(),
+            ),
+            (
+                "D3D9 static block entity buffers and ranges",
+                self.static_entities.cpu_bytes(),
             ),
             ("D3D9 animation cache/scratch", self.sprites.cpu_bytes()),
             (
