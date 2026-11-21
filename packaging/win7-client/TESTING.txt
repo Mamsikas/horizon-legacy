@@ -46,32 +46,22 @@ can stop at its configured cap; ordinary longer phase/health captures still help
 Phases include driver waits. Process CPU/RSS use upstream Windows probes.
 Dev packages (build-info.txt: dev_diagnostics=1) log DX9 stats by default, including
 5-second per-pass submission totals. HORIZON_D3D9_LOG_STATS=0 disables diagnostics
-when explicitly needed. Keep diagnostics on for the current entity experiment;
+when explicitly needed. Keep diagnostics on for renderer experiments;
 the first diagnostic-overhead pair has already been collected.
 Ordinary packages keep periodic logs off; HORIZON_D3D9_LOG_STATS=1 enables their
 existing coarse stats. GPU timings are not instrumented by the P0a counters.
 
-Current dx9-dev experiment: software-VP dynamic entity base geometry uses one
-bounded VB upload per early/late phase, followed by the original ordered draws.
-It starts in B_staged. With the game focused, press Ctrl+Shift+F12 once to switch
-to A_baseline; press again to return to B_staged. No restart, environment variable
-or settings change is needed. The log records each switch and closes the previous
-native counter window first. Profiles also contain d3d9_entity_mode_A_baseline or
-d3d9_entity_mode_B_staged. Hardware VP stays on the original path.
+The a974320ab6 entity-upload experiment reduced VB locks on GMA but did not
+establish a stable renderer/FPS gain. Its consolidation copy, scratch reservation
+and unhelpful live hotkey have been removed. Per-batch uploads are restored;
+dynamic entity conversion/submission profiler spans remain for diagnosis.
 
-Warm up, record the fixed walk in B, switch to A, return to the same starting
-point, and record the same walk again. Prefer B-A-A-B if practical; keep diagnostics
-enabled throughout. Start/stop a separate chat profile for each route so whole-run
-FPS remains comparable. Standing is a useful regression check but has almost no
-entities. Keep all graphics settings and the window unchanged. Send these profiles
-and the one latest.log; preserve it before the next application launch.
-
-Expected invariant: dynamic DIP count, triangle count, sum NumVertices and VB
-payload bytes stay comparable at matching route locations. Base-geometry VB locks
-should fall; glint, world primitives, oversized groups and static entities retain
-their own uploads. Extra consolidation copies can cost more than the locks saved.
-Check skins, held/dropped items, armour/glint, alpha/depth, resource/world changes,
-resize and minimize/restore in both modes. A measured GMA gain is still pending.
+Compare builds by the source SHA in build-info.txt and the startup log. Restarting
+between reference/candidate builds is valid: a same-EXE switch is not required.
+Use the same full previous walk (~150 seconds), standing position, warmup, window
+and graphics settings, with diagnostics enabled. Keep each chat profile and its
+latest.log before restarting. Previous fc813ed baseline captures remain useful;
+small differences need repeated evidence before claiming a gain.
 
 No new hardware FPS claim is made by this package. Shared generation/gameplay
 optimization is not the renderer task. See docs/legacy-d3d9.md in the repository

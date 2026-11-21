@@ -1,8 +1,5 @@
 //! Safe, render-thread-only Direct3D 9 HAL ownership.
 #![deny(unsafe_op_in_unsafe_fn)]
-#[cfg(any(all(windows, feature = "dev-diagnostics"), test))]
-mod dev_control;
-
 pub const fn development_build() -> bool {
     cfg!(feature = "dev-diagnostics")
 }

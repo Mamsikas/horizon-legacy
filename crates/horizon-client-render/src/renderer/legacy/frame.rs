@@ -198,49 +198,6 @@ impl Renderer {
         if self.suspended {
             return Ok(false);
         }
-        if dx::development_build()
-            && self.device.caps.software_vertices
-            && self
-                .device
-                .entity_staging_toggle(&mut self.entity_stage_key_held)
-        {
-            if !self.entity_staging
-                && self.entity_stage_vertices.capacity() < self.device.max_vertices()
-                && self
-                    .entity_stage_vertices
-                    .try_reserve_exact(
-                        self.device.max_vertices() - self.entity_stage_vertices.len(),
-                    )
-                    .is_err()
-            {
-                log::warn!("D3D9 entity staging scratch unavailable; keeping baseline");
-            } else {
-                if self.diagnostics {
-                    self.log_entity_staging_window();
-                }
-                self.entity_staging = !self.entity_staging;
-                self.profile_window = (0, 0.0, 0.0);
-                self.last_thread_cpu = dx::thread_cpu_time();
-                self.last_log = Instant::now();
-                log::info!(
-                    "D3D9 entity staging mode={} frame={} hotkey=Ctrl+Shift+F12",
-                    if self.entity_staging {
-                        "B_staged"
-                    } else {
-                        "A_baseline"
-                    },
-                    self.frames
-                );
-            }
-        }
-        let _entity_mode =
-            (dx::development_build() && self.device.caps.software_vertices).then(|| {
-                crate::spans::guard(if self.entity_staging {
-                    "d3d9_entity_mode_B_staged"
-                } else {
-                    "d3d9_entity_mode_A_baseline"
-                })
-            });
         self.drain_uploads()?;
         self.progress_shadows();
         if let Some(error) = self.pending_error.take() {
@@ -326,7 +283,7 @@ impl Renderer {
                 self.worst_stages.clone_from(&self.timings);
             }
             if self.last_log.elapsed() >= Duration::from_secs(5) {
-                self.log_entity_staging_window();
+                self.device.log_submit_profile();
                 let cpu = dx::thread_cpu_time();
                 let busy = cpu
                     .zip(self.last_thread_cpu)
@@ -479,20 +436,6 @@ impl Renderer {
 
         self.upload_cpu = Duration::ZERO;
         Ok(shown)
-    }
-    fn log_entity_staging_window(&self) {
-        log::info!(
-            "D3D9 entity quad staging mode={} groups_total={} fallback_total={} scratch_bytes={}",
-            if self.entity_staging {
-                "B_staged"
-            } else {
-                "A_baseline"
-            },
-            self.entity_stage_stats[0],
-            self.entity_stage_stats[1],
-            self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>()
-        );
-        self.device.log_submit_profile();
     }
     fn stamp(&mut self, name: &'static str, clock: &mut Instant) {
         self.profile_laps.lap(name);
@@ -1051,87 +994,23 @@ impl Renderer {
         if let Some(laps) = &mut dynamic_laps {
             laps.lap("d3d9_dynamic_entity_convert");
         }
-        let staged = self.entity_staging
-            && matches!(phase, 0 | 1)
-            && self.try_stage_entity_batches(&batches, &sprite_batches)?;
-        if !staged {
-            draw_pixels(
-                &mut self.device,
-                &self.hud.atlas,
-                &self.lightmap,
-                &batches,
-                false,
-            )?;
-            for b in sprite_batches {
-                self.device
-                    .state(b.state, &self.sprites.pages[b.page], Some(&self.lightmap))?;
-                self.device.draw_transient(&b.vertices)?;
-            }
+        draw_pixels(
+            &mut self.device,
+            &self.hud.atlas,
+            &self.lightmap,
+            &batches,
+            false,
+        )?;
+        for b in sprite_batches {
+            self.device
+                .state(b.state, &self.sprites.pages[b.page], Some(&self.lightmap))?;
+            self.device.draw_transient(&b.vertices)?;
         }
         self.draw_glints(&glints, frame.pvp.glint)?;
         if let Some(laps) = &mut dynamic_laps {
             laps.lap("d3d9_dynamic_entity_submit");
         }
         Ok(())
-    }
-    /// Preserve the existing HUD-page batches, then sprite batches, then foil.
-    /// The experiment changes upload granularity, not material/alpha draw order.
-    fn try_stage_entity_batches(&mut self, batches: &[Batch], sprites: &[Batch]) -> Result<bool> {
-        if batches.is_empty() && sprites.is_empty() {
-            return Ok(false);
-        }
-        self.hud.atlas.prepare(&mut self.device)?;
-        let textures = self.hud.atlas.textures();
-        let drawable = batches.iter().filter(|b| textures[b.page].is_some());
-        let count = drawable
-            .clone()
-            .chain(sprites.iter())
-            .try_fold(0usize, |n, b| n.checked_add(b.vertices.len()));
-        let Some(count) = count.filter(|&n| n <= self.device.max_vertices()) else {
-            self.entity_stage_stats[1] += 1;
-            return Ok(false);
-        };
-        if count == 0 {
-            return Ok(false);
-        }
-        self.entity_stage_vertices.clear();
-        for b in drawable.chain(sprites.iter()) {
-            self.entity_stage_vertices.extend_from_slice(&b.vertices);
-        }
-        // One bounded extra CPU consolidation copy; native uploaded bytes and
-        // draw NumVertices remain unchanged. Measure this cost in the A/B.
-        let stream = match self.device.stage_quads(&self.entity_stage_vertices) {
-            Ok(stream) => stream,
-            Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
-            Err(error) => {
-                self.entity_stage_stats[1] += 1;
-                if !self.entity_stage_warned {
-                    log::warn!("D3D9 entity staging failed ({error}); keeping per-batch uploads");
-                    self.entity_stage_warned = true;
-                }
-                return Ok(false);
-            }
-        };
-        let mut first = 0;
-        for b in batches {
-            let Some(texture) = &textures[b.page] else {
-                continue;
-            };
-            self.device.state(b.state, texture, Some(&self.lightmap))?;
-            let end = first + b.vertices.len() as u32;
-            self.device.draw_staged_quads(&stream, first..end)?;
-            first = end;
-        }
-        for b in sprites {
-            self.device
-                .state(b.state, &self.sprites.pages[b.page], Some(&self.lightmap))?;
-            let end = first + b.vertices.len() as u32;
-            self.device.draw_staged_quads(&stream, first..end)?;
-            first = end;
-        }
-        debug_assert_eq!(first as usize, count);
-        self.entity_stage_stats[0] += 1;
-        Ok(true)
     }
     fn draw_panorama(&mut self, frame: &Frame) -> Result<()> {
         if self.panorama.is_none() {

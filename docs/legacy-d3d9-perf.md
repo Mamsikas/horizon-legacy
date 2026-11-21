@@ -218,7 +218,10 @@ the separate persistent-static-cache change. Preserve existing material/alpha
 order, draw count and tight NumVertices; reduce ordinary base-geometry VB locks.
 Keep logging mode equal between baseline/candidate. No FPS gain is accepted yet.
 
-## Dynamic entity staging experiment (dev default, hardware result pending)
+## Dynamic entity staging experiment (a974 history; subsequently reverted)
+
+This section records the a974 implementation. The hardware outcome and rollback
+below supersede its live-switch/default instructions.
 
 The first candidate changes only upload granularity for `draw_entities` phases
 0/1 on software VP. Existing per-quad conversion, HUD-page batches followed by
@@ -325,3 +328,53 @@ Hold the focused hotkey about half a second at low FPS; keep diagnostics enabled
 and remove the previous `HORIZON_D3D9_LOG_STATS=0` override. Standing is the
 regression control. Hardware FPS/image/Reset/HD4570 acceptance remains pending;
 no optimization win is claimed by these builds.
+
+## a974 GMA result and rollback, 2026-11-21
+
+The owner supplied `profile-20261121-061823Z.hzperf` (standing),
+`profile-20261121-062238Z.hzperf` (walk) and `latest (12).log`. Startup confirms
+clean a974320ab69ba16959fd1b96ac31589a8c739406, the pinned compiler, GMA3150
+Chell 1.8b, HAL SWVP/FFP/PS2 and 1024x600/RGB565. Both captures contain only
+`B_staged`. The first logged hotkey transition was 13:25:37, after the walk
+ended at about 13:25:08; the owner correctly reported recording B only. The
+switch lacked visible feedback and is removed rather than requiring the owner
+to infer its state from logs.
+
+The existing fc813ed captures are valid reference A runs. Restarting the game
+between matched builds does not invalidate an A/B. A same-EXE switch was an
+optional control, not an acceptance requirement. Small differences still need
+repetition and comparable workload before assigning a causal speedup.
+
+| Capture | FPS | Renderer ms | Solid ms | Entities ms | Translucent ms | GUI ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fc813 standing, log on | 40.762 | 19.055 | 8.487 | ~0.02 | 7.001 | 2.063 |
+| a974 standing B | 35.340 | 23.173 | 10.699 | 0.029 | 8.439 | 2.401 |
+| fc813 walk, log on | 11.308 | 63.131 | 32.888 | 15.831 | 3.792 | 5.023 |
+| a974 walk B | 11.529 | 61.787 | 32.734 | 14.926 | 3.701 | 5.090 |
+
+In wholly capture-contained native windows, walk DynamicEntities VB locks fell
+115.96 -> 4.66/frame (-96.0%), while DIP stayed close (115.96 -> 114.50), summed
+NumVertices 8401 -> 8442 and transient payload 268823 -> 270143 bytes/frame.
+All selected a974 windows were B, with zero stage fallbacks, aborted frames or
+recorded COM failures. The mechanism worked on real GMA. Dynamic pass wall barely
+changed (13.661 -> 13.433 ms); overall walk FPS differs by only +1.95%, which is
+not an established gain. Static pass wall/draw count also changed despite its
+code being untouched (2.896 -> 2.137 ms; 18.03 -> 4.50 DIP/frame); that difference
+cannot be credited to dynamic staging. Standing performed no entity staging
+groups, yet its terrain/GUI were slower. Earlier unlogged standing was also
+slower than logged standing (36.466 FPS), illustrating the unresolved variation.
+The poorer standing result is recorded; clocks/GPU execution are not measured.
+
+New walk spans split dynamic work into 4.888 ms conversion and 8.087 ms submit
+per frame (sum the early/late sibling spans only). In the five-second block at
+t=115 s, conversion reaches 14.169 ms, submit 27.646 ms and the enclosing early
+entities stage 50.824 ms/frame. Do not add that parent to its children. F3's large
+entity cost therefore remains real. Submission includes driver/SWVP/GPU waits,
+state, draws and glint; conversion is DX9 work, separate from upstream prepare.
+
+Decision: no accepted FPS gain justifies the additional copy/reserved 2097024
+bytes. Restore the original per-batch uploads and remove the hotkey, staged-quad
+API and scratch census entry; retain the convert/submit spans. This is an
+unproven/neutral experiment, not a confirmed regression or improvement. No new
+calibration capture or mandatory in-game switch is requested. GPU timestamps,
+per-material/clip attribution and hardware compatibility smoke remain open.

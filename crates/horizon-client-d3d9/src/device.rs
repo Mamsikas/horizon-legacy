@@ -281,13 +281,6 @@ pub struct StagedTriangles {
     first: u32,
     count: u32,
 }
-/// A token only: it retains no DEFAULT buffer and cannot obstruct Reset.
-pub struct StagedQuads {
-    owner: Rc<Inner>,
-    serial: u64,
-    first: u32,
-    count: u32,
-}
 pub struct Device {
     inner: Rc<Inner>,
     pub caps: Caps,
@@ -329,25 +322,6 @@ pub struct Device {
     pub index_uploads: u64,
 }
 impl Device {
-    #[inline(always)]
-    pub fn entity_staging_toggle(&self, _held: &mut bool) -> bool {
-        #[cfg(feature = "dev-diagnostics")]
-        {
-            use windows::Win32::UI::Input::KeyboardAndMouse::{
-                GetAsyncKeyState, VK_CONTROL, VK_F12, VK_SHIFT,
-            };
-            // SAFETY: read only three documented virtual keys on the owner
-            // thread; no hook, injection or input outside the focused app.
-            let down = unsafe {
-                GetAsyncKeyState(VK_CONTROL.0 as i32) < 0
-                    && GetAsyncKeyState(VK_SHIFT.0 as i32) < 0
-                    && GetAsyncKeyState(VK_F12.0 as i32) < 0
-            };
-            crate::dev_control::pressed_edge(_held, down, self.inner._window.has_focus())
-        }
-        #[cfg(not(feature = "dev-diagnostics"))]
-        false
-    }
     #[inline(always)]
     pub fn profile_begin_frame(&self) {
         #[cfg(feature = "submit-profile")]
@@ -2153,66 +2127,6 @@ impl Device {
             ));
             self.record_draw();
         }
-        Ok(())
-    }
-    /// Upload ordered entity quad batches once without expanding them to triangles.
-    pub fn stage_quads(&mut self, vertices: &[Vertex]) -> Result<StagedQuads> {
-        if vertices.len() % 4 != 0 {
-            return Err("D3D9 incomplete staged quad".into());
-        }
-        let first = self.stage_vertices(vertices)?;
-        Ok(StagedQuads {
-            owner: self.inner.clone(),
-            serial: self.transient_serial,
-            first,
-            count: vertices.len() as u32,
-        })
-    }
-    pub fn draw_staged_quads(
-        &mut self,
-        vertices: &StagedQuads,
-        range: std::ops::Range<u32>,
-    ) -> Result<()> {
-        if !Rc::ptr_eq(&vertices.owner, &self.inner) || vertices.serial != self.transient_serial {
-            return Err("D3D9 stale staged quad stream".into());
-        }
-        let (base, count) =
-            crate::geometry::staged_quad_range(vertices.first, vertices.count, range)
-                .ok_or("D3D9 invalid staged quad range")?;
-        if count == 0 {
-            return Ok(());
-        }
-        self.vertex_pipeline(VertexEncoding::Full)?;
-        self.shared_indices()?;
-        let buffer = self
-            .transient
-            .as_ref()
-            .ok_or("D3D9 missing staged quad buffer")?;
-        // SAFETY: checked device/generation/range; stage_vertices bounds the
-        // stream to shared INDEX16 capacity. NumVertices stays tight per draw.
-        unsafe {
-            profile_call!(
-                self.inner,
-                SetStreamSource,
-                self.inner
-                    .device
-                    .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)
-            )?;
-            profile_call!(
-                self.inner,
-                DrawIndexedPrimitive,
-                self.inner.device.DrawIndexedPrimitive(
-                    D3DPT_TRIANGLELIST,
-                    base,
-                    0,
-                    count,
-                    0,
-                    count / 2
-                )
-            )?;
-        }
-        profile_count!(self.inner, |c| c.draw(true, count, count / 2, 0, false));
-        self.record_draw();
         Ok(())
     }
     /// Upload a complete HUD once, then draw its ordered state/texture ranges.
