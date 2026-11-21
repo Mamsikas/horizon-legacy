@@ -63,6 +63,17 @@ and graphics settings, with diagnostics enabled. Keep each chat profile and its
 latest.log before restarting. Previous fc813ed baseline captures remain useful;
 small differences need repeated evidence before claiming a gain.
 
+Current dev candidate: redundant stream-0 binds are skipped on software VP when
+the same VB, offset and stride are already bound in the current frame. Startup
+logs show "D3D9 stream0_cache enabled=true"; there is no live switch or new launch
+variable. Hardware VP and ordinary packages retain their previous setter calls.
+The five-second pass lines add stream_requests (requested binds); the existing
+SetStreamSource COM counter counts actual calls. Compare both along with draws,
+NumVertices and uploaded bytes. Draw order, geometry, textures and shaders stay
+the same. The cache is invalidated at frame/Reset/DISCARD boundaries and after a
+failed bind. Check world/GUI/glint transitions, resizing, minimize/restore and
+resource/world changes as well as the fixed walk and standing scene.
+
 No new hardware FPS claim is made by this package. Shared generation/gameplay
 optimization is not the renderer task. See docs/legacy-d3d9.md in the repository
 for architecture and docs/legacy-d3d9-perf.md for the P0a scope and TZ3 handoff.

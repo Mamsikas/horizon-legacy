@@ -46,6 +46,9 @@ impl Device {
             .ring
             .reserve(bytes.len(), capacity)
             .ok_or("D3D9 screen stream overflow")?;
+        if discard {
+            self.state_cache.stream.invalidate();
+        }
         let serial = self
             .inner
             .stream_sequence
@@ -130,12 +133,11 @@ impl Device {
                 self.terrain_encoding = None;
                 self.screen_active = true;
             }
-            profile_call!(
-                self.inner,
-                SetStreamSource,
-                self.inner
-                    .device
-                    .SetStreamSource(0, buffer, 0, size_of::<ScreenVertex>() as u32)
+            self.state_cache.bind_stream(
+                &self.inner,
+                buffer,
+                size_of::<ScreenVertex>() as u32,
+                crate::development_build() && self.caps.software_vertices,
             )?;
             profile_call!(
                 self.inner,

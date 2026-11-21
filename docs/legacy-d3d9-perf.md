@@ -378,3 +378,51 @@ API and scratch census entry; retain the convert/submit spans. This is an
 unproven/neutral experiment, not a confirmed regression or improvement. No new
 calibration capture or mandatory in-game switch is requested. GPU timestamps,
 per-material/clip attribution and hardware compatibility smoke remain open.
+
+## Next candidate: within-frame stream-0 binding reuse
+
+Following rollback e21b18494f984bc51319dd40a27c7c6f0741319e, the next independent
+change targets measured actual `SetStreamSource` calls: 286.8/frame in walk solid,
+114.5 in dynamic entities, 43/26 in standing solid/translucent. These are setter
+calls per draw, not proof that all of those calls change the bound buffer. The
+copy experiment's weak wall-time result argues against retaining extra copies;
+this trial instead removes redundant API requests without repacking any geometry.
+
+Only dev software VP enables reuse. One stream-0 key stores the native VB
+identity, byte offset and stride. An identical successful binding skips the
+setter; a changed key submits the original call. Failed calls clear the key.
+All six draw binding paths, including Full32, hardware compact calls and GUI
+XYZRHW28, use the same helper. Hardware VP and ordinary packages still submit
+every setter; their vertex formats and draw arguments stay unchanged.
+
+The key is non-owning (24 bytes on x64, 16 on x86), with no allocations or extra
+VB references. D3D9 already retains the currently bound VB, preventing identity
+reuse while it remains bound. StateCache's existing per-frame reset clears it;
+real Reset clears it before dropping/unbinding DEFAULT resources, including a
+failed reset. Both dynamic rings also clear it on DISCARD as a conservative
+rename barrier. NOOVERWRITE writes do not change stream identity/layout. The
+only direct setter outside the helper is Reset's null bind, explicitly covered
+by invalidation. Input declarations, FVF changes, render targets and transforms
+are still set by their original paths. No cross-frame coherence is assumed.
+
+`stream_requests` is an added scalar in the existing per-pass log; COM array
+order/meaning and the three old cache-request counters are unchanged. It counts
+logical draw binds; the COM SetStreamSource column includes actual calls,
+including Reset's explicit null bind. No per-draw timer/string/allocation is
+added. The hotkey and all a974 consolidation storage remain removed. There is
+one default strategy per binary, identified by build SHA and the startup
+`stream0_cache enabled=...` line, with no experiment environment variable.
+
+Compare this candidate primarily with the existing fc813 reference: it restores
+that upload strategy and adds only stream-bind reuse plus diagnostics. The a974
+run remains useful context, but differs in upload granularity. Keep the same
+settings/full route and retain logs/profiles. Expected evidence is fewer actual
+SetStreamSource calls than stream_requests at matching geometry/draw volumes;
+any frame-time gain, driver quirks, visual correctness and hardware pacing remain
+unconfirmed. This is another bounded hypothesis, not a promised FPS improvement.
+
+Local candidate checks passed: 30 diagnostic D3D9 CPU tests (including native
+binding coherence across buffer/layout changes, failed calls, invalidation and
+disabled mode), Clippy with warnings denied on Linux and Win7 x64, diagnostics-off
+Win7 x64 compile, module formatting, repository hygiene and 15 import-policy
+tests. Native package audits and actual GMA/HD4570 smoke are separate checks.

@@ -196,6 +196,7 @@ struct StateCache {
     stage: [[Option<u32>; 33]; 3],
     sampler: [[Option<u32>; 14]; 2],
     textures: [usize; 2],
+    stream: crate::stream_cache::StreamCache,
 }
 impl Default for StateCache {
     fn default() -> Self {
@@ -204,10 +205,40 @@ impl Default for StateCache {
             stage: [[None; 33]; 3],
             sampler: [[None; 14]; 2],
             textures: [usize::MAX; 2],
+            stream: crate::stream_cache::StreamCache::default(),
         }
     }
 }
 impl StateCache {
+    #[inline(always)]
+    fn bind_stream(
+        &mut self,
+        inner: &Inner,
+        buffer: &IDirect3DVertexBuffer9,
+        stride: u32,
+        enabled: bool,
+    ) -> windows::core::Result<()> {
+        profile_count!(inner, |c| c.stream_requests += 1);
+        let binding = crate::stream_cache::Binding {
+            buffer: buffer.as_raw() as usize,
+            offset: 0,
+            stride,
+        };
+        // SetStreamSource retains the bound VB in D3D9. Its non-owning identity
+        // cannot be recycled while still bound. All stream-0 setters use this
+        // path except Reset's null bind, which explicitly invalidates it.
+        self.stream.bind(binding, enabled, || {
+            // SAFETY: the caller validated the owned live VB and its layout;
+            // this method only omits a setter for an identical native binding.
+            unsafe {
+                profile_call!(
+                    inner,
+                    SetStreamSource,
+                    inner.device.SetStreamSource(0, buffer, 0, stride)
+                )
+            }
+        })
+    }
     fn render(
         &mut self,
         inner: &Inner,
@@ -576,6 +607,12 @@ impl Device {
             stream_locks: 0,
             index_uploads: 0,
         };
+        if crate::development_build() {
+            log::info!(
+                "D3D9 stream0_cache enabled={} lifetime=frame invalidate_on_discard=true",
+                software_vertices
+            );
+        }
         result.create_indices()?;
         if raw.PixelShaderVersion >= 0xffff_0200
             && raw.MaxTextureBlendStages >= 3
@@ -936,6 +973,7 @@ impl Device {
             Ok(()) => {}
         }
         if self.reset_pending {
+            self.state_cache.stream.invalidate();
             self.detach_presentation();
             // Textures/indices are MANAGED. Terrain buffers have a CPU cache in the
             // caller; invalidate all DEFAULT handles, including reused-device owners.
@@ -1544,12 +1582,11 @@ impl Device {
                 self.inner.device.SetIndices(indices)
             )?;
             self.using_dynamic_indices = true;
-            profile_call!(
-                self.inner,
-                SetStreamSource,
-                self.inner
-                    .device
-                    .SetStreamSource(0, raw, 0, mesh.stride() as u32)
+            self.state_cache.bind_stream(
+                &self.inner,
+                raw,
+                mesh.stride() as u32,
+                crate::development_build() && self.caps.software_vertices,
             )?;
             profile_call!(
                 self.inner,
@@ -1673,12 +1710,11 @@ impl Device {
                 SetIndices,
                 self.inner.device.SetIndices(&indices.raw)
             )?;
-            profile_call!(
-                self.inner,
-                SetStreamSource,
-                self.inner
-                    .device
-                    .SetStreamSource(0, raw, 0, mesh.stride() as u32)
+            self.state_cache.bind_stream(
+                &self.inner,
+                raw,
+                mesh.stride() as u32,
+                crate::development_build() && self.caps.software_vertices,
             )?;
             profile_call!(
                 self.inner,
@@ -2012,12 +2048,11 @@ impl Device {
             .ok_or("D3D9 terrain buffer needs re-upload after Reset")?;
         // SAFETY: range checked above; shared indices start at zero relative to the base vertex.
         unsafe {
-            profile_call!(
-                self.inner,
-                SetStreamSource,
-                self.inner
-                    .device
-                    .SetStreamSource(0, raw, 0, mesh.stride() as u32)
+            self.state_cache.bind_stream(
+                &self.inner,
+                raw,
+                mesh.stride() as u32,
+                crate::development_build() && self.caps.software_vertices,
             )?;
             profile_call!(
                 self.inner,
@@ -2070,12 +2105,11 @@ impl Device {
                 .ok_or("D3D9 dynamic vertex buffer missing")?;
             // SAFETY: the staged range fits the live buffer and is a complete primitive.
             unsafe {
-                profile_call!(
-                    self.inner,
-                    SetStreamSource,
-                    self.inner
-                        .device
-                        .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)
+                self.state_cache.bind_stream(
+                    &self.inner,
+                    buffer,
+                    size_of::<Vertex>() as u32,
+                    crate::development_build() && self.caps.software_vertices,
                 )?;
                 if kind == 2 {
                     profile_call!(
@@ -2167,12 +2201,11 @@ impl Device {
             .ok_or("D3D9 missing staged buffer")?;
         // SAFETY: owner, upload generation and bounds were checked; no raw resources escape.
         unsafe {
-            profile_call!(
-                self.inner,
-                SetStreamSource,
-                self.inner
-                    .device
-                    .SetStreamSource(0, buffer, 0, size_of::<Vertex>() as u32)
+            self.state_cache.bind_stream(
+                &self.inner,
+                buffer,
+                size_of::<Vertex>() as u32,
+                crate::development_build() && self.caps.software_vertices,
             )?;
             profile_call!(
                 self.inner,
@@ -2237,6 +2270,9 @@ impl Device {
             .transient_ring
             .reserve(bytes.len(), self.transient_capacity)
             .ok_or("D3D9 transient ring overflow")?;
+        if discard {
+            self.state_cache.stream.invalidate();
+        }
         let buffer = self
             .transient
             .as_ref()
