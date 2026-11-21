@@ -783,3 +783,95 @@ renderer test check. The movement and unload behavior still needs a GMA smoke.
 | --- | --- | --- |
 | x64 | [14706330886](https://github.com/Mamsikas/horizon-legacy/actions/runs/44899838360/artifacts/14706330886) | `f320a4285ddf4d9b8f8b49d2ad658768b386b3b5508201912b761a4f9ec87bc4` |
 | x86 | [14705399052](https://github.com/Mamsikas/horizon-legacy/actions/runs/44899838360/artifacts/14705399052) | `6684d42f503043b0337f53594b115e3ada1ef10cbbfdb0e2a96c4375ef6bf72d` |
+
+## Dynamic entity atlas, 2026-11-21
+
+The updated GMA recordings identify clean
+`2129b7999aa35922cacbcc2cd6c395e5197499c4` through the native log.
+`profile-20261121-121057Z` recorded 1,825 walk frames in 152.900 s.
+`profile-20261121-120822Z` recorded 4,409 standing frames in 121.106 s.
+The profiles contain client spans and frame histograms. GPU timestamps and
+sampled CPU stacks are absent. The native log's complete windows cover
+1,742 walk and 4,179 standing frames with zero aborted frames or tracked
+COM failures.
+
+| GMA walk metric | `1c7f544842` | `2129b7999a` |
+| --- | ---: | ---: |
+| FPS, full capture | 11.605 | 11.936 |
+| Renderer wall, ms/frame | 61.213 | 59.258 |
+| Slowest 1% mean, ms | 235.894 | 219.586 |
+| Solid terrain wall, ms/frame | 32.448 | 32.393 |
+| Dynamic entity pass wall, ms/frame | 14.338 | 12.507 |
+| Dynamic indexed draws/frame | 144.56 | 94.95 |
+| Dynamic SetTexture calls/frame | 144.20 | 94.58 |
+| Dynamic indexed NumVertices sum/frame | 8,188 | 8,390 |
+| Static entity pass wall, ms/frame | 1.071 | 1.082 |
+
+The native dynamic/static rows use complete log windows. Both walk
+histograms give p50/p95/p99 bounds of [75,100), [100,150) and [150,250) ms.
+The time-matched 20–150 s segments average 12.01 and 12.28 FPS.
+At 115–120 s, the aggregate client `entities` span averages 55.01 and 36.54
+ms/frame. That span includes early dynamic and static work. Its
+dynamic submit lap falls from 8.94 to 7.03 ms/frame in the full capture.
+The heaviest complete dynamic window in each run falls from 53.93 to 34.40
+ms/frame, 678 to 291 draws and 679 to 292 texture calls at 24.6k and 23.4k
+submitted vertices. The static path changed in this build. Its measured
+cost is stable, so the change in dynamic submission needs separate
+attribution. The two runs show how strongly route time can respond to
+packet fragmentation at comparable geometry volume.
+
+Standing averages 36.406 FPS with a 50.533 ms slowest-1% mean. At 15–25,
+30–80 and 95–105 s the latest FPS is 43.2, 31.2 and 43.1. Process CPU is
+1.274, 1.883 and 1.231 logical CPUs. Solid and translucent keep 43 and 26
+indexed draws/frame and 24,624 and 20,084 submitted vertices/frame across
+complete windows. Dynamic and static entity draws are zero. The earlier
+thread CPU capture identifies one additional busy thread during this
+plateau. The executing stack on that thread remains open. Win7 requires
+an external stack capture because the built-in sampling profiler is Linux
+only. A short Very Sleepy capture during the plateau can be resolved
+against the matching build's module bases and COFF symbols.
+
+At upstream `f037744a79f9982c47876f49c5a3067279f88706`, 370 commits beyond
+the integrated source, terrain view distance, block-entity range/frustum
+selection and particle geometry still use separate filters. The
+block-entity and terrain range functions and the shared particle geometry
+function give identical source hashes at the two revisions. The changes
+to item frames in this range concern the break hook. An object drawn beyond
+the terrain boundary can still come from a live entity or resident column.
+The screenshot shows this boundary, while actual column unload requires a
+position and lifecycle trace.
+
+The `dx9-dev` atlas candidate is
+`b1a03b1588a347542cd4a40ae0802613d6e7c898`. Upstream wgpu already shares a
+single 2D texture and large indexed material runs for ordinary entities.
+The DX9 change reuses its own virtual atlas texels, tile padding, mapping
+and ordered quad stream. A qualifying dev SWVP pass has at least 16 adjacent
+same-state splits caused by shared-atlas pages. Later dynamic passes try
+one extra 2048-square managed texture if its 16 MiB fits the budget and
+caps. A 128px tile with gutters allows 225 slots. Tile refreshes feed both
+placements from the same source. The separate layout keeps static and HUD
+UVs valid. Sprite and foil order, alpha/depth, the vertex payload and shader
+paths follow their existing rules. Setup needs a temporary 16 MiB blank
+image for the new texture. The extra page and its bounded tile metadata
+are retired on capacity, resource allocation failure or budget pressure.
+Device loss uses the existing recovery and pending-patch retry. Placement
+failure remaps the pass before drawing it.
+
+The new log reports ordinary, sprite and foil ranges plus adjacent page
+breaks and active compact tiles. Compare the new walk against `2129b7999a`,
+especially the 100–125 s segment. Use actual dynamic indexed draws,
+texture calls, NumVertices and submit wall. Check the first atlas fill
+for a frame-time spike. The CPU test covers exact tile seam coordinates,
+a patch queued for both layouts and deterministic fallback on a full page.
+Visual acceptance includes player skins, signs, particles and glint, followed
+by resize, resource reload, GMA timing and HD4570 hardware smoke.
+
+[Win7 package run 44905517691](https://github.com/Mamsikas/horizon-legacy/actions/runs/44905517691)
+passed the build and import audit, import-policy tests and the CPU resource
+and embedded SM2 checks for both targets. The ZIPs contain build metadata
+and executable checksums.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [14708930300](https://github.com/Mamsikas/horizon-legacy/actions/runs/44905517691/artifacts/14708930300) | `0a18ba47fa9530eafdaeb9e99a531bdb228c698d7b0922f1f7314651fba93eb5` |
+| x86 | [14708935101](https://github.com/Mamsikas/horizon-legacy/actions/runs/44905517691/artifacts/14708935101) | `cf8dc5fce08bd4a51a3b2232b6f505d8f268d15b2124b1d329b710c5b9207573` |
