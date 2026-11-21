@@ -648,3 +648,31 @@ unload/reload, resource pack and resize/Reset. Capture standing on the same
 build with both profiler sides and the separate thread CPU utility. The standing
 probe can be analyzed independently of the static experiment because the
 reference standing scene has no material static-entity draws.
+
+## Package validation for 1c7f544842
+
+Source `1c7f54484286a4b3e907191a24928c8b39aeb56e` was checked out by both jobs of
+[Win7 run 44892116375](https://github.com/Mamsikas/horizon-legacy/actions/runs/44892116375).
+Pinned build-std/ThinLTO packaging, the client and COM probe import audits,
+the 15 import-policy tests and 29 CPU DX9 tests passed for both targets.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [14702678479](https://github.com/Mamsikas/horizon-legacy/actions/runs/44892116375/artifacts/14702678479) | `4b40effe28db72671b05666dea9582bf99d6020322a3f32f44e36c7e00759d57` |
+| x86 | [14702859381](https://github.com/Mamsikas/horizon-legacy/actions/runs/44892116375/artifacts/14702859381) | `2bcfdb3b37b8d95bff81d9cf09705dd512b572b8769b6f491cb26f8cd1413386` |
+
+GitHub's artifact digests agree with the upload job logs. The packages include
+`build-info.txt` and `SHA256SUMS` for the tested executable. The renderer
+also passed local optimized Win7 x64/x86 compile checks with and without dev
+diagnostics and a Win7 x64 test compile. The local DX9 diagnostic suite passed
+31 CPU tests. The full `pr_ready --quick` remains red on the previous Python,
+format and Clippy checks and the same 32 modern wgpu tests. Runtime cache
+reuse, visuals and Reset still need the GMA test. HD4570 hardware smoke is open.
+
+For interpreting the existing combined reference, both logged routes contain
+a common 0–150 s interval. The combined run draws 54 more frames there, 34 of
+them in the first 20 s. From 20–150 s the reference and combined averages
+are 11.61 and 11.76 FPS. The 100–125 s interval is 8.48 and 8.96 FPS, with
+entity draw wall time of 36.12 and 33.39 ms/frame. Early long stalls contribute
+to the difference in the capture-wide slowest 1% mean. Use the stage and
+upload counters alongside route FPS to evaluate this separate experiment.
