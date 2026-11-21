@@ -288,3 +288,40 @@ An unfiltered renderer/dependency Clippy run stops on the inherited
 `unnecessary_lazy_evaluations` in
 `horizon-world/src/worldgen/structure/piece_limited.rs:534`; that file is
 byte-identical to the tested baseline and is outside this renderer patch.
+
+## Package validation for a974320ab6
+
+Binary source: `a974320ab69ba16959fd1b96ac31589a8c739406`; measured input
+baseline: `fc813ed9fece4e115380533c5c7d0827ab26c045`. Both jobs of
+[Win7 run 44867167769](https://github.com/Mamsikas/horizon-legacy/actions/runs/44867167769)
+succeeded on 2026-11-21. Each compiled the full client with pinned build-std,
+legacy ThinLTO and the existing SSE targets, passed the Win7 client import audit
+and COM ABI probe, 29 normal D3D9 CPU tests and 15 import-policy tests.
+
+| Package | Artifact | GitHub uploaded-ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [14692957442](https://github.com/Mamsikas/horizon-legacy/actions/runs/44867167769/artifacts/14692957442) | `d0f449a0b62c9e73b4e970cdad9d9c66008ff93611ba0c4385c5797d5033d98c` |
+| x86 | [14692981730](https://github.com/Mamsikas/horizon-legacy/actions/runs/44867167769/artifacts/14692981730) | `6e34a49f41b889ef863d4d078f2b9fa607764d387eb17522aea5667dab6403ee` |
+
+API digests match the CI upload logs. Independent local ZIP rehash/extraction
+was blocked by HTTP 403 from the environment's file-storage proxy; these are
+GitHub's digests. Retain package `build-info.txt` and internal `SHA256SUMS`.
+
+The full local `pr_ready --quick --base fc813ed9fece4e115380533c5c7d0827ab26c045`
+completed on the unchanged candidate worktree in 38m28s and is **not green**.
+It reports nine standalone-format command failures in the two unchanged gameplay
+files noted above, workspace Clippy warnings, and Python 1985 run / 4 failures /
+63 errors / 13 skips. Displayed Python failures include removed upstream runner
+and coverage assumptions and a prebuilt-game XZ fixture mismatch; remaining
+Python causes were not diagnosed in this DX9 iteration. Rust tests report 2690
+passed / 32 failed; the failures are in modern/wgpu renderer tests. Their causes
+were not diagnosed here either. Ten doc-tests passed. Public-tree, repository
+hygiene, layer, address, export-list and test-stand-in checks passed. No unrelated
+upstream test or gameplay code was changed to make this run green.
+
+Next evidence is the complete previous ~150-second GMA walk, using the same new
+EXE in B/A/A/B where practical, with separate chat captures and one shared log.
+Hold the focused hotkey about half a second at low FPS; keep diagnostics enabled
+and remove the previous `HORIZON_D3D9_LOG_STATS=0` override. Standing is the
+regression control. Hardware FPS/image/Reset/HD4570 acceptance remains pending;
+no optimization win is claimed by these builds.
