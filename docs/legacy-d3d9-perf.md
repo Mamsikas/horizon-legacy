@@ -958,3 +958,19 @@ The worker runs outside world ticks and may start after a quiet generation
 interval, or after 60 s from creating the terrain context. Freezing world
 ticks does not stop it. It is shared world generation, outside the DX9
 work in this fork.
+
+### Win7 packages for tile recycling
+
+[Run 45006402367](https://github.com/Mamsikas/horizon-legacy/actions/runs/45006402367)
+built clean `f75bb8c4002e709029fd4f4ea04d8f7736e06d61` for both targets.
+The Win7 import audit, import-policy tests and CPU resource/embedded SM2
+checks passed. Local renderer compile checks passed on both targets with
+and without dev instrumentation, including the x64 test compile. Both
+atlas tests passed in the CPU harness. A synthetic 400-tile route also
+stayed on one page after filling 225 slots and within seven new tiles
+per frame, with no COM work in the harness.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [14748477272](https://github.com/Mamsikas/horizon-legacy/actions/runs/45006402367/artifacts/14748477272) | `2accc7537f9c747fb34a4458f593d8b549eeb27a056b72f3450ad6b3f615f022` |
+| x86 | [14748666368](https://github.com/Mamsikas/horizon-legacy/actions/runs/45006402367/artifacts/14748666368) | `a8b15e033b5deacb26100de626b61b901e83b60ce18510241fe4bb1299051e1a` |
