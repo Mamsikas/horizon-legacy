@@ -26,7 +26,7 @@ pub use atlas::{AtlasLayout, AtlasSet, AtlasUv};
 pub mod clipboard;
 
 mod geometry;
-pub use geometry::{IndexBatch, MeshData, PaintWindow, Ring, Vertex, fog_interval};
+pub use geometry::{IndexBatch, IndexSavings, MeshData, PaintWindow, Ring, Vertex, fog_interval};
 mod preferences;
 pub use preferences::{ColorDepth, Preferences, VertexProcessing};
 #[cfg(any(windows, test))]

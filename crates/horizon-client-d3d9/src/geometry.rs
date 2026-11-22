@@ -188,6 +188,11 @@ pub(crate) struct IndexWindow {
     pub start: u32,
     pub end: u32,
 }
+#[derive(Clone, Copy, Default)]
+pub struct IndexSavings {
+    pub draws: u32,
+    pub extra_vertices: u32,
+}
 impl IndexBatch {
     pub fn clear(&mut self) {
         self.indices.clear();
@@ -228,6 +233,74 @@ impl IndexBatch {
         }
         self.end = self.end.max(end);
         Ok(())
+    }
+    /// Build ordered windows from canonical solid ranges. Each joined window
+    /// can expose at most 1/16 more vertices to software VP than it references.
+    pub fn dense_solid(
+        &mut self,
+        ranges: &[(u32, u32)],
+        max_primitives: u32,
+        byte_limit: u64,
+    ) -> Result<Option<IndexSavings>, String> {
+        const MAX_GAP: u32 = 32;
+        const MAX_MERGED_WIDTH: u32 = 2048;
+        // Allow for binding this IB and restoring the shared quad indices.
+        const MIN_SAVED_DRAWS: usize = 3;
+        self.clear();
+        if ranges.len() <= MIN_SAVED_DRAWS {
+            return Ok(None);
+        }
+        let mut offset = 0;
+        let mut extra_vertices = 0;
+        for &(first, count) in ranges {
+            let Some(end) = first.checked_add(count).filter(|&end| end <= 65536) else {
+                return Ok(None);
+            };
+            if count == 0 || count % 4 != 0 || first % 4 != 0 || count / 2 > max_primitives {
+                return Ok(None);
+            }
+            let index_count = count / 2 * 3;
+            let index_start = offset;
+            offset += index_count;
+            if let Some(window) = self.windows.last_mut() {
+                let Some(gap) = first.checked_sub(window.end) else {
+                    return Ok(None);
+                };
+                let selected = (window.count / 3) * 2 + count;
+                let width = end - window.start;
+                if gap <= MAX_GAP
+                    && width <= MAX_MERGED_WIDTH
+                    && width - selected <= selected / 16
+                    && selected / 2 <= max_primitives
+                {
+                    window.count += index_count;
+                    window.end = end;
+                    extra_vertices += gap;
+                    continue;
+                }
+            }
+            self.windows.push(IndexWindow {
+                first: index_start,
+                count: index_count,
+                start: first,
+                end,
+            });
+        }
+        let draws = ranges.len() - self.windows.len();
+        let bytes = u64::from(offset) * 2 + (self.windows.len() * size_of::<IndexWindow>()) as u64;
+        if draws < MIN_SAVED_DRAWS || bytes > byte_limit {
+            return Ok(None);
+        }
+        for &(first, count) in ranges {
+            self.append(first, count)?;
+        }
+        self.window_at = self.indices.len();
+        self.window_start = 0;
+        self.window_end = 0;
+        Ok(Some(IndexSavings {
+            draws: draws as u32,
+            extra_vertices,
+        }))
     }
     pub fn indices(&self) -> &[u16] {
         &self.indices
@@ -345,6 +418,69 @@ mod tests {
         assert_eq!(batch.finish_group(), Some(0));
         let w = &batch.windows()[0];
         assert_eq!((w.first, w.count, w.start, w.end), (0, 6, 4, 8));
+    }
+    #[test]
+    fn dense_solid_windows_preserve_indices_and_leave_wide_or_sparse_ranges_tight() {
+        let ranges = [
+            (0, 64),
+            (68, 64),
+            (136, 64),
+            (204, 64),
+            (512, 1024),
+            (1540, 1024), // Width would exceed 2048.
+            (2656, 4),
+            (2664, 4), // A four-vertex gap is too sparse for these quads.
+            (3000, 512),
+            (3548, 512), // A gap larger than 32 breaks the window.
+        ];
+        let mut baseline = IndexBatch::default();
+        for (first, count) in ranges {
+            baseline.append(first, count).unwrap();
+        }
+        let mut dense = IndexBatch::default();
+        let savings = dense.dense_solid(&ranges, 32768, 1 << 20).unwrap().unwrap();
+        assert!(dense.groups_complete());
+        assert_eq!(dense.indices(), baseline.indices());
+        assert_eq!((savings.draws, savings.extra_vertices), (3, 12));
+        let windows = dense.windows();
+        assert_eq!(windows.len(), ranges.len() - 3);
+        assert_eq!(
+            (windows[0].start, windows[0].end, windows[0].count),
+            (0, 268, 384)
+        );
+        for (window, &(first, count)) in windows[1..].iter().zip(&ranges[4..]) {
+            assert_eq!(
+                (window.start, window.end, window.count),
+                (first, first + count, count / 2 * 3)
+            );
+        }
+        for pair in windows.windows(2) {
+            assert_eq!(pair[0].first + pair[0].count, pair[1].first);
+        }
+    }
+    #[test]
+    fn dense_solid_declines_when_bounds_caps_or_budget_prevent_savings() {
+        let ranges = [(0, 64), (68, 64), (136, 64), (204, 64)];
+        let bytes = 256 * 3 + size_of::<IndexWindow>() as u64;
+        let mut dense = IndexBatch::default();
+        assert!(
+            dense
+                .dense_solid(&ranges, 128, bytes - 1)
+                .unwrap()
+                .is_none()
+        );
+        assert!(dense.dense_solid(&ranges, 127, bytes).unwrap().is_none());
+        assert!(
+            dense
+                .dense_solid(&ranges[..3], 128, bytes)
+                .unwrap()
+                .is_none()
+        );
+        let mut overlap = ranges;
+        overlap[1].0 = 60;
+        assert!(dense.dense_solid(&overlap, 128, bytes).unwrap().is_none());
+        assert!(dense.indices().is_empty());
+        assert!(dense.dense_solid(&ranges, 128, bytes).unwrap().is_some());
     }
     #[test]
     fn shadows_preserve_every_vertex_bit_and_reuse_decode_storage() {

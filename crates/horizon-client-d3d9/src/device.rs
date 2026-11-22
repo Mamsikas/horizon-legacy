@@ -175,6 +175,9 @@ impl Indices {
     pub fn bytes(&self) -> u64 {
         u64::from(self.count) * 2
     }
+    pub fn cpu_bytes(&self) -> usize {
+        self.windows.capacity() * size_of::<crate::geometry::IndexWindow>()
+    }
 }
 impl Mesh {
     /// Reset invalidates DEFAULT buffers; their owner can lazily upload its CPU data again.
@@ -1736,9 +1739,30 @@ impl Device {
             .windows
             .get(group as usize)
             .ok_or("D3D9 missing cached index group")?;
+        self.draw_index_windows(mesh, indices, std::slice::from_ref(window))
+    }
+    pub fn draw_dense_solid(
+        &mut self,
+        mesh: &Mesh,
+        indices: &Indices,
+        _savings: crate::IndexSavings,
+    ) -> Result<()> {
+        self.draw_index_windows(mesh, indices, &indices.windows)?;
+        profile_count!(self.inner, |c| {
+            c.solid_draws_saved += u64::from(_savings.draws);
+            c.solid_extra_vertices += u64::from(_savings.extra_vertices);
+        });
+        Ok(())
+    }
+    fn draw_index_windows(
+        &mut self,
+        mesh: &Mesh,
+        indices: &Indices,
+        windows: &[crate::geometry::IndexWindow],
+    ) -> Result<()> {
         if !Rc::ptr_eq(&mesh.owner, &self.inner)
             || !Rc::ptr_eq(&indices.owner, &self.inner)
-            || window.end > mesh.filled
+            || windows.iter().any(|window| window.end > mesh.filled)
         {
             return Err("D3D9 cached draw bounds/device mismatch".into());
         }
@@ -1752,34 +1776,35 @@ impl Device {
                 SetIndices,
                 self.inner.device.SetIndices(&indices.raw)
             )?;
+            self.using_dynamic_indices = true;
             self.state_cache.bind_stream(
                 &self.inner,
                 raw,
                 mesh.stride() as u32,
                 crate::development_build() && self.caps.software_vertices,
             )?;
-            profile_call!(
-                self.inner,
-                DrawIndexedPrimitive,
-                self.inner.device.DrawIndexedPrimitive(
-                    D3DPT_TRIANGLELIST,
-                    0,
-                    window.start,
-                    window.end - window.start,
-                    window.first,
-                    window.count / 3,
-                )
-            )?;
         }
-        self.using_dynamic_indices = true;
-        profile_count!(self.inner, |c| c.draw(
-            true,
-            window.end - window.start,
-            window.count / 3,
-            0,
-            false
-        ));
-        self.record_draw();
+        for window in windows {
+            let vertices = window.end - window.start;
+            let triangles = window.count / 3;
+            // SAFETY: the validated windows refer to the bound mesh and indices.
+            unsafe {
+                profile_call!(
+                    self.inner,
+                    DrawIndexedPrimitive,
+                    self.inner.device.DrawIndexedPrimitive(
+                        D3DPT_TRIANGLELIST,
+                        0,
+                        window.start,
+                        vertices,
+                        window.first,
+                        triangles,
+                    )
+                )?;
+            }
+            profile_count!(self.inner, |c| c.draw(true, vertices, triangles, 0, false));
+            self.record_draw();
+        }
         Ok(())
     }
     pub fn state(

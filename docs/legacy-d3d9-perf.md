@@ -1045,3 +1045,105 @@ padded pitch. Hardware timing for the direct clear remains pending.
 | --- | --- | --- |
 | x64 | [14750265428](https://github.com/Mamsikas/horizon-legacy/actions/runs/45009656070/artifacts/14750265428) | `706d6b8d9abc994bfd9e7ea0db5d0894a39913e91b0260812535484bbf9f7fc0` |
 | x86 | [14750130891](https://github.com/Mamsikas/horizon-legacy/actions/runs/45009656070/artifacts/14750130891) | `c9d09a784fdf35a48363144da51bf3240d6ab5c80678ba8715d02d6515ea9c64` |
+
+## GMA direct-clear captures and solid terrain priority, 2026-11-22
+
+`walk (2).hzperf`, `standing (2).hzperf` and `latest (18).log` identify the
+clean `39dd48f04f7fe560847ccaae56cafc5503a0b2e2` build on Chell 1.8b,
+GMA3150 HAL software VP, Win7 x64, 1024×600 and RGB565. Walk has 1,915
+frames over 150.876 s. The standing control has 4,435 frames over 122.611 s.
+
+| Walk metric | Shared entity atlas | Compact page with reuse | Direct clear with reuse |
+| --- | ---: | ---: | ---: |
+| FPS | 11.764 | 13.035 | 12.693 |
+| DX9 renderer, ms/frame | 61.038 | 53.690 | 54.790 |
+| Solid, ms/frame | 32.182 | 31.251 | 31.909 |
+| Entities, ms/frame | 14.752 | 9.831 | 9.492 |
+| Dynamic conversion / submit, ms/frame | — / 8.457 | 4.129 / 4.202 | 4.407 / 4.038 |
+| Frame p50 / p95 / p99, ms | 82.18 / 132.04 / 158.26 | 72.12 / 122.83 / 201.10 | 73.69 / 126.98 / 191.69 |
+| Slowest 1% mean, ms | 198.30 | 258.40 | 236.74 |
+| 100–125 s FPS | 9.08 | 11.12 | 10.64 |
+
+The compact page activated 10.5 s before the new walk and reached 225
+slots. The initialization span falls outside the capture. The walk
+confirms the page stayed active after direct initialization. Its steady
+state and mixed differences against the reuse run give no timing for
+the one-off clear. The USHORT indexed draw counts and primitive bounds
+come from 29 complete native log windows over 1,853 walk frames and 23
+windows over 4,130 standing frames. All selected windows have zero
+aborted frames and zero recorded failures. There are no GPU timestamps.
+
+| Scene / native pass | Wall ms/frame | Indexed draws/frame | Sum NumVertices/frame | SetStreamSource/frame | SetTexture/frame |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Walk solid | 31.776 | 285.97 | 86,185 | 45.06 | 5.05 |
+| Walk translucent | 3.429 | 18.45 | 9,884 | 9.87 | 13.71 |
+| Walk dynamic entities | 8.887 | 6.00 | 8,602 | 1.11 | 4.75 |
+| Walk static entities | 1.035 | 4.65 | 2,098 | 4.37 | 2.25 |
+| Standing solid | 10.694 | 44.00 | 24,624 | 4.00 | 2.00 |
+| Standing translucent | 8.387 | 26.00 | 20,084 | 0.00 | 23.00 |
+
+Native pass boundaries differ slightly from the capture spans. In the
+capture every 5 s walk interval has more wall time in solid than in
+entities. Entities reach an average of 27.72 ms in the 115–120 s interval.
+An individual frame at 51.441 s has 82.93 ms of entities, including
+78.41 ms of dynamic submit, with 33.52 ms of solid. Those peaks still
+matter. Average solid is about 58% of DX9 wall. The regular path builds
+no index buffers in these windows, so the improvement target is the
+calls or their vertex and pixel workload. Time in the pass includes waits.
+
+Standing averages 36.171 FPS against 36.406 in the earlier logged control.
+The new 30–80 s interval averages 31.32 FPS, followed by 43.73 FPS from
+90–105 s. The older control averages about 31 and 43 FPS in those phases.
+Both have p50/p95/p99 bounds of [25,30), [30,40) and [40,50) ms. The new
+slowest 1% mean is 69.04 ms versus 50.53 ms. The longest burst around
+84.3 s is in solid and translucent at the same submitted geometry
+counts. The entity page was absent throughout standing. The cause of
+this short burst needs separate evidence from the previously sampled
+worldgen plateau.
+
+The integrated Horizon wgpu path and upstream `f037744a79f9982c47876f49c5a3067279f88706`
+reuse an entity stream partitioned by material. `EntityBatch::update`
+copies material runs into that stream, and the ordinary wgpu run goes
+through one indexed draw when there are no prepared model draws. Static
+block entities are cached by section revision. DX9 already borrows the
+long material runs, shared texture page and static section cache. The
+new route leaves several ms each in DX9 conversion and submission. It
+supports focusing on terrain while preserving entity caching and order.
+In `SectionLists::draw` wgpu binds a common VB/IB pair for a run and can
+use indirect multidraw. The DX9 candidate uses the common binding and
+tight indexed ranges supported by the existing HAL device.
+
+### Dev SWVP dense solid windows
+
+This experiment is active in dev SWVP. Each existing solid material,
+atlas, arena and fog batch starts with its same canonical range list.
+If the list repeats, the renderer tries a single immutable SYSTEMMEM
+INDEX16 buffer for it. Windows keep the order of the original indices.
+A joined window allows at most 32 vertices in each gap, 2,048 vertices
+in its span, and 1/16 additional vertices over the referenced count.
+Singletons keep their original bounds. The trial requires at least
+three saved draws per buffer to cover up to two new `SetIndices` calls.
+Sparse plans and failed optional IB allocations use the shared quad
+indices. Device loss follows the existing recovery path.
+
+Only the used indices are copied. Cache retention is limited to the
+lesser of 4 MiB and 1/16 of the configured mesh budget, including draw
+window metadata. Range copies reuse per-batch CPU vectors. Worker mesh
+data, visibility, vertex buffers, cutout tests and fog classification
+follow the same rules. An exact range change or inactive bucket drops
+its cached buffer, invalid arena IDs are removed on terrain preparation
+after Reset, and world and resource rebuilds clear the batch table. The
+ordinary SWVP and HW VS2 paths keep their existing strategies.
+
+`geometry.rs` builds and tests the ordered windows, `device.rs` submits
+them with one IB binding, `submit_profile.rs` reports `solid_draws_saved`
+and `solid_extra_vertices`, and `legacy/mesh.rs` with `legacy/frame.rs`
+handles visibility-key and budget reuse. Native `Solid` names the
+index upload bytes, `SetIndices` and actual draw and vertex counts. For
+these counters the same-frame reference is `dip_ranges + solid_draws_saved`
+and `dip_num_vertices - solid_extra_vertices`. That identifies whether
+the experiment activates even when scene workload shifts. Reduction in
+COM calls needs to pay for extra vertex processing and any IB uploads.
+Compare the same walk and standing with the `39dd48f04f` captures and
+review fog edges, foliage cutouts and resize. Visual tests, timing, and
+smoke on GMA3150 and HD4570 require native hardware.
