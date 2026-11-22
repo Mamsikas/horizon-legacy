@@ -1291,17 +1291,32 @@ impl Device {
         levels: u32,
         rgba: &[u8],
     ) -> Result<Texture> {
+        self.texture_with_pixels(width, height, levels, Some(rgba))
+    }
+
+    /// Allocate a single-level managed texture filled with transparent black.
+    pub fn zeroed_texture(&mut self, width: u32, height: u32) -> Result<Texture> {
+        self.texture_with_pixels(width, height, 1, None)
+    }
+
+    fn texture_with_pixels(
+        &mut self,
+        width: u32,
+        height: u32,
+        levels: u32,
+        rgba: Option<&[u8]>,
+    ) -> Result<Texture> {
         if width == 0
             || height == 0
             || width > self.caps.max_texture
             || height > self.caps.max_texture
-            || rgba.len() != width as usize * height as usize * 4
+            || rgba.is_some_and(|pixels| pixels.len() != width as usize * height as usize * 4)
         {
             return Err(format!(
                 "D3D9 texture: invalid {}x{}, {} bytes (caps {})",
                 width,
                 height,
-                rgba.len(),
+                rgba.map_or(0, <[u8]>::len),
                 self.caps.max_texture
             )
             .into());
@@ -1334,9 +1349,10 @@ impl Device {
                 .map(|l| u64::from((width >> l).max(1)) * u64::from((height >> l).max(1)) * 4)
                 .sum(),
         };
-        self.patch(&texture, 0, 0, 0, width, height, rgba)?;
+        self.write_texture(&texture, 0, 0, 0, width, height, rgba)?;
         Ok(texture)
     }
+
     pub fn patch(
         &mut self,
         texture: &Texture,
@@ -1347,6 +1363,19 @@ impl Device {
         height: u32,
         rgba: &[u8],
     ) -> Result<()> {
+        self.write_texture(texture, level, x, y, width, height, Some(rgba))
+    }
+
+    fn write_texture(
+        &mut self,
+        texture: &Texture,
+        level: u32,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        rgba: Option<&[u8]>,
+    ) -> Result<()> {
         if !Rc::ptr_eq(&texture.owner, &self.inner)
             || level >= texture.levels
             || width == 0
@@ -1355,7 +1384,7 @@ impl Device {
                 .is_none_or(|v| v > (texture.width >> level).max(1))
             || y.checked_add(height)
                 .is_none_or(|v| v > (texture.height >> level).max(1))
-            || rgba.len() != width as usize * height as usize * 4
+            || rgba.is_some_and(|pixels| pixels.len() != width as usize * height as usize * 4)
         {
             return Err("D3D9 texture patch bounds/device mismatch".into());
         }
@@ -1365,37 +1394,43 @@ impl Device {
             right: (x + width) as i32,
             bottom: (y + height) as i32,
         };
+        let row_bytes = width as usize * 4;
         let mut locked = D3DLOCKED_RECT::default();
-        // SAFETY: validated input length and rect. Copy rows using the runtime's pitch, converting RGBA to BGRA.
+        // SAFETY: validated input length and rect. Each write stays within
+        // the texel bytes of the locked rows, using the runtime's pitch.
         unsafe {
             profile_call!(
                 self.inner,
                 LockTexture,
                 texture.raw.LockRect(level, &mut locked, &rect, 0)
             )?;
-            if locked.pBits.is_null() || locked.Pitch < (width * 4) as i32 {
+            if locked.pBits.is_null() || locked.Pitch < row_bytes as i32 {
                 profile_call!(self.inner, UnlockTexture, texture.raw.UnlockRect(level))?;
                 return Err("D3D9 invalid texture lock pitch".into());
             }
-            for row in 0..height as usize {
-                let dest = std::slice::from_raw_parts_mut(
-                    locked.pBits.cast::<u8>().add(row * locked.Pitch as usize),
-                    width as usize * 4,
-                );
-                let source = &rgba[row * width as usize * 4..(row + 1) * width as usize * 4];
-                for (d, s) in dest
-                    .as_chunks_mut::<4>()
-                    .0
-                    .iter_mut()
-                    .zip(source.as_chunks::<4>().0)
-                {
-                    d.copy_from_slice(&[s[2], s[1], s[0], s[3]]);
+            let dest = locked.pBits.cast::<u8>();
+            let pitch = locked.Pitch as usize;
+            if let Some(rgba) = rgba {
+                for row in 0..height as usize {
+                    let dest = std::slice::from_raw_parts_mut(dest.add(row * pitch), row_bytes);
+                    let source = &rgba[row * row_bytes..(row + 1) * row_bytes];
+                    for (d, s) in dest
+                        .as_chunks_mut::<4>()
+                        .0
+                        .iter_mut()
+                        .zip(source.as_chunks::<4>().0)
+                    {
+                        d.copy_from_slice(&[s[2], s[1], s[0], s[3]]);
+                    }
                 }
+            } else {
+                zero_texture_rows(dest, row_bytes, pitch, height as usize);
             }
             profile_call!(self.inner, UnlockTexture, texture.raw.UnlockRect(level))?;
         }
-        self.uploads += rgba.len() as u64;
-        profile_count!(self.inner, |c| c.upload_bytes[3] += rgba.len() as u64);
+        let bytes = row_bytes as u64 * u64::from(height);
+        self.uploads += bytes;
+        profile_count!(self.inner, |c| c.upload_bytes[3] += bytes);
         Ok(())
     }
     pub fn mesh(&mut self, vertices: &[Vertex]) -> Result<Mesh> {
@@ -2430,6 +2465,46 @@ impl Vertex {
         }
     }
 }
+
+/// Clear texels without reading or writing row padding.
+///
+/// # Safety
+/// `dest` must name writable locked texture rows. `pitch` must be at least
+/// `row_bytes`, and each row's texel bytes must be within the same allocation.
+unsafe fn zero_texture_rows(dest: *mut u8, row_bytes: usize, pitch: usize, height: usize) {
+    // SAFETY: the caller guarantees every row is writable. Merge contiguous
+    // rows into one clear when the driver has not added row padding.
+    unsafe {
+        if pitch == row_bytes {
+            ptr::write_bytes(dest, 0, row_bytes * height);
+        } else {
+            for row in 0..height {
+                ptr::write_bytes(dest.add(row * pitch), 0, row_bytes);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zero_texture_rows;
+
+    #[test]
+    fn transparent_clear_keeps_pitch_padding_and_surrounding_bytes() {
+        for pitch in [8, 12] {
+            let mut bytes = [123u8; 40];
+            let mut expected = bytes;
+            for row in 0..3 {
+                let start = 4 + row * pitch;
+                expected[start..start + 8].fill(0);
+            }
+            // SAFETY: all three rows fit inside `bytes` and are disjoint.
+            unsafe { zero_texture_rows(bytes.as_mut_ptr().add(4), 8, pitch, 3) };
+            assert_eq!(bytes, expected);
+        }
+    }
+}
+
 pub fn rgba_to_argb(rgba: u32) -> u32 {
     (rgba & 0xff00ff00) | (rgba & 0xff) << 16 | (rgba >> 16 & 0xff)
 }

@@ -974,3 +974,59 @@ per frame, with no COM work in the harness.
 | --- | --- | --- |
 | x64 | [14748477272](https://github.com/Mamsikas/horizon-legacy/actions/runs/45006402367/artifacts/14748477272) | `2accc7537f9c747fb34a4458f593d8b549eeb27a056b72f3450ad6b3f615f022` |
 | x86 | [14748666368](https://github.com/Mamsikas/horizon-legacy/actions/runs/45006402367/artifacts/14748666368) | `a8b15e033b5deacb26100de626b61b901e83b60ce18510241fe4bb1299051e1a` |
+
+## GMA tile reuse and first atlas fill, 2026-11-22
+
+`profile-20261122-094047Z.hzperf` contains 2,041 frames in 156.578 s.
+The accompanying log identifies clean
+`f75bb8c4002e709029fd4f4ea04d8f7736e06d61`, Chell 1.8b and GMA3150
+HAL SWVP on Win7 x64. The two earlier November 22 walks are the references.
+The older recordings use the same route. Scene work can vary between runs.
+
+| Walk metric | Shared atlas | Compact page without reuse | Compact page with reuse |
+| --- | ---: | ---: | ---: |
+| FPS, full capture | 11.764 | 11.719 | 13.035 |
+| DX9 renderer wall, ms/frame | 61.038 | 60.189 | 53.690 |
+| Entities wall, ms/frame | 14.752 | 13.336 | 9.831 |
+| Dynamic entity submit, ms/frame | 8.457 | 7.690 | 4.202 |
+| Frame p50 / p95 / p99, ms | 82.18 / 132.04 / 158.26 | 79.06 / 141.93 / 201.31 | 72.12 / 122.83 / 201.10 |
+| Slowest 1% mean, ms | 198.30 | 245.45 | 258.40 |
+| 100–125 s FPS | 9.08 | 8.72 | 11.12 |
+| 115–120 s entities wall, ms/frame | 42.62 | 55.90 | 20.83 |
+
+The p50/p95/p99 values use nearest rank. Slow frame events cover all
+frames above 50 ms in these three captures. The event IDs are distinct and
+the counts match every histogram bucket above the threshold. That allows
+these percentiles to be resolved within the buckets.
+
+The page activated near 2.7 s in the reuse run and stayed available
+through the end. The last complete native log window has 225 occupied
+slots, 2,197 compact passes and 28 recycled slots, with the first
+recycling seen around 144 s. The working set grew more slowly in this run.
+The 100–125 s result shows the value of retaining compact submission
+before recycling was needed. Across complete native windows within this
+section the no-reuse and reuse runs have 18,052 and 18,237 indexed
+vertices/frame. They make 412.89 and 9.70 indexed draws/frame, 412.42 and
+7.05 texture calls/frame, and spend 35.79 and 16.81 ms/frame in the native
+dynamic entity pass. The texture write volume is 56.83 and 0.63
+KiB/frame. No GPU timestamps were collected.
+
+The native window ending around 7.7 s wrote 20.51 MiB in the dynamic
+entity pass. The bytes account for the 16 MiB zero fill plus seventy
+padded tile updates. One frame at 3.8 s has 116.8 ms in the dynamic submit
+span. The window locates the first texture fill alongside that frame.
+The exact time inside creation/clear needs its own span. The worst 1%
+still needs work, including stalls elsewhere in the renderer and tick
+path. The recycling candidate remains in dev for follow-up testing.
+
+The next dev build clears the optional page directly in the managed
+D3D9 texture lock. It retains the 2048-square page, format, transparent
+initial bytes and padded tile placement. This removes the temporary
+16 MiB allocation and its RGBA-to-BGRA pass. Driver creation, LockRect,
+writes to the texture and the actual tile uploads still have costs.
+Ordinary texture data and the existing fallback use the same write
+rules as before. The `d3d9_entity_page_init` span measures creation
+and clear on the one frame that allocates the page. The CPU byte test
+guards tightly packed and padded locks. Use a new cold walk and its log
+to measure this one-off change and check that steady-state coverage
+and the heavy section remain comparable.

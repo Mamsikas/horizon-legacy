@@ -656,11 +656,17 @@ impl<'a> PixelView<'a> {
             let id = s.pending[i];
             let (page, x, y) = s.locations[id].unwrap();
             if s.pages[page].is_none() {
-                let bytes = (side * side * 4) as usize;
-                let mut blank = Vec::new();
-                blank.try_reserve_exact(bytes)?;
-                blank.resize(bytes, 0);
-                s.pages[page] = Some(device.texture(side, side, 1, &blank)?);
+                let texture = if s.compact.is_some() {
+                    let _init = crate::spans::guard("d3d9_entity_page_init");
+                    device.zeroed_texture(side, side)?
+                } else {
+                    let bytes = (side * side * 4) as usize;
+                    let mut blank = Vec::new();
+                    blank.try_reserve_exact(bytes)?;
+                    blank.resize(bytes, 0);
+                    device.texture(side, side, 1, &blank)?
+                };
+                s.pages[page] = Some(texture);
             }
             self.image.decode(id, &mut scratch)?;
             let cell = self.image.cell();
