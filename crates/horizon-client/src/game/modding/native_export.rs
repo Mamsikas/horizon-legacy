@@ -119,7 +119,7 @@ impl Game<'_> {
                     && !self.options.paced_by_split
                     && r.supports_frame_export()
             })
-            .map(|r| r.device.limits().max_texture_dimension_2d);
+            .map(|r| r.max_texture_dimension());
         let world_ready = self.title.is_none()
             && self.player.is_some()
             && self.screen == Screen::Playing

@@ -12,6 +12,20 @@ pub(super) struct Sprites {
     mipmap_option: Option<u32>,
 }
 impl Sprites {
+    pub(super) fn honey_layers(&self, layers: &BTreeMap<String, u32>) -> Option<[u16; 3]> {
+        let layer = |name| u16::try_from(*layers.get(name)?).ok();
+        let ids = [
+            layer("minecraft:block/honey_block_bottom")?,
+            layer("minecraft:block/honey_block_side")?,
+            layer("minecraft:block/honey_block_top")?,
+        ];
+        let page = |id| self.layout.transform(u32::from(id)).ok().map(|t| t.page);
+        let shell_page = page(ids[0])?;
+        // Preserve the subsection's existing page order. A replacement pack
+        // can put differently sized honey sprites onto different pages.
+        (page(ids[1]) == Some(shell_page) && page(ids[2]) == Some(shell_page)).then_some(ids)
+    }
+
     pub fn new(
         device: &mut dx::Device,
         pixels: &[u8],

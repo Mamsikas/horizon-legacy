@@ -1226,8 +1226,6 @@ impl Item {
             Item::Horizon(
                 H::LodDistance
                     | H::FarDetail
-                    | H::BlueMapAutoDetect
-                    | H::BlueMapRadius
                     | H::PresentMode
                     | H::DynamicResolution
                     | H::TargetFps

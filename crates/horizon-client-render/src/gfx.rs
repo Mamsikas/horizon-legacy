@@ -490,6 +490,7 @@ mod arena;
 pub mod capture;
 mod celestial;
 mod census;
+pub use census::GpuMemory;
 pub mod compositor;
 pub(crate) mod core_lines;
 pub(crate) mod core_sky;

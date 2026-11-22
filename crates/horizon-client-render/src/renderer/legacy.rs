@@ -49,6 +49,7 @@ pub struct Renderer {
     pub info: wgpu::AdapterInfo,
     pub suspended: bool,
     diagnostics: bool,
+    msaa_requested: bool,
     pub paced_elsewhere: bool,
     pub gpu_times: Vec<f32>,
     pub lightmap_pixels: [u8; 1024],
@@ -161,6 +162,7 @@ impl Renderer {
         settings: &crate::graphics::Graphics,
         _request: output::FrameRequest,
         _display: output::DisplayReading,
+        sprite_layers: Option<&BTreeMap<String, u32>>,
     ) -> Result<Self> {
         let size = window.inner_size();
         let mut device = match previous {
@@ -231,7 +233,12 @@ impl Renderer {
             ),
             ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Noop)
         };
-        let compactor = mesh::Compactor::new(sprites.layout.clone(), device.compact_vertices());
+        let honey_layers = sprite_layers.and_then(|layers| sprites.honey_layers(layers));
+        let compactor = mesh::Compactor::new(
+            sprites.layout.clone(),
+            device.compact_vertices(),
+            honey_layers,
+        );
         let glint = glint::Glint::new(&mut device, glint_pixels, glint_armor)?;
         let mut entity_staging = dx::development_build() && device.caps.software_vertices;
         let mut entity_stage_vertices = Vec::new();
@@ -286,6 +293,7 @@ impl Renderer {
             info,
             suspended: false,
             diagnostics: dx::log_stats_enabled(),
+            msaa_requested: settings.msaa4x,
             paced_elsewhere: false,
             gpu_times: Vec::new(),
             lightmap_pixels: [0; 1024],
@@ -339,7 +347,7 @@ impl Renderer {
             pending_mesh_uploads: 0,
             seen_resets: 0,
             decode_scratch: Vec::new(),
-            convert_scratch: mesh::convert::Scratch::default(),
+            convert_scratch: mesh::convert::Scratch::new(honey_layers),
             solid_batches: BTreeMap::new(),
             solid_cache: solid_cache::SolidCache::default(),
             solid_reused: false,

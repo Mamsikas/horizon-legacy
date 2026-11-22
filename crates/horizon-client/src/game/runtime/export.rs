@@ -673,12 +673,15 @@ impl Game<'_> {
             return Err("export needs a world in play with --offscreen".into());
         }
         let renderer = self.renderer.as_ref().ok_or("no renderer")?;
+        if !renderer.supports_frame_export() {
+            return Err("frame export needs an idle offscreen renderer".into());
+        }
         if renderer.screenshot.is_some() {
             return Err("a screenshot is already pending".into());
         }
         start
             .spec
-            .validate(renderer.device.limits().max_texture_dimension_2d)?;
+            .validate(renderer.max_texture_dimension())?;
         let game_dir = Self::game_dir();
         let encoder = match start.spec.format {
             Format::PngSequence => None,

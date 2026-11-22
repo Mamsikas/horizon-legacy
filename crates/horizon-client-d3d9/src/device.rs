@@ -85,6 +85,8 @@ pub struct DrawState {
     pub lightmap: bool,
     /// 0 ordinary, 1 item foil, 2 armour foil; slot one is the repeating glint.
     pub glint: u8,
+    /// Entity overlay texel in RGBA byte order. Alpha is the retained base colour.
+    pub hurt_overlay: Option<u32>,
     pub equal_depth: bool,
     pub fog: Option<Fog>,
     pub fog_program: crate::FogProgram,
@@ -105,6 +107,7 @@ impl Default for DrawState {
             cull: true,
             lightmap: true,
             glint: 0,
+            hurt_overlay: None,
             equal_depth: false,
             fog: None,
             fog_program: crate::FogProgram::Dual,
@@ -194,8 +197,8 @@ impl Mesh {
 struct StateCache {
     render: [Option<u32>; 256],
     stage: [[Option<u32>; 33]; 3],
-    sampler: [[Option<u32>; 14]; 2],
-    textures: [usize; 2],
+    sampler: [[Option<u32>; 14]; 3],
+    textures: [usize; 3],
     stream: crate::stream_cache::StreamCache,
 }
 impl Default for StateCache {
@@ -203,8 +206,8 @@ impl Default for StateCache {
         Self {
             render: [None; 256],
             stage: [[None; 33]; 3],
-            sampler: [[None; 14]; 2],
-            textures: [usize::MAX; 2],
+            sampler: [[None; 14]; 3],
+            textures: [usize::MAX; 3],
             stream: crate::stream_cache::StreamCache::default(),
         }
     }
@@ -319,6 +322,22 @@ pub struct StagedQuads {
     first: u32,
     count: u32,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PixelProgram {
+    Fog(crate::FogProgram),
+    Hurt { fog: bool },
+}
+
+impl PixelProgram {
+    fn fog(self) -> Option<crate::FogProgram> {
+        match self {
+            Self::Fog(mode) => Some(mode),
+            Self::Hurt { fog: true } => Some(crate::FogProgram::Dual),
+            Self::Hurt { fog: false } => None,
+        }
+    }
+}
+
 pub struct Device {
     inner: Rc<Inner>,
     pub caps: Caps,
@@ -343,7 +362,8 @@ pub struct Device {
     cached_transform: Option<[[f32; 16]; 3]>,
     fog_shader: Option<IDirect3DPixelShader9>,
     fog_variants: [Option<IDirect3DPixelShader9>; 4],
-    shader_active: Option<crate::FogProgram>,
+    hurt_shaders: [Option<IDirect3DPixelShader9>; 2],
+    shader_active: Option<PixelProgram>,
     fog_constants: Option<Fog>,
     terrain: Option<TerrainPipeline>,
     terrain_encoding: Option<VertexEncoding>,
@@ -385,7 +405,7 @@ impl Device {
     }
     fn record_draw(&mut self) {
         self.draws += 1;
-        if let Some(mode) = self.shader_active {
+        if let Some(mode) = self.shader_active.and_then(PixelProgram::fog) {
             self.fog_draws[mode as usize] += 1;
         }
     }
@@ -598,6 +618,7 @@ impl Device {
             cached_transform: None,
             fog_shader: None,
             fog_variants: [None, None, None, None],
+            hurt_shaders: [None, None],
             shader_active: None,
             fog_constants: None,
             terrain: None,
@@ -668,6 +689,23 @@ impl Device {
             }
         } else {
             log::warn!("D3D9 dual fog unavailable in caps; fixed-function fog approximation");
+        }
+        if raw.PixelShaderVersion >= 0xffff_0200 {
+            for fog in [false, true] {
+                if fog && result.fog_shader.is_none() {
+                    continue;
+                }
+                // SAFETY: SDK-compiled ps_2_0 bytecode with an END token.
+                match unsafe {
+                    result
+                        .inner
+                        .device
+                        .CreatePixelShader(crate::fog::hurt_program(fog).as_ptr())
+                } {
+                    Ok(shader) => result.hurt_shaders[usize::from(fog)] = Some(shader),
+                    Err(error) => log::warn!("D3D9 entity hurt shader unavailable ({error})"),
+                }
+            }
         }
         if !software_vertices
             && raw.VertexShaderVersion >= 0xfffe_0200
@@ -746,6 +784,7 @@ impl Device {
             cached_transform: None,
             fog_shader: self.fog_shader.clone(),
             fog_variants: self.fog_variants.clone(),
+            hurt_shaders: self.hurt_shaders.clone(),
             shader_active: None,
             fog_constants: None,
             terrain: self.terrain.clone(),
@@ -1065,6 +1104,16 @@ impl Device {
         self.terrain_encoding = None;
         self.vertex_constants_dirty = true;
         self.cached_state = None;
+        if self.state_cache.textures[2] != usize::MAX {
+            // SAFETY: clear the optional fixed-function lightmap binding on this device.
+            unsafe {
+                profile_call!(
+                    self.inner,
+                    SetTexture,
+                    self.inner.device.SetTexture(2, None)
+                )?;
+            }
+        }
         self.state_cache = StateCache::default();
         self.cached_transform = None;
         self.shader_active = None;
@@ -1209,6 +1258,9 @@ impl Device {
     }
     pub fn mark_lost(&mut self) {
         self.lost = true;
+    }
+    pub fn is_lost(&self) -> bool {
+        self.lost
     }
     pub fn lost(&self) -> bool {
         self.lost
@@ -1803,6 +1855,16 @@ impl Device {
             return Ok(());
         }
         self.cached_state = Some(key);
+        let hurt = state
+            .hurt_overlay
+            .filter(|_| state.lightmap && state.glint == 0);
+        let hurt_fog = state.fog.is_some();
+        let shader_hurt = hurt.is_some() && self.hurt_shaders[usize::from(hurt_fog)].is_some();
+        let ffp_hurt = hurt.filter(|_| {
+            !shader_hurt
+                && self.caps.raw.MaxTextureBlendStages >= 3
+                && self.caps.raw.TextureOpCaps & D3DTEXOPCAPS_BLENDFACTORALPHA as u32 != 0
+        });
         // SAFETY: validated resource ownership and documented D3D9 state constants.
         unsafe {
             let d = &self.inner.device;
@@ -1835,7 +1897,7 @@ impl Device {
             } else {
                 None
             };
-            let light_texture = lm.map(|t| &t.base);
+            let light_texture = lm.filter(|_| ffp_hurt.is_none()).map(|t| &t.base);
             let light_id = light_texture.map_or(0, |t| t.as_raw() as usize);
             if cache.textures[1] != light_id {
                 profile_call!(self.inner, SetTexture, d.SetTexture(1, light_texture))?;
@@ -1846,18 +1908,31 @@ impl Device {
                 &self.inner,
                 1,
                 D3DTSS_COLOROP,
-                if lm.is_some() {
+                if ffp_hurt.is_some() {
+                    D3DTOP_BLENDFACTORALPHA.0
+                } else if lm.is_some() {
                     D3DTOP_MODULATE.0
                 } else {
                     D3DTOP_DISABLE.0
                 } as u32,
             )?;
-            cache.stage(&self.inner, 1, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
+            cache.stage(
+                &self.inner,
+                1,
+                D3DTSS_COLORARG1,
+                if ffp_hurt.is_some() {
+                    D3DTA_CURRENT
+                } else {
+                    D3DTA_TEXTURE
+                },
+            )?;
             cache.stage(
                 &self.inner,
                 1,
                 D3DTSS_COLORARG2,
-                if glint_square {
+                if ffp_hurt.is_some() {
+                    D3DTA_TFACTOR
+                } else if glint_square {
                     D3DTA_TEXTURE
                 } else {
                     D3DTA_CURRENT
@@ -1867,7 +1942,7 @@ impl Device {
                 &self.inner,
                 2,
                 D3DTSS_COLOROP,
-                if glint_square {
+                if glint_square || ffp_hurt.is_some() {
                     D3DTOP_MODULATE
                 } else {
                     D3DTOP_DISABLE
@@ -1879,6 +1954,35 @@ impl Device {
                 cache.stage(&self.inner, 2, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
                 cache.stage(&self.inner, 2, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32)?;
                 cache.stage(&self.inner, 2, D3DTSS_ALPHAARG1, D3DTA_CURRENT)?;
+            }
+            if let Some(hurt) = ffp_hurt {
+                cache.render(&self.inner, D3DRS_TEXTUREFACTOR, rgba_to_argb(hurt))?;
+                let texture = lm.map(|t| &t.base);
+                let id = texture.map_or(0, |t| t.as_raw() as usize);
+                if cache.textures[2] != id {
+                    profile_call!(self.inner, SetTexture, d.SetTexture(2, texture))?;
+                    cache.textures[2] = id;
+                    self.binds += 1;
+                }
+                cache.stage(&self.inner, 2, D3DTSS_COLORARG1, D3DTA_CURRENT)?;
+                cache.stage(&self.inner, 2, D3DTSS_COLORARG2, D3DTA_TEXTURE)?;
+                cache.stage(&self.inner, 2, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32)?;
+                cache.stage(&self.inner, 2, D3DTSS_ALPHAARG1, D3DTA_CURRENT)?;
+                cache.stage(&self.inner, 2, D3DTSS_TEXCOORDINDEX, 1)?;
+                cache.stage(
+                    &self.inner,
+                    2,
+                    D3DTSS_TEXTURETRANSFORMFLAGS,
+                    D3DTTFF_DISABLE.0 as u32,
+                )?;
+                cache.sampler(&self.inner, 2, D3DSAMP_MINFILTER, D3DTEXF_LINEAR.0 as u32)?;
+                cache.sampler(&self.inner, 2, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR.0 as u32)?;
+                cache.sampler(&self.inner, 2, D3DSAMP_MIPFILTER, D3DTEXF_NONE.0 as u32)?;
+                cache.sampler(&self.inner, 2, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP.0 as u32)?;
+                cache.sampler(&self.inner, 2, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP.0 as u32)?;
+            } else if cache.textures[2] != usize::MAX {
+                profile_call!(self.inner, SetTexture, d.SetTexture(2, None))?;
+                cache.textures[2] = usize::MAX;
             }
             cache.stage(&self.inner, 1, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2.0 as u32)?;
             cache.stage(&self.inner, 1, D3DTSS_ALPHAARG2, D3DTA_CURRENT)?;
@@ -1943,28 +2047,39 @@ impl Device {
                     bottom: (y + h) as i32,
                 })?;
             }
-            let shader_fog = state.fog.is_some() && state.lightmap && self.fog_shader.is_some();
-            let mode = shader_fog.then(|| {
+            let mode = if shader_hurt {
+                Some(PixelProgram::Hurt { fog: hurt_fog })
+            } else if hurt_fog && state.lightmap && self.fog_shader.is_some() && ffp_hurt.is_none()
+            {
                 let at = state.fog_program as usize;
-                if at > 0 && self.fog_variants[at - 1].is_some() {
-                    state.fog_program
-                } else {
-                    crate::FogProgram::Dual
-                }
-            });
+                Some(PixelProgram::Fog(
+                    if at > 0 && self.fog_variants[at - 1].is_some() {
+                        state.fog_program
+                    } else {
+                        crate::FogProgram::Dual
+                    },
+                ))
+            } else {
+                None
+            };
             if mode != self.shader_active {
                 profile_call!(
                     self.inner,
                     SetPixelShader,
                     d.SetPixelShader(match mode {
-                        Some(crate::FogProgram::Dual) => self.fog_shader.as_ref(),
-                        Some(mode) => self.fog_variants[mode as usize - 1].as_ref(),
+                        Some(PixelProgram::Fog(crate::FogProgram::Dual)) =>
+                            self.fog_shader.as_ref(),
+                        Some(PixelProgram::Fog(mode)) =>
+                            self.fog_variants[mode as usize - 1].as_ref(),
+                        Some(PixelProgram::Hurt { fog }) =>
+                            self.hurt_shaders[usize::from(fog)].as_ref(),
                         None => None,
                     })
                 )?;
                 self.shader_active = mode;
             }
-            if mode.is_some_and(crate::FogProgram::position) {
+            let fog_mode = mode.and_then(PixelProgram::fog);
+            if fog_mode.is_some_and(crate::FogProgram::position) {
                 cache.stage(
                     &self.inner,
                     2,
@@ -1977,7 +2092,7 @@ impl Device {
                     D3DTSS_TEXTURETRANSFORMFLAGS,
                     D3DTTFF_COUNT3.0 as u32,
                 )?;
-            } else if self.fog_shader.is_some() {
+            } else if self.fog_shader.is_some() && ffp_hurt.is_none() {
                 cache.stage(
                     &self.inner,
                     2,
@@ -1986,10 +2101,18 @@ impl Device {
                 )?;
                 cache.stage(&self.inner, 2, D3DTSS_TEXCOORDINDEX, 2)?;
             }
+            let shader_fog = fog_mode.is_some();
             if shader_fog && self.fog_constants != state.fog {
                 let constants = state.fog.unwrap().constants();
                 d.SetPixelShaderConstantF(0, constants.as_ptr().cast(), 3)?;
                 self.fog_constants = state.fog;
+            }
+            if shader_hurt {
+                let texel = hurt
+                    .unwrap()
+                    .to_le_bytes()
+                    .map(|value| f32::from(value) / 255.0);
+                d.SetPixelShaderConstantF(3, texel.as_ptr(), 1)?;
             }
             cache.render(
                 &self.inner,

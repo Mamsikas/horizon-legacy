@@ -10,7 +10,7 @@ default-run = "horizon-launcher"
 
 [features]
 default = ["gui"]
-gui = ["dep:gpui", "dep:gpui_platform", "dep:wgpu", "dep:windows", "dep:trash"]
+gui = ["dep:gpui", "dep:gpui_platform", "dep:wgpu", "dep:windows", "dep:trash", "dep:horizon-launcher-scenery"]
 win7 = []
 
 [[bin]]
@@ -65,7 +65,7 @@ clap_complete = "4"
 horizon-server-launch = { path = "../crates/horizon-server-launch" }
 horizon-theme = { path = "../crates/horizon-theme" }
 # The sunset scene, painted skies, rain and frosted glass (`scenery/`).
-horizon-launcher-scenery = { path = "scenery" }
+horizon-launcher-scenery = { path = "scenery", optional = true }
 # The engine, through the platform's public API (docs/layers.md): the pinned version, No AI, the preparer,
 # level.dat and servers.dat (the worlds and server lists of instances), and the official server's SRV record.
 horizon-platform = { path = "../crates/horizon-platform", features = ["prepare", "protocol", "world", "mod-build", "mod-index", "mod-prebuilt", "mod-runtime-process"] }

@@ -728,7 +728,9 @@ fn terrain_quad(input: &[TerrainVertex]) -> [dx::Vertex; 4] {
     std::array::from_fn(|i| dx::Vertex {
         pos: input[i].pos,
         uv: input[i].uv(),
-        color: dx::rgba_to_argb(input[i].color),
+        // Terrain stores emission and fluid flags in this byte. The sprite
+        // alone supplies coverage for both cutout and blended terrain.
+        color: dx::rgba_to_argb(input[i].color | 0xff00_0000),
         light: light_uv(u32::from(input[i].light)),
     })
 }
@@ -771,6 +773,21 @@ pub(super) fn draw_range(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn terrain_surface_metadata_does_not_become_vertex_alpha() {
+        let rgb = 0xff56_3412;
+        let fire = crate::mesher::giving_off(crate::mesher::emitting(rgb, 2), 15);
+        let lava = crate::mesher::as_fluid(fire);
+        for color in [rgb, fire, lava] {
+            let vertex = TerrainVertex::new([1.0; 3], [0.5; 2], 1, color, 0x00f0);
+            let dx = terrain_quad(&[vertex; 4]);
+            assert_eq!(dx[0].color, 0xff12_3456);
+            assert_eq!(dx[0].pos, vertex.pos);
+            assert_eq!(dx[0].uv, vertex.uv());
+            assert_eq!(dx[0].light, light_uv(0x00f0));
+        }
+    }
 
     #[test]
     fn moving_a_block_entity_invalidates_its_snapshot_without_invalidating_the_mesh() {

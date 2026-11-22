@@ -67,11 +67,15 @@ pub fn fallback_api_for_hang(hung: GraphicsApi, os: &str) -> Option<GraphicsApi>
             GraphicsApi::Auto | GraphicsApi::Vulkan => Some(GraphicsApi::Dx12),
             GraphicsApi::Dx12 => Some(GraphicsApi::OpenGl),
             GraphicsApi::OpenGl => None,
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            GraphicsApi::LegacyD3d9 => None,
         }
     } else {
         match hung {
             GraphicsApi::Auto | GraphicsApi::Vulkan => Some(GraphicsApi::OpenGl),
             GraphicsApi::OpenGl | GraphicsApi::Dx12 => None,
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            GraphicsApi::LegacyD3d9 => None,
         }
     }
 }

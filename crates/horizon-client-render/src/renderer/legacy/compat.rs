@@ -49,7 +49,7 @@ impl Renderer {
             ("D3D9 GUI pages (managed)", self.hud.atlas.bytes()),
         ]
     }
-    pub fn gpu_memory_by_label(&self) -> Option<(u64, u64, Vec<(String, u64)>)> {
+    pub fn gpu_memory_by_label(&self) -> Option<gfx::GpuMemory> {
         None
     }
     pub fn cpu_census(&self) -> [(&'static str, usize); 7] {
@@ -415,7 +415,7 @@ impl Renderer {
             Vec<(String, f64)>,
             Vec<(u32, u32)>,
             Vec<(u32, u32)>,
-            block_light::LightTable,
+            (block_light::LightTable, ray_lights::Sources),
         )>,
     ) -> std::result::Result<Vec<String>, String> {
         if pack.is_some() {
@@ -489,6 +489,71 @@ impl Renderer {
     /// DX9 LOST/NOTRESET is recovered in begin(), without replacing the gameplay renderer.
     pub fn device_lost(&self) -> bool {
         false
+    }
+    pub fn not_drawn(&self) -> Option<NotDrawn> {
+        if self.suspended {
+            Some(NotDrawn::Suspended)
+        } else {
+            self.device.is_lost().then_some(NotDrawn::Lost)
+        }
+    }
+    pub fn mark_device_lost(&self, marker: &std::path::Path) -> bool {
+        false
+    }
+    pub fn msaa_samples(&self) -> u32 {
+        1
+    }
+    pub fn msaa_requested(&self) -> bool {
+        self.msaa_requested
+    }
+    pub fn set_msaa4x(&mut self, requested: bool) {
+        self.msaa_requested = requested;
+    }
+    pub fn set_msaa_rebuildable(&mut self, rebuildable: bool) {}
+    pub fn take_msaa_rebuild(&mut self) -> bool {
+        false
+    }
+    pub fn ray_queries(&self) -> bool {
+        false
+    }
+    pub fn ray_looks(&self) -> bool {
+        false
+    }
+    pub fn screenshot_in_flight(&self) -> bool {
+        self.screenshot.is_some() || self.screenshot_result.is_some()
+    }
+    pub fn supports_frame_export(&self) -> bool {
+        false
+    }
+    pub fn begin_frame_export(
+        &mut self,
+        size: [u32; 2],
+        out: std::sync::mpsc::SyncSender<gfx::ExportFrame>,
+    ) -> Result<()> {
+        Err("Frame export is unavailable on Direct3D9".into())
+    }
+    pub fn export_adapter_name(&self) -> String {
+        self.info.name.clone()
+    }
+    pub fn try_arm_export_frame(&mut self, index: u32) -> Result<bool> {
+        Err("No frame export".into())
+    }
+    pub fn disarm_export_frame(&mut self) -> bool {
+        false
+    }
+    pub fn frame_export_failed(&self) -> bool {
+        false
+    }
+    pub fn frame_export_recycler(&self) -> Option<std::sync::mpsc::SyncSender<Vec<u8>>> {
+        None
+    }
+    pub fn flush_frame_export_uploads(&mut self) {}
+    pub fn begin_finish_frame_export(&mut self) {}
+    pub fn poll_finish_frame_export(&mut self) -> Result<bool> {
+        Ok(true)
+    }
+    pub fn abort_frame_export(&mut self) -> Result<()> {
+        Ok(())
     }
     pub fn stats_lag(&self) -> u64 {
         0

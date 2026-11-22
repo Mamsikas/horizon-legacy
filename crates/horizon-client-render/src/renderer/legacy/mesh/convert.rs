@@ -1,11 +1,13 @@
 //! Atlas conversion and shadow encoding shared by synchronous edits and the bounded worker.
 use super::*;
+mod honey;
 #[derive(Default)]
 pub(in super::super) struct Scratch {
     groups: Vec<Vec<dx::Vertex>>,
     vertices: Vec<dx::Vertex>,
     shadow: Vec<u8>,
     transforms: Vec<dx::AtlasUv>,
+    honey: Option<honey::Layers>,
 }
 pub(in super::super) struct Converted {
     pub solid: Vec<Packet>,
@@ -18,6 +20,12 @@ pub(in super::super) struct Converted {
     pub gpu: dx::EncodedVertices,
 }
 impl Scratch {
+    pub(in super::super) fn new(honey: Option<[u16; 3]>) -> Self {
+        Self {
+            honey: honey.map(honey::Layers),
+            ..Self::default()
+        }
+    }
     pub fn bytes(&self) -> usize {
         self.groups
             .iter()
@@ -120,7 +128,7 @@ impl Scratch {
         for group in &mut self.groups {
             group.clear();
         }
-        for input in mesh.translucent.as_chunks::<4>().0 {
+        let mut append_translucent = |input: &[TerrainVertex; 4]| {
             let layer = u32::from(input[0].layer & !crate::mesher::OPAQUE_LAYER);
             let mut quad = terrain_quad(input);
             if input
@@ -142,6 +150,15 @@ impl Scratch {
                     atlas::quads(poly, &mut self.groups[page]);
                 })
                 .map_err(|e| e.to_string())?;
+            }
+            Ok::<_, String>(())
+        };
+        let quads = mesh.translucent.as_chunks::<4>().0;
+        if let Some(honey) = self.honey {
+            honey.in_draw_order(quads, append_translucent)?;
+        } else {
+            for input in quads {
+                append_translucent(input)?;
             }
         }
         let translucent = dx::append_texture_pages(&self.groups[..pages], vertices)?;

@@ -7,10 +7,16 @@ sampler2D lightmap : register(s1);
 float4 starts : register(c0);
 float4 ranges : register(c1);
 float4 fogColor : register(c2);
+#ifdef ENTITY_HURT
+float4 hurt : register(c3);
+#endif
 
 float4 main(float4 color : COLOR0, float2 uv : TEXCOORD0,
             float2 light : TEXCOORD1, float3 position : TEXCOORD2) : COLOR0 {
     float4 texel = tex2D(sprites, uv) * color;
+#ifdef ENTITY_HURT
+    texel.rgb = lerp(hurt.rgb, texel.rgb, hurt.a);
+#endif
 #if FOG_CURVE == 4
     return float4(fogColor.rgb, texel.a);
 #else

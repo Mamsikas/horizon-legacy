@@ -1,6 +1,6 @@
 param([Parameter(Mandatory=$true)][string]$OutDir,
     [ValidateSet('ps_2_0','vs_2_0')][string]$Profile = 'ps_2_0',
-    [ValidateSet('fog','fog_environment','fog_distance','fog_none','fog_full','terrain')][string]$Name = 'fog')
+    [ValidateSet('fog','fog_environment','fog_distance','fog_none','fog_full','terrain','entity_hurt','entity_hurt_none')][string]$Name = 'fog')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $compiler = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\fxc.exe" |

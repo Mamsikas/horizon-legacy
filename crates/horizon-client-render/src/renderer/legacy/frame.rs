@@ -914,6 +914,10 @@ impl Renderer {
                     Blend::Alpha
                 },
                 lightmap: !unlit,
+                hurt_overlay: matches!(overlay, 1 | 8).then(|| match frame.pvp.hurt_texel {
+                    0 => u32::from_le_bytes(crate::overlay::HURT_TEXEL),
+                    texel => texel,
+                }),
                 depth_test: phase != 3,
                 depth_write: !transparent && !matches!(overlay, 2 | 3 | 4 | 11 | 12) && phase != 3,
                 cull: quad[0].normal[3] == 1 || quad[0].normal[3] == crate::mesher::SHADED_CULL_W,
@@ -970,6 +974,7 @@ impl Renderer {
                     glint: if armor { 2 } else { 1 },
                     blend: Blend::Additive,
                     lightmap: false,
+                    hurt_overlay: None,
                     depth_write: false,
                     equal_depth: state.depth_test,
                     fog: state.fog.map(|f| dx::Fog {

@@ -130,9 +130,18 @@ lightmap, tint/AO, reverse world Z and forward GUI Z are supported. Sky/End effe
 are simplified. Verify glint on held items, GUI/inventory models, dropped items and
 armour, including alpha masks, occlusion, scrolling, strength zero and custom tint.
 
+The DX9 terrain converter reads the shared vertex's RGB and takes coverage
+from the sprite. The fourth terrain byte encodes emission and fluid flags.
+Basic transparency draws the inset of the standard honey block before its
+shell when their layers share a texture page. Honey assets on separate pages
+use the existing page order. Entity overlays 1 and 8 use the upstream hurt
+texel and its optional PvP override. Their SM2 programs apply it before the
+lightmap and fog and retain the base alpha. A capable three-stage fixed-function
+device can apply the tint with the existing fixed-function fog approximation.
+
 Clouds/star field, glowing outlines, shader packs/core shaders, PBR, LOD/BlueMap,
-GPU culling/skinning, HDR, TAA/FXAA, advanced upscaling, dynamic resolution,
-frame generation, improved transparency, menu blur, custom CIT glint and split-screen
+GPU culling/skinning, HDR, MSAA/TAA/FXAA, advanced upscaling, dynamic resolution,
+frame generation, offscreen video export, improved transparency, menu blur, custom CIT glint and split-screen
 composition are not implemented. Upstream prepared GPU models fall back to CPU
 geometry; new multi-view and native GPU pipeline interfaces are explicitly
 unavailable. Empty mod pipeline sets remain valid. Leave unavailable controls visible and disabled

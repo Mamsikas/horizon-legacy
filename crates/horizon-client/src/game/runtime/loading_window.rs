@@ -87,6 +87,8 @@ pub(super) fn build_renderer(
         settings,
         shader_pack.frame(),
         display,
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        Some(&assets.sprite_layers),
     ))?;
     #[cfg(not(all(windows, feature = "legacy-d3d9")))]
     {
@@ -207,6 +209,8 @@ pub(super) fn loading_renderer(
             ..Default::default()
         },
         previous.map(|r| r.display_reading()).unwrap_or_default(),
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        None,
     ))?;
     if let Some(atlas) = atlas {
         renderer.hud.sprite_animations = atlas

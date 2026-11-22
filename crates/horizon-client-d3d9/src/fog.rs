@@ -90,6 +90,12 @@ impl Fog {
 #[path = "fog_distance_program.rs"]
 mod distance;
 #[cfg(any(windows, test))]
+#[path = "entity_hurt_program.rs"]
+mod entity_hurt;
+#[cfg(any(windows, test))]
+#[path = "entity_hurt_none_program.rs"]
+mod entity_hurt_none;
+#[cfg(any(windows, test))]
 #[path = "fog_environment_program.rs"]
 mod environment;
 #[cfg(any(windows, test))]
@@ -101,6 +107,15 @@ mod program;
 #[cfg(any(windows, test))]
 #[path = "fog_none_program.rs"]
 mod unfogged;
+
+#[cfg(any(windows, test))]
+pub(crate) fn hurt_program(fog: bool) -> &'static [u32] {
+    if fog {
+        entity_hurt::WORDS
+    } else {
+        entity_hurt_none::WORDS
+    }
+}
 #[cfg(any(windows, test))]
 pub fn variant(mode: FogProgram) -> &'static [u32] {
     match mode {
@@ -119,12 +134,15 @@ mod tests {
     // This catches register masks, swizzles, saturation and alpha preservation
     // against numerical scene expectations rather than another shader builder.
     fn shade(position: [f32; 3], fog: Fog, mode: FogProgram) -> [f32; 4] {
-        let code = variant(mode);
+        evaluate(variant(mode), position, fog, [0.0; 4])
+    }
+    fn evaluate(code: &[u32], position: [f32; 3], fog: Fog, hurt: [f32; 4]) -> [f32; 4] {
         assert_eq!(code[0], 0xffff_0200);
         let mut regs = [[[0.0; 4]; 16]; 11];
         regs[1][0] = [0.5, 0.75, 1.0, 0.8];
         regs[3][2] = [position[0], position[1], position[2], 1.0];
         regs[2][..3].copy_from_slice(&fog.constants());
+        regs[2][3] = hurt;
         let kind = |token: u32| (((token >> 28) & 7) | ((token >> 8) & 24)) as usize;
         let mut cursor = 1;
         let mut arithmetic = 0;
@@ -185,6 +203,29 @@ mod tests {
         assert!(arithmetic < 64);
         assert_eq!(cursor + 1, code.len());
         regs[8][0]
+    }
+    #[test]
+    fn entity_hurt_mixes_before_the_lightmap_and_keeps_coverage_and_dual_fog() {
+        let overlay = [1.0, 0.1, 0.2, 178.0 / 255.0];
+        let fog = Fog {
+            color: [0.7, 0.8, 0.9, 1.0],
+            environment: [0.0, 100.0],
+            distance: [230.0, 256.0],
+        };
+        for use_fog in [false, true] {
+            let output = evaluate(hurt_program(use_fog), [30.0, 40.0, 0.0], fog, overlay);
+            for i in 0..3 {
+                let mixed =
+                    (overlay[i] * (1.0 - overlay[3]) + [0.4, 0.6, 0.8][i] * overlay[3]) * 0.5;
+                let expected = if use_fog {
+                    (mixed + fog.color[i]) * 0.5
+                } else {
+                    mixed
+                };
+                assert!((output[i] - expected).abs() < 1.0e-6, "{output:?}");
+            }
+            assert!((output[3] - 0.4).abs() < 1.0e-6);
+        }
     }
     #[test]
     fn sm2_tokens_preserve_alpha_and_combine_sphere_cylinder_and_density() {

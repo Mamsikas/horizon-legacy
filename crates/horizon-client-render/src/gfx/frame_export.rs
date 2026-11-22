@@ -311,6 +311,10 @@ impl Renderer {
             && !self.device_lost()
     }
 
+    pub fn max_texture_dimension(&self) -> u32 {
+        self.device.limits().max_texture_dimension_2d
+    }
+
     pub fn begin_frame_export(
         &mut self,
         size: [u32; 2],
