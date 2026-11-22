@@ -42,6 +42,7 @@ impl Compactor {
         layout: Arc<dx::AtlasSet>,
         hardware: bool,
         honey_layers: Option<[u16; 3]>,
+        cull_solid: bool,
     ) -> Option<Self> {
         // One slot each for compaction, deferred shadow compression and its release.
         let (jobs, input) = mpsc::sync_channel::<Work>(upload::MAX_JOBS + 3);
@@ -55,7 +56,7 @@ impl Compactor {
         std::thread::Builder::new()
             .name("d3d9 section staging".into())
             .spawn(move || {
-                let mut scratch = convert::Scratch::new(honey_layers);
+                let mut scratch = convert::Scratch::new(honey_layers, cull_solid);
                 let mut next = None;
                 while let Some(work) = next.take().or_else(|| input.recv().ok()) {
                     let job = match work {

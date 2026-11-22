@@ -1198,3 +1198,46 @@ of wall time over 28 samples. Windows accounts CPU time in coarse ticks
 here. Together these measurements support main-thread CPU pressure on
 the one-core N455, including software VP, driver and general client
 work. GPU time, rasterization cost and GPU queue stalls remain unmeasured.
+
+## November 22 upstream sync and solid face bounds
+
+The merge pins Horizon `10b9f3472770ed9307e3d92a509d753f94a03a42`,
+564 upstream commits after `df50a07e73`. The first review used `45eeccded1`.
+The latest pin adds the following eight upstream commits. The fork retains
+its Windows 7 ABI, lightweight launcher and distribution workflows.
+
+Several measured upstream changes run on both renderer paths. `82e61665c4`
+speeds construction of the solid/fluid `SectionMesh` and its face ranges.
+`a32fc120ee` uses immediate section meshing for block edits. `0f0dea6114`
+changes the shared streaming upload budget. `d939fd378d` reuses shared
+chunk lookups, `e349aeccea` changes light import and propagation,
+`e095541dc6` recycles incoming chunk decode scratch, and `ad406095d4` and
+`b45d73de43` reduce shared particle and weather preparation. `0c2cff4f46`
+updates the `Resident::walk` and occlusion structures that DX9 already
+calls. Its `PageRuns` portion is specific to the wgpu renderer. Upstream's
+FPS and memory results cover other machines and settings.
+
+The unchanged-uniform and GPU animation work in `8e0b8ff5a5`, the wgpu
+entity stream in `e0c1233a27`, the GPU arenas in `5fc0fdfdb9`, and
+visibility buffers, compute culling and mesh shaders in `a27fee23ca` and
+`45eeccded1` all have separate backend contracts. DX9 keeps its CPU
+traversal and software-vertex HAL path.
+
+The face-bound trial borrows the bounded sub-section rejection from
+upstream meshlets. DX9 calculates the bounds of its existing seven solid
+face groups once at section conversion, in the same region coordinates
+sent to the device. That is at most 168 bytes of bounds per resident
+solid section. Dev SWVP tests groups only on the edge of the frustum.
+A group is rejected only if its expanded bound lies fully outside the
+projection. Unknown bounds and cold sections keep their original draw
+path. The exact visible group mask joins the existing solid plan stamp,
+so camera motion restores a group as it re-enters. The cache uses the
+same revisions and arena/Reset identity as before.
+
+Alpha order, materials, visibility distance and all translucent geometry
+keep their existing routes. This trial creates no new per-frame GPU
+buffers or index writes. It is a separate commit from the integration
+and visual fixes, so a comparison on GMA can measure it independently.
+The dev log reports `solid_culled_buckets`; compare that with the real
+`Solid` `dip_num_vertices`, draw counts and wall time. Check screen edges,
+caves, cutouts and resize while holding the route and settings constant.
