@@ -137,9 +137,9 @@ fn draw_pixels(
     triangles: bool,
 ) -> Result<()> {
     pixels.prepare(device)?;
-    let textures = pixels.textures();
+    let textures = pixels.draw_textures();
     for b in batches {
-        let Some(texture) = &textures[b.page] else {
+        let Some(texture) = textures.get(b.page) else {
             continue;
         };
         device.state(b.state, texture, Some(lightmap))?;
@@ -299,14 +299,14 @@ impl Renderer {
                         self.entity_stage_stats[1],
                         self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>()
                     );
+                    let (tiles, recycled, overflow) = self.hud.atlas.entity_page_stats();
                     log::info!(
-                        "D3D9 dynamic entity ranges pixels_total={} sprites_total={} foil_total={} page_breaks_total={} compact_passes_total={} compact_tiles={}",
+                        "D3D9 dynamic entity ranges pixels_total={} sprites_total={} foil_total={} page_breaks_total={} compact_passes_total={} compact_tiles={tiles} recycled_tiles_total={recycled} overflow_tiles_total={overflow}",
                         self.entity_ranges[0],
                         self.entity_ranges[1],
                         self.entity_ranges[2],
                         self.entity_ranges[3],
                         self.entity_ranges[4],
-                        self.hud.atlas.entity_page_tiles(),
                     );
                 }
                 self.static_entities.log();
@@ -518,6 +518,7 @@ impl Renderer {
             );
             self.texture_target_warned = true;
         }
+        self.hud.atlas.begin_entity_frame();
         self.stamp("GUI patches", &mut clock);
         let views = self.views(frame);
         let view = views.primary();
@@ -884,7 +885,7 @@ impl Renderer {
         fog: Option<dx::Fog>,
         phase: u8,
         pixels: atlas::PixelView<'_>,
-    ) -> Result<Option<EntityBatches>> {
+    ) -> Result<EntityBatches> {
         let mut batches = Vec::new();
         let mut sprite_batches = Vec::new();
         let mut glints = Vec::new();
@@ -1009,28 +1010,23 @@ impl Renderer {
                 }
                 if matches!(overlay, 11 | 12) {
                     let rect = frame.crumbling_sprite;
-                    let mut placed = true;
                     repeat_quad(&vertices, rect, |p| {
-                        placed = placed
-                            && pixels.polygon(p, |page, poly| {
-                                batch(&mut batches, page, state, poly, false);
-                            });
+                        pixels.polygon(p, |page, poly| {
+                            batch(&mut batches, page, state, poly, false);
+                        });
                     });
-                    if !placed {
-                        return Ok(None);
-                    }
-                } else if !pixels.polygon(&vertices, |page, p| {
-                    batch(&mut batches, page, state, p, false);
-                }) {
-                    return Ok(None);
+                } else {
+                    pixels.polygon(&vertices, |page, p| {
+                        batch(&mut batches, page, state, p, false);
+                    });
                 }
             }
         }
-        Ok(Some(EntityBatches {
+        Ok(EntityBatches {
             pixels: batches,
             sprites: sprite_batches,
             glints,
-        }))
+        })
     }
     fn draw_entities(
         &mut self,
@@ -1053,17 +1049,14 @@ impl Renderer {
             laps.lap("d3d9_dynamic_entity_convert");
         }
         if compact {
-            // Validate the complete placement and upload before submitting any
-            // draws, so recovery can always remap in the original order.
-            let ready = if batches.is_some() {
-                self.hud
-                    .atlas
-                    .entity_or_main(true)
-                    .prepare(&mut self.device)
-            } else {
-                Err("the single page is full".into())
-            };
-            if let Err(error) = ready {
+            // Capacity misses already use main UVs. Only an upload failure
+            // needs to remap the pass before any of its draws reach the device.
+            if let Err(error) = self
+                .hud
+                .atlas
+                .entity_or_main(true)
+                .prepare_compact(&mut self.device)
+            {
                 if dx::is_device_lost(error.as_ref()) {
                     return Err(error);
                 }
@@ -1079,7 +1072,7 @@ impl Renderer {
             pixels: batches,
             sprites: sprite_batches,
             glints,
-        } = batches.ok_or("D3D9 shared atlas placement failed")?;
+        } = batches;
         if dynamic && self.entity_staging {
             let page_breaks = if !compact && (self.entity_page_pending || self.diagnostics) {
                 batches
@@ -1094,7 +1087,9 @@ impl Renderer {
                 self.entity_ranges[1] += sprite_batches.len() as u64;
                 self.entity_ranges[2] += glints.len() as u64;
                 self.entity_ranges[3] += page_breaks as u64;
-                self.entity_ranges[4] += u64::from(compact && !batches.is_empty());
+                self.entity_ranges[4] += u64::from(
+                    compact && batches.iter().any(|batch| batch.page == atlas::ENTITY_PAGE),
+                );
             }
             if self.entity_page_pending && page_breaks >= ENTITY_PAGE_BREAKS {
                 self.entity_page_pending = false;
@@ -1150,8 +1145,8 @@ impl Renderer {
         }
         let pixels = self.hud.atlas.entity_or_main(compact);
         pixels.prepare(&mut self.device)?;
-        let textures = pixels.textures();
-        let drawable = batches.iter().filter(|b| textures[b.page].is_some());
+        let textures = pixels.draw_textures();
+        let drawable = batches.iter().filter(|b| textures.get(b.page).is_some());
         let count = drawable
             .clone()
             .chain(sprites.iter())
@@ -1183,7 +1178,7 @@ impl Renderer {
         };
         let mut first = 0;
         for b in batches {
-            let Some(texture) = &textures[b.page] else {
+            let Some(texture) = textures.get(b.page) else {
                 continue;
             };
             self.device.state(b.state, texture, Some(&self.lightmap))?;

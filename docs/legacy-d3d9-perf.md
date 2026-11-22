@@ -875,3 +875,86 @@ and executable checksums.
 | --- | --- | --- |
 | x64 | [14708930300](https://github.com/Mamsikas/horizon-legacy/actions/runs/44905517691/artifacts/14708930300) | `0a18ba47fa9530eafdaeb9e99a531bdb228c698d7b0922f1f7314651fba93eb5` |
 | x86 | [14708935101](https://github.com/Mamsikas/horizon-legacy/actions/runs/44905517691/artifacts/14708935101) | `cf8dc5fce08bd4a51a3b2232b6f505d8f268d15b2124b1d329b710c5b9207573` |
+
+## Atlas capacity result and standing cause, 2026-11-22
+
+The owner re-ran the previous build before the new build on the same route.
+`walk_previous.hzperf` has 1,798 frames in 152.836 s. `walk.hzperf` has
+1,767 in 150.775 s. The rotated log identifies the new capture as clean
+`b1a03b1588a347542cd4a40ae0802613d6e7c898` on Win7 x64, Chell 1.8b,
+GMA3150 HAL SWVP. The older capture's build comes from the owner.
+Neither capture embeds a commit. Both frame histograms give p50/p95/p99
+bounds of [75,100), [100,150) and [150,250) ms.
+
+| GMA walk metric | Previous build | Initial compact page |
+| --- | ---: | ---: |
+| FPS, full capture | 11.764 | 11.719 |
+| DX9 renderer wall, ms/frame | 61.038 | 60.189 |
+| Entities span wall, ms/frame | 14.752 | 13.336 |
+| Slowest 1% mean frame time, ms | 198.30 | 245.45 |
+| 20–55 s FPS | 11.686 | 12.343 |
+| 20–55 s DX9 renderer wall, ms/frame | 60.115 | 54.299 |
+| 20–55 s dynamic entity submit, ms/frame | 9.722 | 4.632 |
+| 115–120 s FPS | 8.8 | 7.6 |
+| 115–120 s entities span wall, ms/frame | 42.621 | 55.897 |
+
+The compact texture enabled 14.8 s before the capture after 17 adjacent
+same-state page breaks. It had 214 of its 225 padded tile slots at 51.2 s
+and reached capacity at 57.2 s. The remaining route used the shared atlas.
+The late block exercised the ordinary submit path. Its page assignments
+can still differ from a walk that used the shared atlas from the start.
+In the new log's complete windows before exhaustion, the dynamic pass makes 10.11
+indexed draws and 8.74 texture calls/frame at 8,784 indexed vertices/frame.
+Complete windows after exhaustion make 156.60 and 156.22 at 8,066 vertices.
+The scene changes across those groups. The log shows 838 compact passes
+including warm-up, zero sprite batches during the recorded walk, and zero
+aborted frames in the 1,712 frames covered by complete log windows.
+The layout adds useful coverage while active. The full-route result and
+frame-time tail fail the current acceptance criteria.
+
+The follow-up keeps one managed 2048-square A8R8G8B8 texture. This is
+16 MiB of texture payload and the tested device's largest single page.
+With 130px padded cells, 1024-square fits 49 tiles and 2048-square fits
+225. The 16 MiB describes the optional resource size. The renderer keeps
+its existing advisory total texture budget and releases the page under
+pressure. Slots absent from both the current and previous frame can now
+be reassigned to new tiles, oldest use first. Every logical tile that
+cannot be admitted is mapped through the shared layout in polygon order.
+The admission budget is 512 KiB/frame across both dynamic phases, or up
+to seven 130px cells. Existing dirty tile updates and the one-time
+resource initialization are separate. Geometry, filtering and draw
+state keep their existing order. Only a resource failure remaps the
+entire pass. Device loss still uses the existing retry path.
+
+The updated native log adds recycled slots and compact placement misses.
+It counts repeated tile uses in the latter, so it is not a distinct-tile
+count. Check that compact passes continue after 57 s and compare draw,
+texture, upload, whole-route tail and visual results on GMA. CPU tests
+cover both layouts at a tile seam, dirty updates, main-atlas fallback,
+current/previous-frame protection and removal of a recycled tile's
+stale upload. The HD4570 production path still follows its own caps.
+No new hardware speedup is claimed for the recycling candidate.
+
+### Standing root cause
+
+In `standing_vs.hzperf`, the external stack profiler process ran from
+24.8 to 70.3 s. At 30–55 s the game falls to 4.16 FPS, with about one
+logical CPU consumed outside Horizon. At 75–80 s after the profiler the
+game is still around 30.4 FPS with roughly 1.91 logical CPUs spent in
+Horizon on the plateau. At 90–105 s it runs 43.8 FPS at 1.24 logical CPUs.
+Very Sleepy samples all threads by suspension and stack walking. Its
+10% rate controls the pause between scans. Its overhead on N455 makes
+the profiled frame times unsuitable for a normal benchmark.
+
+The 35.084 s stack file contains 4,321 samples. A thread whose root is
+`VanillaTerrain::search_rings_behind` has weighted stacks in
+`RingSearch::find`, climate/biome sampling and Perlin noise for about
+87.8% of its thread sample weight. The remaining stacks for that worker
+show its sleep loop. The DX9 compactor's sampled stack is a channel wait.
+These are weighted snapshots and the format has no per-thread IDs.
+The result identifies the background calculation of stronghold positions
+that matches the prolonged CPU plateau from the earlier thread accounting.
+The worker runs outside world ticks and may start after a quiet generation
+interval, or after 60 s from creating the terrain context. Freezing world
+ticks does not stop it. It is shared world generation, outside the DX9
+work in this fork.

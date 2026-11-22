@@ -1,5 +1,5 @@
 use super::*;
-use std::cell::RefCell;
+use std::cell::{Ref, RefCell};
 
 pub(super) struct Sprites {
     pub layout: Arc<dx::AtlasSet>,
@@ -298,12 +298,22 @@ pub(super) struct Pixels {
 }
 struct PixelPages {
     side: u32,
-    single_page: bool,
+    compact: Option<CompactSlots>,
     locations: Vec<Option<(usize, u32, u32)>>,
     pages: Vec<Option<dx::Texture>>,
     slots: u32,
     pending: Vec<usize>,
     dirty: Vec<bool>,
+}
+
+struct CompactSlots {
+    tiles: Vec<usize>,
+    last_seen: Vec<u64>,
+    frame: u64,
+    uploads_left: u32,
+    can_recycle: bool,
+    recycled: u64,
+    overflow: u64,
 }
 
 /// Both layouts use the same virtual texels and clipping rules. Physical UVs
@@ -312,10 +322,71 @@ struct PixelPages {
 pub(super) struct PixelView<'a> {
     image: &'a dx::TileImage,
     layout: &'a RefCell<PixelPages>,
+    compact: Option<&'a RefCell<PixelPages>>,
+}
+
+pub(super) struct PixelTextures<'a> {
+    main: Ref<'a, [Option<dx::Texture>]>,
+    compact: Option<Ref<'a, PixelPages>>,
+}
+
+impl PixelTextures<'_> {
+    pub fn get(&self, page: usize) -> Option<&dx::Texture> {
+        if page == ENTITY_PAGE {
+            self.compact.as_ref()?.pages.first()?.as_ref()
+        } else {
+            self.main[page].as_ref()
+        }
+    }
 }
 
 const ENTITY_PAGE_SIDE: u32 = 2048;
+pub(super) const ENTITY_PAGE: usize = usize::MAX;
 pub(super) const ENTITY_PAGE_BYTES: u64 = ENTITY_PAGE_SIDE as u64 * ENTITY_PAGE_SIDE as u64 * 4;
+// Limit compulsory tile uploads while the camera moves into new material runs.
+// Existing texture patches still update both layouts.
+const ENTITY_TILE_UPLOAD_BYTES: u32 = 512 << 10;
+
+impl CompactSlots {
+    fn uploads_per_frame(cell: u32) -> u32 {
+        ENTITY_TILE_UPLOAD_BYTES / (cell * cell * 4)
+    }
+
+    fn new(image: &dx::TileImage, capacity: usize) -> Result<Self> {
+        let mut tiles = Vec::new();
+        let mut last_seen = Vec::new();
+        tiles.try_reserve_exact(capacity)?;
+        last_seen.try_reserve_exact(image.len())?;
+        last_seen.resize(image.len(), 0);
+        Ok(Self {
+            tiles,
+            last_seen,
+            frame: 0,
+            uploads_left: Self::uploads_per_frame(image.cell()),
+            can_recycle: true,
+            recycled: 0,
+            overflow: 0,
+        })
+    }
+
+    fn begin_frame(&mut self, cell: u32) {
+        self.frame += 1;
+        self.uploads_left = Self::uploads_per_frame(cell);
+        self.can_recycle = true;
+    }
+
+    fn oldest_unused(&self) -> Option<(usize, usize)> {
+        self.tiles
+            .iter()
+            .copied()
+            .enumerate()
+            // Both phases of the current frame protect their coordinates.
+            // Keep the previous frame's tiles, too, to avoid cycling through
+            // a working set which does not all fit on this page.
+            .filter(|&(_, id)| self.frame.saturating_sub(self.last_seen[id]) > 1)
+            .min_by_key(|&(_, id)| self.last_seen[id])
+    }
+}
 
 impl PixelPages {
     fn new(image: &dx::TileImage, side: u32, single_page: bool) -> Result<Self> {
@@ -327,13 +398,17 @@ impl PixelPages {
         dirty.try_reserve_exact(image.len())?;
         locations.resize(image.len(), None);
         dirty.resize(image.len(), false);
-        if single_page {
-            pending.try_reserve_exact(((side / image.cell()).pow(2) as usize).min(image.len()))?;
+        let compact = if single_page {
+            let capacity = ((side / image.cell()).pow(2) as usize).min(image.len());
+            pending.try_reserve_exact(capacity)?;
             pages.try_reserve_exact(1)?;
-        }
+            Some(CompactSlots::new(image, capacity)?)
+        } else {
+            None
+        };
         Ok(Self {
             side,
-            single_page,
+            compact,
             locations,
             pages,
             slots: 0,
@@ -351,13 +426,37 @@ impl PixelPages {
 
     fn place(&mut self, image: &dx::TileImage, id: usize) -> Option<(usize, u32, u32)> {
         if let Some(location) = self.locations[id] {
+            if let Some(compact) = &mut self.compact {
+                compact.last_seen[id] = compact.frame;
+            }
             return Some(location);
         }
-        let location = image.placement(self.slots, self.side)?;
-        if self.single_page && location.0 != 0 {
-            return None;
+        let mut location = image.placement(self.slots, self.side)?;
+        let append = self.compact.is_none() || location.0 == 0;
+        if let Some(compact) = &mut self.compact {
+            if compact.uploads_left == 0 || (!append && !compact.can_recycle) {
+                compact.overflow += 1;
+                return None;
+            }
+            if append {
+                compact.tiles.push(id);
+            } else if let Some((slot, old)) = compact.oldest_unused() {
+                location = self.locations[old].take().unwrap();
+                if std::mem::take(&mut self.dirty[old]) {
+                    self.pending.retain(|&queued| queued != old);
+                }
+                compact.tiles[slot] = id;
+                compact.recycled += 1;
+            } else {
+                // Eligibility can only decrease again within this frame.
+                compact.can_recycle = false;
+                compact.overflow += 1;
+                return None;
+            }
+            compact.uploads_left -= 1;
+            compact.last_seen[id] = compact.frame;
         }
-        self.slots += 1;
+        self.slots += u32::from(append);
         if location.0 == self.pages.len() {
             self.pages.push(None);
         }
@@ -375,6 +474,10 @@ impl PixelPages {
             + self.pending.capacity() * size_of::<usize>()
             + self.dirty.capacity()
             + self.pages.capacity() * size_of::<Option<dx::Texture>>()
+            + self.compact.as_ref().map_or(0, |compact| {
+                compact.tiles.capacity() * size_of::<usize>()
+                    + compact.last_seen.capacity() * size_of::<u64>()
+            })
     }
 }
 
@@ -420,13 +523,15 @@ impl Pixels {
         PixelView {
             image: &self.image,
             layout: &self.main,
+            compact: None,
         }
     }
 
     pub fn entity_view(&self) -> Option<PixelView<'_>> {
         Some(PixelView {
             image: &self.image,
-            layout: self.entities.as_ref()?,
+            layout: &self.main,
+            compact: Some(self.entities.as_ref()?),
         })
     }
 
@@ -454,8 +559,22 @@ impl Pixels {
         self.entities = None;
     }
 
-    pub fn entity_page_tiles(&self) -> u32 {
-        self.entities.as_ref().map_or(0, |page| page.borrow().slots)
+    pub fn begin_entity_frame(&mut self) {
+        if let Some(page) = &mut self.entities {
+            page.get_mut()
+                .compact
+                .as_mut()
+                .unwrap()
+                .begin_frame(self.image.cell());
+        }
+    }
+
+    pub fn entity_page_stats(&self) -> (u32, u64, u64) {
+        self.entities.as_ref().map_or((0, 0, 0), |page| {
+            let page = page.borrow();
+            let compact = page.compact.as_ref().unwrap();
+            (page.slots, compact.recycled, compact.overflow)
+        })
     }
 
     pub fn bytes(&self) -> u64 {
@@ -498,18 +617,35 @@ impl Pixels {
     }
 
     pub fn polygon(&self, input: &[dx::Vertex], emit: impl FnMut(usize, &[dx::Vertex])) {
-        let placed = self.view().polygon(input, emit);
-        debug_assert!(placed, "the main atlas can allocate another page");
+        self.view().polygon(input, emit);
     }
 }
 
 impl<'a> PixelView<'a> {
-    pub fn textures(self) -> std::cell::Ref<'a, [Option<dx::Texture>]> {
-        std::cell::Ref::map(self.layout.borrow(), |s| s.pages.as_slice())
+    pub fn textures(self) -> Ref<'a, [Option<dx::Texture>]> {
+        Ref::map(self.layout.borrow(), |s| s.pages.as_slice())
+    }
+
+    pub fn draw_textures(self) -> PixelTextures<'a> {
+        PixelTextures {
+            main: self.textures(),
+            compact: self.compact.map(RefCell::borrow),
+        }
     }
 
     pub fn prepare(self, device: &mut dx::Device) -> Result<()> {
-        let mut s = self.layout.borrow_mut();
+        self.prepare_layout(device, self.layout)
+    }
+
+    pub fn prepare_compact(self, device: &mut dx::Device) -> Result<()> {
+        if let Some(page) = self.compact {
+            self.prepare_layout(device, page)?;
+        }
+        Ok(())
+    }
+
+    fn prepare_layout(self, device: &mut dx::Device, layout: &RefCell<PixelPages>) -> Result<()> {
+        let mut s = layout.borrow_mut();
         if s.pending.is_empty() {
             return Ok(());
         }
@@ -543,13 +679,14 @@ impl<'a> PixelView<'a> {
         }
         Ok(())
     }
-    /// False means the bounded layout ran out of slots. Discard all output for
-    /// that pass and remap through the main layout before submitting any draws.
-    pub fn polygon(self, input: &[dx::Vertex], mut emit: impl FnMut(usize, &[dx::Vertex])) -> bool {
+    /// Route every tile through its assigned layout in polygon order. A miss
+    /// on the compact page can always use the corresponding main-atlas tile.
+    pub fn polygon(self, input: &[dx::Vertex], mut emit: impl FnMut(usize, &[dx::Vertex])) {
         if input.is_empty() {
-            return true;
+            return;
         }
-        let mut s = self.layout.borrow_mut();
+        let mut main = self.layout.borrow_mut();
+        let mut compact = self.compact.map(RefCell::borrow_mut);
         let image = self.image;
         let tile = image.tile;
         let min = std::array::from_fn::<_, 2, _>(|k| {
@@ -581,9 +718,16 @@ impl<'a> PixelView<'a> {
                 if !image.present(id) {
                     continue;
                 }
-                let Some((page, ox, oy)) = s.place(image, id) else {
-                    return false;
-                };
+                let (page, ox, oy, side) = compact
+                    .as_mut()
+                    .and_then(|s| {
+                        s.place(image, id)
+                            .map(|(_, x, y)| (ENTITY_PAGE, x, y, s.side))
+                    })
+                    .unwrap_or_else(|| {
+                        let (page, x, y) = main.place(image, id).unwrap();
+                        (page, x, y, main.side)
+                    });
                 let mut polygon: smallvec::SmallVec<[dx::Vertex; 8]> = if start == end {
                     smallvec::SmallVec::from_slice(input)
                 } else {
@@ -607,17 +751,16 @@ impl<'a> PixelView<'a> {
                         (v.uv[0] * image.width as f32 - x as f32 * tile as f32
                             + ox as f32
                             + image.padding as f32)
-                            / s.side as f32,
+                            / side as f32,
                         (v.uv[1] * image.height as f32 - y as f32 * tile as f32
                             + oy as f32
                             + image.padding as f32)
-                            / s.side as f32,
+                            / side as f32,
                     ];
                 }
                 emit(page, &polygon);
             }
         }
-        true
     }
 }
 
@@ -645,10 +788,15 @@ mod tests {
         });
         for (view, side, pages, offsets) in [
             (pixels.view(), 16.0, [0, 1], [0.0, 0.0]),
-            (pixels.entity_view().unwrap(), 32.0, [0, 0], [0.0, 10.0]),
+            (
+                pixels.entity_view().unwrap(),
+                32.0,
+                [ENTITY_PAGE; 2],
+                [0.0, 10.0],
+            ),
         ] {
             let mut at = 0;
-            assert!(view.polygon(&quad, |page, poly| {
+            view.polygon(&quad, |page, poly| {
                 assert_eq!(page, pages[at]);
                 assert_eq!(poly.len(), 4);
                 for v in poly {
@@ -661,7 +809,7 @@ mod tests {
                     assert_eq!(v.color, 0xffffffff);
                 }
                 at += 1;
-            }));
+            });
             assert_eq!(at, 2);
         }
         // Simulate completion of those uploads, then change texels across the
@@ -680,11 +828,41 @@ mod tests {
         full[3].uv[0] = 0.0;
         full[1].uv[0] = 80.0 / 128.0;
         full[2].uv[0] = 80.0 / 128.0;
-        assert!(!pixels.entity_view().unwrap().polygon(&full, |_, _| {}));
-        assert_eq!(pixels.entity_page_tiles(), 9);
         let mut pages = Vec::new();
-        assert!(pixels.view().polygon(&full, |page, _| pages.push(page)));
-        assert_eq!(pages, (0..10).collect::<Vec<_>>());
+        pixels
+            .entity_view()
+            .unwrap()
+            .polygon(&full, |page, _| pages.push(page));
+        assert_eq!(&pages[..9], &[ENTITY_PAGE; 9]);
+        assert_eq!(&pages[9..], &[2]);
+        assert_eq!(pixels.entity_page_stats(), (9, 0, 1));
+    }
+
+    #[test]
+    fn compact_slots_recycle_only_old_tiles_within_the_frame_budget() {
+        let image = dx::TileImage::new(&[255; 128 * 8 * 4], 128, 8, 8, 1).unwrap();
+        let mut page = PixelPages::new(&image, 32, true).unwrap();
+        for id in 0..9 {
+            assert!(page.place(&image, id).is_some());
+        }
+        let replace_at = page.locations[2];
+        page.compact.as_mut().unwrap().begin_frame(image.cell());
+        assert!(page.place(&image, 9).is_none());
+        assert!(page.place(&image, 1).is_some());
+
+        let compact = page.compact.as_mut().unwrap();
+        compact.begin_frame(image.cell());
+        compact.uploads_left = 1;
+        assert!(page.place(&image, 0).is_some());
+        assert_eq!(page.place(&image, 9), replace_at);
+        assert!(page.place(&image, 10).is_none());
+        assert_eq!(page.slots, 9);
+        assert_eq!(page.locations[2], None);
+        assert!(!page.dirty[2]);
+        assert!(!page.pending.contains(&2));
+        assert!(page.pending.contains(&9));
+        let compact = page.compact.unwrap();
+        assert_eq!((compact.recycled, compact.overflow), (1, 2));
     }
 }
 

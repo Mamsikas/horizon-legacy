@@ -215,9 +215,8 @@ impl Renderer {
                 .chunks_exact(4)
                 .all(|quad| quad[0].layer & 0xffff == 0)
             {
-                let batches = self
-                    .entity_batches(frame, &section.vertices, fog, 2, self.hud.atlas.view())?
-                    .ok_or("D3D9 shared atlas placement failed")?;
+                let batches =
+                    self.entity_batches(frame, &section.vertices, fog, 2, self.hud.atlas.view())?;
                 debug_assert!(batches.sprites.is_empty() && batches.glints.is_empty());
                 self.retain_static_entity_buffer(section, &batches.pixels)?;
                 uncached = Some(batches.pixels);
