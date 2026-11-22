@@ -9,8 +9,9 @@ lighting inputs and player choices. Deep performance work is the next task (TZ 3
 
 - `main` is the DX9 distribution branch. Develop on `dx9-dev` or a focused branch,
   then open PRs against this repository's `main`, not the official Horizon repository.
-- Upstream is `https://github.com/horizon-rust/horizon`. This integration uses
-  `df50a07e73` (2026-11-18). It includes the fork's synced upstream `bc07dd266c`.
+- Upstream is `https://github.com/horizon-rust/horizon`. The November 22
+  `dx9-dev` integration pins `10b9f3472770ed9307e3d92a509d753f94a03a42`,
+  564 commits after the November 18 baseline `df50a07e73`.
   Record the exact upstream revision whenever updating; do not chase a moving head
   during validation. Merge history, never replace it with a force-push.
 - `archive/dx9-before-nov18` preserves the last pre-integration source, `42f0b42d47`.
@@ -18,7 +19,9 @@ lighting inputs and player choices. Deep performance work is the next task (TZ 3
 - After an upstream merge, resolve moved code in its new home. Remove redundant
   fork fixes once the equivalent upstream behavior exists. The November integration
   removes duplicate Windows process CPU/RSS sampling in favor of `horizon-system`.
-  The system-wide Windows CPU probe remains needed. The offline encrypted-login
+  The system-wide Windows CPU probe remains needed. This sync retains the DX9
+  API selection, light launcher, preparer heap and cancellation controls, and
+  Win7 stack and paste support. The offline encrypted-login
   fix remains separate: an offline profile sends the encryption response and the
   server decides admission; signed-in session authentication is unchanged.
 - Keep this document and the fork-specific instructions in `AGENTS.md` current.
