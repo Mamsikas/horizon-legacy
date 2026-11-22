@@ -1147,3 +1147,18 @@ COM calls needs to pay for extra vertex processing and any IB uploads.
 Compare the same walk and standing with the `39dd48f04f` captures and
 review fog edges, foliage cutouts and resize. Visual tests, timing, and
 smoke on GMA3150 and HD4570 require native hardware.
+
+### Win7 packages for dense solid windows
+
+[Run 45014529557](https://github.com/Mamsikas/horizon-legacy/actions/runs/45014529557) built
+`31d02267b6eb8d2451e44fcd3699d6b7fe9a1f33` for both architectures. The
+Win7 import audits, 15 import policy tests per architecture and CPU
+resource and embedded SM2 checks passed. The local Win7 compile checks
+covered ordinary and dev modes. The local CPU suites passed 33 tests
+with diagnostics and 31 without them. The new tests preserve quad
+order and tight sparse ranges and check the cap and byte-budget fallbacks.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [14752245486](https://github.com/Mamsikas/horizon-legacy/actions/runs/45014529557/artifacts/14752245486) | `4aa413ec6265ffb0cc282143732153b515348f5d5286e68f868263db017fac3f` |
+| x86 | [14751064388](https://github.com/Mamsikas/horizon-legacy/actions/runs/45014529557/artifacts/14751064388) | `7fb8c7fc6942762c6692e7c38e50f17c5b85a6d18f7b9c25bf8a996b38e40be1` |
