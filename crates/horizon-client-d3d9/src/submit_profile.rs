@@ -129,8 +129,6 @@ mod enabled {
         pub screen_vertices: u64,
         pub triangles: u64,
         pub lines: u64,
-        pub solid_draws_saved: u64,
-        pub solid_extra_vertices: u64,
         /// Immutable VB, transient VB (including GUI), IB, texture patches.
         pub upload_bytes: [u64; 4],
         pub wall_ns: u64,
@@ -294,7 +292,7 @@ mod enabled {
             );
             for (pass, c) in PASSES.iter().zip(window.counters) {
                 log::info!(
-                    "D3D9 submit pass={pass:?} com={:?} failures={:?} cache_requests={:?} state_requests={} transform_requests={} stream_requests={} dip_num_vertices={} dip_ranges={} dip_min={:?} dip_max={} dip_p50_upper={:?} dip_p95_upper={:?} dp_vertices={} screen_vertices={} triangles={} lines={} upload_bytes={:?} wall_ms={:.6} sample_wall_ms={:.6} sample_cpu_ms={:.6} cpu_samples={} cpu_unavailable={} solid_draws_saved={} solid_extra_vertices={}",
+                    "D3D9 submit pass={pass:?} com={:?} failures={:?} cache_requests={:?} state_requests={} transform_requests={} stream_requests={} dip_num_vertices={} dip_ranges={} dip_min={:?} dip_max={} dip_p50_upper={:?} dip_p95_upper={:?} dp_vertices={} screen_vertices={} triangles={} lines={} upload_bytes={:?} wall_ms={:.6} sample_wall_ms={:.6} sample_cpu_ms={:.6} cpu_samples={} cpu_unavailable={}",
                     c.calls,
                     c.failures,
                     c.cache_requests,
@@ -316,9 +314,7 @@ mod enabled {
                     c.cpu_sample_wall_ns as f64 / 1e6,
                     c.cpu_sample_ns as f64 / 1e6,
                     c.cpu_samples,
-                    c.cpu_unavailable,
-                    c.solid_draws_saved,
-                    c.solid_extra_vertices
+                    c.cpu_unavailable
                 );
             }
         }

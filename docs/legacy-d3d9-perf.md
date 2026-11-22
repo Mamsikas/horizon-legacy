@@ -1162,3 +1162,39 @@ order and tight sparse ranges and check the cap and byte-budget fallbacks.
 | --- | --- | --- |
 | x64 | [14752245486](https://github.com/Mamsikas/horizon-legacy/actions/runs/45014529557/artifacts/14752245486) | `4aa413ec6265ffb0cc282143732153b515348f5d5286e68f868263db017fac3f` |
 | x86 | [14751064388](https://github.com/Mamsikas/horizon-legacy/actions/runs/45014529557/artifacts/14751064388) | `7fb8c7fc6942762c6692e7c38e50f17c5b85a6d18f7b9c25bf8a996b38e40be1` |
+
+### GMA result and rollback
+
+The log for `profile-20261122-112410Z.hzperf` (walk) and
+`profile-20261122-112126Z.hzperf` (standing) identifies clean
+`31d02267b6eb8d2451e44fcd3699d6b7fe9a1f33`, Chell 1.8b, HAL SWVP, Win7
+x64 and 1024×600 RGB565. The unchanged `39dd48f04f` captures above serve
+as the same-route reference. Wall times include driver waits.
+
+| Capture metric | Reference | Dense windows |
+| --- | ---: | ---: |
+| Walk FPS | 12.693 | 12.514 |
+| Walk DX9 wall, ms/frame | 54.790 | 55.667 |
+| Walk solid wall, ms/frame | 31.909 | 32.487 |
+| Walk frame p50 / p95 / p99, ms | 73.69 / 126.98 / 191.69 | 74.65 / 124.73 / 165.30 |
+| Walk slowest 1% mean, ms | 236.74 | 218.54 |
+| Standing FPS | 36.171 | 35.882 |
+| Standing solid wall, ms/frame | 10.521 | 10.535 |
+| Standing slowest 1% mean, ms | 69.04 | 88.24 |
+
+The same-frame counters show 4.94 draws saved per walk frame from 286.60
+original draws, 76.76 extra vertices in the advertised SWVP ranges and
+2.24 `SetIndices` calls. The pass built 201 index buffers across 1,825
+frames in 29 complete windows, about 3.30 KiB of index writes per frame.
+Standing saved 6 of 44 draws, added 64 vertices and introduced 3 index
+bindings per frame. There were no recorded COM failures. Frame tails
+moved in both directions across the two scenes. Solid wall did not
+improve and the owner saw no speedup, so the experiment was reverted.
+
+Across the complete log windows the main thread used about 92.9% of
+walk elapsed time (74 ms/frame), compared with 92.0% on the reference.
+The sparse solid samples totaled 874 ms of thread execution in 904 ms
+of wall time over 28 samples. Windows accounts CPU time in coarse ticks
+here. Together these measurements support main-thread CPU pressure on
+the one-core N455, including software VP, driver and general client
+work. GPU time, rasterization cost and GPU queue stalls remain unmeasured.

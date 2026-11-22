@@ -696,24 +696,11 @@ impl Renderer {
             }
             self.decode_scratch = decoded;
             self.stamp("terrain indices/cold draws", &mut clock);
-            let dense = dx::development_build() && self.device.caps.software_vertices;
-            let index_budget = (self.mesh_budget / 16).min(4 << 20);
-            let mut cached_bytes = if dense {
-                self.solid_batches
-                    .values()
-                    .map(mesh::DrawBatch::cached_bytes)
-                    .sum()
-            } else {
-                0
-            };
             for (&(page, cutout, id, fog_program), batch) in &mut self.solid_batches {
-                if dense {
-                    cached_bytes -= batch.cached_bytes();
-                }
                 if batch.next.is_empty() {
                     // A changed fog class must not retain another copy of the
                     // old visible index plan in each inactive program bucket.
-                    // Keep small CPU vectors reusable.
+                    // Keep small CPU vectors reusable; SWVP has no cached IB.
                     batch.release_indices();
                     continue;
                 }
@@ -745,11 +732,7 @@ impl Renderer {
                     &arena.mesh,
                     &mut self.index_scratch,
                     self.solid_reused,
-                    dense.then(|| index_budget.saturating_sub(cached_bytes)),
                 )?;
-                if dense {
-                    cached_bytes += batch.cached_bytes();
-                }
             }
             self.section_draws = (self.device.draws - before) as usize;
             self.device.profile_pass(dx::SubmitPass::DynamicEntities);
