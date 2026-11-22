@@ -1182,11 +1182,13 @@ fn ruby_mod_with_pistons(dir: &Path, pistons: bool) -> ContentMod {
             r#"{"type": "minecraft:crafting_shapeless", "category": "misc",
                 "ingredients": ["ruby:ruby_stew"], "result": {"id": "ruby:ruby"}}"#,
         ),
-        // Carried-over tags name blocks left out and other mods' ids too.
+        // Carried-over tags name blocks left out and other mods' ids too, and
+        // 1.21.1's vanilla tags 26.3 renamed (`concrete_powders`).
         (
             "data/minecraft/tags/block/mineable/pickaxe.json",
             r##"{"values": ["ruby:ruby_block", "ruby:left_out", "othermod:thing",
-                {"id": "othermod:optional", "required": false}, "#c:storage_blocks/ruby"]}"##,
+                {"id": "othermod:optional", "required": false}, "#c:storage_blocks/ruby",
+                "#minecraft:concrete_powder"]}"##,
         ),
         (
             "data/c/tags/item/gems/ruby.json",
@@ -1239,386 +1241,396 @@ fn content_root_loads_with_every_table() {
     let m = ruby_mod_with_pistons(&scratch.join("ruby"), true);
     // The base as a relative path (cargo runs tests in the crate's folder):
     // the overlay's links still resolve.
-    let relative = relative_base(&base);
-    let root = resource_root_fixture(
-        &relative,
-        Path::new(""),
-        std::slice::from_ref(&m),
-        &scratch.join("cache"),
-    )
-    .unwrap();
-    assert_ne!(root, base);
-    let resources = resolved_resources(
-        &base,
-        root.clone(),
-        Path::new(""),
-        std::slice::from_ref(&m),
-        scratch.join("cache"),
-    )
-    .unwrap();
-
-    let files = content_files(&resources);
-    let overlay = PackOverlay::new(&files);
-    let vanilla = Assets::load(&base).unwrap();
-    let assets = Assets::load(&root).unwrap();
-    let (old, new) = (vanilla.registry, assets.registry);
-    let n = old.len() as u32;
-    let iron = old.default_state("minecraft:iron_block").unwrap();
-    let door = old.default_state("minecraft:oak_door").unwrap();
-    let door_first = (0..n)
-        .map(BlockStateId)
-        .find(|&s| old.state(s).unwrap().name == "minecraft:oak_door")
-        .unwrap();
-    // Vanilla keeps its ids; blocks come after, sorted: ruby_block, ruby_door, ruby_glass.
-    assert_eq!(new.len(), old.len() + 1 + 64 + 1 + 2);
-    assert_eq!(new.default_state("minecraft:iron_block"), Some(iron));
-    let ruby = new.default_state("ruby:ruby_block").unwrap();
-    assert_eq!(ruby, BlockStateId(n));
-    let ruby_door = new.default_state("ruby:ruby_door").unwrap();
-    assert_eq!(ruby_door, BlockStateId(n + 1 + (door.0 - door_first.0)));
-    assert_eq!(
-        new.default_state("ruby:ruby_glass"),
-        Some(BlockStateId(n + 65))
-    );
-    // Network ids: the new items and blocks follow vanilla's in the registries report, which
-    // the game and its server both read (a missing one travels as air).
-    let report = |root: &Path| {
-        horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap()
-    };
-    let (vanilla_ids, ids) = (report(&base), report(&root));
-    let item = |b: &horizon_protocol::registry::Builtin, name: &str| {
-        b.get("minecraft:item").and_then(|r| r.id(name))
-    };
-    let vanilla_items = (0..)
-        .take_while(|&i| vanilla_ids.get("minecraft:item").unwrap().name(i).is_some())
-        .count() as i32;
-    assert_eq!(
-        item(&ids, "minecraft:stone"),
-        item(&vanilla_ids, "minecraft:stone")
-    );
-    let ruby_item = item(&ids, "ruby:ruby_block").unwrap();
-    assert!(ruby_item >= vanilla_items, "{ruby_item} < {vanilla_items}");
-    assert_eq!(
-        ids.get("minecraft:item").unwrap().name(ruby_item),
-        Some("ruby:ruby_block")
-    );
-    assert!(item(&ids, "ruby:ruby_glass").is_none(), "no item declared");
-    assert!(
-        ids.get("minecraft:block")
-            .unwrap()
-            .id("ruby:ruby_glass")
-            .is_some()
-    );
-
-    let old_facts = BlockFacts::load(&base, old).unwrap();
-    let facts = BlockFacts::load(&root, new).unwrap();
-    let shared_json: serde_json::Value = serde_json::from_reader(std::io::BufReader::new(
-        fs::File::open(root.join("block-behaviours.json")).unwrap(),
-    ))
-    .unwrap();
-    let (shared_facts, shared_behaviours) =
-        BlockFacts::load_with_behaviours(&root, new, &shared_json).unwrap();
-    let independent_behaviours = horizon_world::level::Behaviours::load(new, &root).unwrap();
-    let (deferred_facts, gameplay) =
-        BlockFacts::load_with_projection(&root, new, &shared_json, true).unwrap();
-    let deferred_behaviours =
-        horizon_world::level::Behaviours::load_with_gameplay(new, &root, &shared_json, &gameplay)
-            .unwrap();
-    assert_eq!(shared_facts.states.len(), facts.states.len());
-    // `random_ticks` makes the block tick randomly although its template (iron) never does; the
-    // sections' counts read the same flag (`random_tick_candidate`).
-    assert!(independent_behaviours.is_randomly_ticking(ruby));
-    assert!(independent_behaviours.random_tick_candidate(ruby));
-    assert!(!independent_behaviours.is_randomly_ticking(iron));
-    assert!(deferred_behaviours.is_randomly_ticking(ruby));
-    for state in (n + 1)..(n + 65) {
-        assert_eq!(
-            independent_behaviours.facts(BlockStateId(state)).push,
-            horizon_world::level::PushReaction::Immoveable
-        );
-    }
-    assert_eq!(
-        independent_behaviours.facts(ruby).push,
-        independent_behaviours.facts(iron).push
-    );
-    // `occludes: false` (noOcclusion): the iron-template block occludes nothing, iron still does.
-    assert!(!facts.get(ruby).can_occlude && !facts.get(ruby).solid_render);
-    // Its light dampening is a non-solid full block's, as leaves' and spawners' are (iron's is 15).
-    assert_eq!(
-        (facts.get(ruby).dampening, facts.get(iron).dampening),
-        (1, 15)
-    );
-    assert!(facts.get(iron).can_occlude && facts.get(iron).solid_render);
-    // `destroy_overlay: false` hides the crack on the declared block only.
-    assert!(!facts.get(ruby).destroy_overlay && facts.get(iron).destroy_overlay);
-    let definitions: serde_json::Value =
-        serde_json::from_slice(&fs::read(root.join("render-definitions.json")).unwrap()).unwrap();
-    assert_eq!(
-        definitions["ruby:ruby_block"]["can_occlude"], false,
-        "faces beside it are drawn"
-    );
-    assert_eq!(definitions["minecraft:iron_block"]["can_occlude"], true);
-    // `render_shape` leaves the glass's model out of the chunk mesh; the block keeps the template's.
-    assert_eq!(
-        facts.get(BlockStateId(n + 65)).render_shape,
-        crate::blocks::RenderShape::Animated
-    );
-    assert_eq!(
-        facts.get(ruby).render_shape,
-        crate::blocks::RenderShape::Model
-    );
-    for state in [ruby, ruby_door, BlockStateId(n + 65)] {
-        assert_eq!(shared_facts.get(state).hardness, facts.get(state).hardness);
-        assert_eq!(
-            deferred_facts.get(state).hardness,
-            facts.get(state).hardness
-        );
-        assert_eq!(deferred_facts.get(state).classes, facts.get(state).classes);
-        assert_eq!(
-            deferred_behaviours.facts(state).flags,
-            independent_behaviours.facts(state).flags
-        );
-        assert_eq!(
-            deferred_behaviours.data(state).sounds.place,
-            independent_behaviours.data(state).sounds.place
-        );
-        assert_eq!(shared_facts.get(state).emission, facts.get(state).emission);
-        assert_eq!(shared_facts.get(state).classes, facts.get(state).classes);
-        assert_eq!(
-            shared_behaviours.facts(state).flags,
-            independent_behaviours.facts(state).flags,
-        );
-        assert_eq!(
-            shared_behaviours.data(state).sounds.place,
-            independent_behaviours.data(state).sounds.place,
-        );
-    }
-
-    let (a, b) = (old_facts.get(iron), facts.get(ruby));
-    assert_eq!((b.hardness, b.emission, b.friction), (4.0, 3, 0.8));
-    assert_eq!(b.explosion_resistance, a.explosion_resistance);
-    assert_eq!(b.outline, a.outline);
-    assert_eq!(b.classes, a.classes);
-    assert_eq!(&*b.item, "ruby:ruby_block");
-    assert_eq!(b.map_color, 28);
-    let amethyst = old_facts.get(old.default_state("minecraft:amethyst_block").unwrap());
-    assert_eq!(b.sounds.break_sound, amethyst.sounds.break_sound);
-    for i in 0..64 {
-        let (v, m) = (
-            old_facts.get(BlockStateId(door_first.0 + i)),
-            facts.get(BlockStateId(n + 1 + i)),
-        );
-        assert_eq!(
-            (v.outline.clone(), v.hardness, v.classes.clone()),
-            (m.outline.clone(), m.hardness, m.classes.clone())
-        );
-        assert_eq!(&*m.name, "ruby:ruby_door");
-    }
-    let glass = facts.get(BlockStateId(n + 65));
-    assert_eq!(&*glass.item, "minecraft:air");
-    // Vanilla's own rows are untouched.
-    assert_eq!(facts.get(iron).hardness, a.hardness);
-    assert_eq!(&*facts.get(iron).name, "minecraft:iron_block");
-
-    let defaults = horizon_world::item_defaults::read(&root).unwrap();
-    let items = Items::load(&root, new, &facts, &overlay, &defaults).unwrap();
-    item_metadata_tests::assert_metadata(&root, &items, &defaults, ruby, n);
-    let binding = independent_behaviours.item_binding("ruby:ruby").unwrap();
-    assert_eq!(
-        binding.block,
-        independent_behaviours.block(BlockStateId(n + 65))
-    );
-    // Exercise the same binding as server placement, including its emitted sound.
+    // Readers of the root hold its lock; Windows removes no folder with an open file.
     {
-        use horizon_core::{
-            geometry::{Direction, Vec3},
-            position::BlockPos,
-            random::LegacyRandom,
-        };
-        use horizon_world::level::{LevelAccess, LevelEvent, PlaceContext, PlaceOutcome, Ticks};
-        struct TestLevel {
-            blocks: std::collections::HashMap<BlockPos, BlockStateId>,
-            air: BlockStateId,
-            random: LegacyRandom,
-            events: Vec<LevelEvent>,
-            time: i64,
-        }
-        impl horizon_world::level::BlockEntityNeighbors for TestLevel {}
-        impl LevelAccess for TestLevel {
-            fn block_state(&self, pos: BlockPos) -> BlockStateId {
-                *self.blocks.get(&pos).unwrap_or(&self.air)
-            }
-            fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
-                Some(self.blocks.insert(pos, state).unwrap_or(self.air))
-            }
-            fn is_loaded(&self, _: BlockPos) -> bool {
-                true
-            }
-            fn random(&mut self) -> &mut LegacyRandom {
-                &mut self.random
-            }
-            fn game_time(&self) -> i64 {
-                self.time
-            }
-            fn emit(&mut self, event: LevelEvent) {
-                self.events.push(event);
-            }
-        }
-        let floor = BlockPos::new(0, 0, 0);
-        let wheat = new.default_state("minecraft:wheat").unwrap();
-        let mut level = TestLevel {
-            blocks: [(floor, iron)].into_iter().collect(),
-            air: new.default_state("minecraft:air").unwrap(),
-            random: LegacyRandom::new(1),
-            events: Vec::new(),
-            time: 0,
-        };
-        let ctx = PlaceContext {
-            clicked_pos: floor,
-            face: Direction::Up,
-            hit: Vec3::new(0.5, 1.0, 0.5),
-            inside: false,
-            yaw: 0.0,
-            pitch: 0.0,
-            sneaking: false,
-            item: "ruby:ruby_sword".into(),
-            can_use_game_master_blocks: false,
-        };
-        let denied = independent_behaviours.place_block(&mut level, &mut Ticks::new(1), &ctx);
-        assert!(matches!(denied, PlaceOutcome::Failed));
-        assert!(level.events.is_empty());
-        level
-            .blocks
-            .insert(floor, new.default_state("minecraft:farmland").unwrap());
-        let placed = independent_behaviours.place_block(&mut level, &mut Ticks::new(1), &ctx);
-        assert!(matches!(placed, PlaceOutcome::Placed { state, .. } if state == wheat));
-        assert!(level.events.iter().any(|e| matches!(e, LevelEvent::Sound { sound, .. } if &**sound == "minecraft:item.crop.plant")));
+        let relative = relative_base(&base);
+        let root = resource_root_fixture(
+            &relative,
+            Path::new(""),
+            std::slice::from_ref(&m),
+            &scratch.join("cache"),
+        )
+        .unwrap();
+        assert_ne!(root, base);
+        let resources = resolved_resources(
+            &base,
+            root.clone(),
+            Path::new(""),
+            std::slice::from_ref(&m),
+            scratch.join("cache"),
+        )
+        .unwrap();
 
-        // Exercise the real piston caller with both stone-based content blocks.
-        let piston = new
-            .resolve(&horizon_world::chunk::BlockState {
-                name: "minecraft:piston".into(),
-                properties: [
-                    ("facing".into(), "east".into()),
-                    ("extended".into(), "false".into()),
-                ]
-                .into_iter()
-                .collect(),
-            })
+        let files = content_files(&resources);
+        let overlay = PackOverlay::new(&files);
+        let vanilla = Assets::load(&base).unwrap();
+        let assets = Assets::load(&root).unwrap();
+        let (old, new) = (vanilla.registry, assets.registry);
+        let n = old.len() as u32;
+        let iron = old.default_state("minecraft:iron_block").unwrap();
+        let door = old.default_state("minecraft:oak_door").unwrap();
+        let door_first = (0..n)
+            .map(BlockStateId)
+            .find(|&s| old.state(s).unwrap().name == "minecraft:oak_door")
             .unwrap();
-        let power = new.default_state("minecraft:redstone_block").unwrap();
-        for (name, moves) in [("ruby:z_stone", true), ("ruby:z_stuck", false)] {
-            let block = new.default_state(name).unwrap();
-            let base = BlockPos::new(0, 1, 0);
-            let front = BlockPos::new(1, 1, 0);
-            let destination = BlockPos::new(2, 1, 0);
+        // Vanilla keeps its ids; blocks come after, sorted: ruby_block, ruby_door, ruby_glass.
+        assert_eq!(new.len(), old.len() + 1 + 64 + 1 + 2);
+        assert_eq!(new.default_state("minecraft:iron_block"), Some(iron));
+        let ruby = new.default_state("ruby:ruby_block").unwrap();
+        assert_eq!(ruby, BlockStateId(n));
+        let ruby_door = new.default_state("ruby:ruby_door").unwrap();
+        assert_eq!(ruby_door, BlockStateId(n + 1 + (door.0 - door_first.0)));
+        assert_eq!(
+            new.default_state("ruby:ruby_glass"),
+            Some(BlockStateId(n + 65))
+        );
+        // Network ids: the new items and blocks follow vanilla's in the registries report, which
+        // the game and its server both read (a missing one travels as air).
+        let report = |root: &Path| {
+            horizon_protocol::registry::Builtin::load(&root.join("registries.json")).unwrap()
+        };
+        let (vanilla_ids, ids) = (report(&base), report(&root));
+        let item = |b: &horizon_protocol::registry::Builtin, name: &str| {
+            b.get("minecraft:item").and_then(|r| r.id(name))
+        };
+        let vanilla_items = (0..)
+            .take_while(|&i| vanilla_ids.get("minecraft:item").unwrap().name(i).is_some())
+            .count() as i32;
+        assert_eq!(
+            item(&ids, "minecraft:stone"),
+            item(&vanilla_ids, "minecraft:stone")
+        );
+        let ruby_item = item(&ids, "ruby:ruby_block").unwrap();
+        assert!(ruby_item >= vanilla_items, "{ruby_item} < {vanilla_items}");
+        assert_eq!(
+            ids.get("minecraft:item").unwrap().name(ruby_item),
+            Some("ruby:ruby_block")
+        );
+        assert!(item(&ids, "ruby:ruby_glass").is_none(), "no item declared");
+        assert!(
+            ids.get("minecraft:block")
+                .unwrap()
+                .id("ruby:ruby_glass")
+                .is_some()
+        );
+
+        let old_facts = BlockFacts::load(&base, old).unwrap();
+        let facts = BlockFacts::load(&root, new).unwrap();
+        let shared_json: serde_json::Value = serde_json::from_reader(std::io::BufReader::new(
+            fs::File::open(root.join("block-behaviours.json")).unwrap(),
+        ))
+        .unwrap();
+        let (shared_facts, shared_behaviours) =
+            BlockFacts::load_with_behaviours(&root, new, &shared_json).unwrap();
+        let independent_behaviours = horizon_world::level::Behaviours::load(new, &root).unwrap();
+        let (deferred_facts, gameplay) =
+            BlockFacts::load_with_projection(&root, new, &shared_json, true).unwrap();
+        let deferred_behaviours = horizon_world::level::Behaviours::load_with_gameplay(
+            new,
+            &root,
+            &shared_json,
+            &gameplay,
+        )
+        .unwrap();
+        assert_eq!(shared_facts.states.len(), facts.states.len());
+        // `random_ticks` makes the block tick randomly although its template (iron) never does; the
+        // sections' counts read the same flag (`random_tick_candidate`).
+        assert!(independent_behaviours.is_randomly_ticking(ruby));
+        assert!(independent_behaviours.random_tick_candidate(ruby));
+        assert!(!independent_behaviours.is_randomly_ticking(iron));
+        assert!(deferred_behaviours.is_randomly_ticking(ruby));
+        for state in (n + 1)..(n + 65) {
+            assert_eq!(
+                independent_behaviours.facts(BlockStateId(state)).push,
+                horizon_world::level::PushReaction::Immoveable
+            );
+        }
+        assert_eq!(
+            independent_behaviours.facts(ruby).push,
+            independent_behaviours.facts(iron).push
+        );
+        // `occludes: false` (noOcclusion): the iron-template block occludes nothing, iron still does.
+        assert!(!facts.get(ruby).can_occlude && !facts.get(ruby).solid_render);
+        // Its light dampening is a non-solid full block's, as leaves' and spawners' are (iron's is 15).
+        assert_eq!(
+            (facts.get(ruby).dampening, facts.get(iron).dampening),
+            (1, 15)
+        );
+        assert!(facts.get(iron).can_occlude && facts.get(iron).solid_render);
+        // `destroy_overlay: false` hides the crack on the declared block only.
+        assert!(!facts.get(ruby).destroy_overlay && facts.get(iron).destroy_overlay);
+        let definitions: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("render-definitions.json")).unwrap())
+                .unwrap();
+        assert_eq!(
+            definitions["ruby:ruby_block"]["can_occlude"], false,
+            "faces beside it are drawn"
+        );
+        assert_eq!(definitions["minecraft:iron_block"]["can_occlude"], true);
+        // `render_shape` leaves the glass's model out of the chunk mesh; the block keeps the template's.
+        assert_eq!(
+            facts.get(BlockStateId(n + 65)).render_shape,
+            crate::blocks::RenderShape::Animated
+        );
+        assert_eq!(
+            facts.get(ruby).render_shape,
+            crate::blocks::RenderShape::Model
+        );
+        for state in [ruby, ruby_door, BlockStateId(n + 65)] {
+            assert_eq!(shared_facts.get(state).hardness, facts.get(state).hardness);
+            assert_eq!(
+                deferred_facts.get(state).hardness,
+                facts.get(state).hardness
+            );
+            assert_eq!(deferred_facts.get(state).classes, facts.get(state).classes);
+            assert_eq!(
+                deferred_behaviours.facts(state).flags,
+                independent_behaviours.facts(state).flags
+            );
+            assert_eq!(
+                deferred_behaviours.data(state).sounds.place,
+                independent_behaviours.data(state).sounds.place
+            );
+            assert_eq!(shared_facts.get(state).emission, facts.get(state).emission);
+            assert_eq!(shared_facts.get(state).classes, facts.get(state).classes);
+            assert_eq!(
+                shared_behaviours.facts(state).flags,
+                independent_behaviours.facts(state).flags,
+            );
+            assert_eq!(
+                shared_behaviours.data(state).sounds.place,
+                independent_behaviours.data(state).sounds.place,
+            );
+        }
+
+        let (a, b) = (old_facts.get(iron), facts.get(ruby));
+        assert_eq!((b.hardness, b.emission, b.friction), (4.0, 3, 0.8));
+        assert_eq!(b.explosion_resistance, a.explosion_resistance);
+        assert_eq!(b.outline, a.outline);
+        assert_eq!(b.classes, a.classes);
+        assert_eq!(&*b.item, "ruby:ruby_block");
+        assert_eq!(b.map_color, 28);
+        let amethyst = old_facts.get(old.default_state("minecraft:amethyst_block").unwrap());
+        assert_eq!(b.sounds.break_sound, amethyst.sounds.break_sound);
+        for i in 0..64 {
+            let (v, m) = (
+                old_facts.get(BlockStateId(door_first.0 + i)),
+                facts.get(BlockStateId(n + 1 + i)),
+            );
+            assert_eq!(
+                (v.outline.clone(), v.hardness, v.classes.clone()),
+                (m.outline.clone(), m.hardness, m.classes.clone())
+            );
+            assert_eq!(&*m.name, "ruby:ruby_door");
+        }
+        let glass = facts.get(BlockStateId(n + 65));
+        assert_eq!(&*glass.item, "minecraft:air");
+        // Vanilla's own rows are untouched.
+        assert_eq!(facts.get(iron).hardness, a.hardness);
+        assert_eq!(&*facts.get(iron).name, "minecraft:iron_block");
+
+        let defaults = horizon_world::item_defaults::read(&root).unwrap();
+        let items = Items::load(&root, new, &facts, &overlay, &defaults).unwrap();
+        item_metadata_tests::assert_metadata(&root, &items, &defaults, ruby, n);
+        let binding = independent_behaviours.item_binding("ruby:ruby").unwrap();
+        assert_eq!(
+            binding.block,
+            independent_behaviours.block(BlockStateId(n + 65))
+        );
+        // Exercise the same binding as server placement, including its emitted sound.
+        {
+            use horizon_core::{
+                geometry::{Direction, Vec3},
+                position::BlockPos,
+                random::LegacyRandom,
+            };
+            use horizon_world::level::{
+                LevelAccess, LevelEvent, PlaceContext, PlaceOutcome, Ticks,
+            };
+            struct TestLevel {
+                blocks: std::collections::HashMap<BlockPos, BlockStateId>,
+                air: BlockStateId,
+                random: LegacyRandom,
+                events: Vec<LevelEvent>,
+                time: i64,
+            }
+            impl horizon_world::level::BlockEntityNeighbors for TestLevel {}
+            impl LevelAccess for TestLevel {
+                fn block_state(&self, pos: BlockPos) -> BlockStateId {
+                    *self.blocks.get(&pos).unwrap_or(&self.air)
+                }
+                fn set_raw(&mut self, pos: BlockPos, state: BlockStateId) -> Option<BlockStateId> {
+                    Some(self.blocks.insert(pos, state).unwrap_or(self.air))
+                }
+                fn is_loaded(&self, _: BlockPos) -> bool {
+                    true
+                }
+                fn random(&mut self) -> &mut LegacyRandom {
+                    &mut self.random
+                }
+                fn game_time(&self) -> i64 {
+                    self.time
+                }
+                fn emit(&mut self, event: LevelEvent) {
+                    self.events.push(event);
+                }
+            }
+            let floor = BlockPos::new(0, 0, 0);
+            let wheat = new.default_state("minecraft:wheat").unwrap();
             let mut level = TestLevel {
-                blocks: Default::default(),
+                blocks: [(floor, iron)].into_iter().collect(),
                 air: new.default_state("minecraft:air").unwrap(),
                 random: LegacyRandom::new(1),
                 events: Vec::new(),
                 time: 0,
             };
-            let mut ticks = Ticks::new(0);
-            for x in -4..4 {
-                for z in -4..4 {
-                    ticks
-                        .add_empty_chunk(horizon_core::position::ChunkPos::new(x, z))
-                        .unwrap();
+            let ctx = PlaceContext {
+                clicked_pos: floor,
+                face: Direction::Up,
+                hit: Vec3::new(0.5, 1.0, 0.5),
+                inside: false,
+                yaw: 0.0,
+                pitch: 0.0,
+                sneaking: false,
+                item: "ruby:ruby_sword".into(),
+                can_use_game_master_blocks: false,
+            };
+            let denied = independent_behaviours.place_block(&mut level, &mut Ticks::new(1), &ctx);
+            assert!(matches!(denied, PlaceOutcome::Failed));
+            assert!(level.events.is_empty());
+            level
+                .blocks
+                .insert(floor, new.default_state("minecraft:farmland").unwrap());
+            let placed = independent_behaviours.place_block(&mut level, &mut Ticks::new(1), &ctx);
+            assert!(matches!(placed, PlaceOutcome::Placed { state, .. } if state == wheat));
+            assert!(level.events.iter().any(|e| matches!(e, LevelEvent::Sound { sound, .. } if &**sound == "minecraft:item.crop.plant")));
+
+            // Exercise the real piston caller with both stone-based content blocks.
+            let piston = new
+                .resolve(&horizon_world::chunk::BlockState {
+                    name: "minecraft:piston".into(),
+                    properties: [
+                        ("facing".into(), "east".into()),
+                        ("extended".into(), "false".into()),
+                    ]
+                    .into_iter()
+                    .collect(),
+                })
+                .unwrap();
+            let power = new.default_state("minecraft:redstone_block").unwrap();
+            for (name, moves) in [("ruby:z_stone", true), ("ruby:z_stuck", false)] {
+                let block = new.default_state(name).unwrap();
+                let base = BlockPos::new(0, 1, 0);
+                let front = BlockPos::new(1, 1, 0);
+                let destination = BlockPos::new(2, 1, 0);
+                let mut level = TestLevel {
+                    blocks: Default::default(),
+                    air: new.default_state("minecraft:air").unwrap(),
+                    random: LegacyRandom::new(1),
+                    events: Vec::new(),
+                    time: 0,
+                };
+                let mut ticks = Ticks::new(0);
+                for x in -4..4 {
+                    for z in -4..4 {
+                        ticks
+                            .add_empty_chunk(horizon_core::position::ChunkPos::new(x, z))
+                            .unwrap();
+                    }
                 }
-            }
-            for (pos, state) in [
-                (base, piston),
-                (front, block),
-                (BlockPos::new(-1, 1, 0), power),
-            ] {
-                independent_behaviours.set_block(
-                    &mut level,
-                    &mut ticks,
-                    pos,
-                    state,
-                    horizon_world::level::flags::UPDATE_ALL,
+                for (pos, state) in [
+                    (base, piston),
+                    (front, block),
+                    (BlockPos::new(-1, 1, 0), power),
+                ] {
+                    independent_behaviours.set_block(
+                        &mut level,
+                        &mut ticks,
+                        pos,
+                        state,
+                        horizon_world::level::flags::UPDATE_ALL,
+                    );
+                }
+                for _ in 0..4 {
+                    level.time += 1;
+                    independent_behaviours.tick_level_blocks(&mut level, &mut ticks);
+                    independent_behaviours.tick_block_entities(&mut level, &mut ticks);
+                }
+                assert_eq!(
+                    new.state(level.block_state(base)).unwrap().properties["extended"],
+                    if moves { "true" } else { "false" }
+                );
+                assert_eq!(
+                    level.block_state(if moves { destination } else { front }),
+                    block
                 );
             }
-            for _ in 0..4 {
-                level.time += 1;
-                independent_behaviours.tick_scheduled(&mut level, &mut ticks);
-                independent_behaviours.run_block_events(&mut level, &mut ticks);
-                independent_behaviours.tick_block_entities(&mut level, &mut ticks);
-            }
-            assert_eq!(
-                new.state(level.block_state(base)).unwrap().properties["extended"],
-                if moves { "true" } else { "false" }
-            );
-            assert_eq!(
-                level.block_state(if moves { destination } else { front }),
-                block
-            );
         }
-    }
-    let sword = &items.items["ruby:ruby_sword"];
-    assert_eq!(sword.block, new.default_state("minecraft:wheat"));
-    assert_eq!(items.items["minecraft:iron_block"].block, Some(iron));
-    let iron_sword = &items.items["minecraft:iron_sword"];
-    assert_eq!((sword.max_damage, iron_sword.max_damage), (900, 250));
-    assert_eq!(sword.modifiers.len(), 1);
-    assert_eq!(sword.modifiers[0].amount, 7.0);
-    assert_eq!(sword.tool.len(), iron_sword.tool.len());
-    // The stew leaves its bowl in the grid; vanilla's stew leaves none.
-    let stew = &items.items["ruby:ruby_stew"];
-    assert_eq!(stew.crafting_remainder.as_deref(), Some("minecraft:bowl"));
-    assert_eq!(
-        items.items["minecraft:mushroom_stew"].crafting_remainder,
-        None
-    );
-    let recipes = crate::crafting::Recipes::load(
-        &root,
-        &items,
-        &overlay,
-        &crate::test_resources::server_load(),
-    )
-    .unwrap();
-    let grid = [
-        Some(crate::items::ItemStack::new("ruby:ruby_stew", 1)),
-        None,
-        None,
-        None,
-    ];
-    let (id, result) = recipes
-        .find(crate::test_resources::server_loop_context(), &grid, 2)
+        let sword = &items.items["ruby:ruby_sword"];
+        assert_eq!(sword.block, new.default_state("minecraft:wheat"));
+        assert_eq!(items.items["minecraft:iron_block"].block, Some(iron));
+        let iron_sword = &items.items["minecraft:iron_sword"];
+        assert_eq!((sword.max_damage, iron_sword.max_damage), (900, 250));
+        assert_eq!(sword.modifiers.len(), 1);
+        assert_eq!(sword.modifiers[0].amount, 7.0);
+        assert_eq!(sword.tool.len(), iron_sword.tool.len());
+        // The stew leaves its bowl in the grid; vanilla's stew leaves none.
+        let stew = &items.items["ruby:ruby_stew"];
+        assert_eq!(stew.crafting_remainder.as_deref(), Some("minecraft:bowl"));
+        assert_eq!(
+            items.items["minecraft:mushroom_stew"].crafting_remainder,
+            None
+        );
+        let recipes = crate::crafting::Recipes::load(
+            &root,
+            &items,
+            &overlay,
+            &crate::test_resources::server_load(),
+        )
         .unwrap();
-    assert_eq!(&*result.item, "ruby:ruby");
-    let rest = recipes.remainders(id, &grid, 2, &|s| items.crafting_remainder(s));
-    assert_eq!(rest[0].as_ref().map(|s| &*s.item), Some("minecraft:bowl"));
-    assert!(!items.items.contains_key("ruby:ruby_glass"));
-    let pickaxe = &items.block_tags["minecraft:mineable/pickaxe"];
-    assert!(pickaxe.contains("ruby:ruby_block"));
-    assert!(!pickaxe.contains("ruby:left_out") && !pickaxe.contains("othermod:thing"));
-    assert!(pickaxe.contains("minecraft:stone"));
-    // Convention tags load, with the ids nobody registers dropped.
-    assert_eq!(items.item_tag_order["c:gems/ruby"], ["ruby:ruby"]);
+        let grid = [
+            Some(crate::items::ItemStack::new("ruby:ruby_stew", 1)),
+            None,
+            None,
+            None,
+        ];
+        let (id, result) = recipes
+            .find(crate::test_resources::server_loop_context(), &grid, 2)
+            .unwrap();
+        assert_eq!(&*result.item, "ruby:ruby");
+        let rest = recipes.remainders(id, &grid, 2, &|s| items.crafting_remainder(s));
+        assert_eq!(rest[0].as_ref().map(|s| &*s.item), Some("minecraft:bowl"));
+        assert!(!items.items.contains_key("ruby:ruby_glass"));
+        let pickaxe = &items.block_tags["minecraft:mineable/pickaxe"];
+        assert!(pickaxe.contains("ruby:ruby_block"));
+        assert!(!pickaxe.contains("ruby:left_out") && !pickaxe.contains("othermod:thing"));
+        assert!(pickaxe.contains("minecraft:stone"));
+        // Convention tags load, with the ids nobody registers dropped.
+        assert_eq!(items.item_tag_order["c:gems/ruby"], ["ruby:ruby"]);
 
-    crate::collisions::load(&root, new).unwrap();
-    crate::models::load_visibility(&root, new).unwrap();
-    crate::light::LightTables::load(&root, new, &facts).unwrap();
-    crate::motion::MotionResources::load(&root, &assets).unwrap();
-    horizon_world::worldgen::generator::GeneratorData::load(&root.join("worldgen"), new).unwrap();
-    assert!(resources.source().contains("assets/ruby/lang/en_us.json"));
-    // Blocks without a blockstate of their own take their template's.
-    assert_eq!(
-        resources
-            .source()
-            .read("assets/ruby/blockstates/ruby_door.json")
-            .unwrap(),
-        fs::read(base.join("assets/minecraft/blockstates/oak_door.json")).unwrap()
-    );
+        crate::collisions::load(&root, new).unwrap();
+        crate::models::load_visibility(&root, new).unwrap();
+        crate::light::LightTables::load(&root, new, &facts).unwrap();
+        crate::motion::MotionResources::load(&root, &assets).unwrap();
+        horizon_world::worldgen::generator::GeneratorData::load(&root.join("worldgen"), new)
+            .unwrap();
+        assert!(resources.source().contains("assets/ruby/lang/en_us.json"));
+        // Blocks without a blockstate of their own take their template's.
+        assert_eq!(
+            resources
+                .source()
+                .read("assets/ruby/blockstates/ruby_door.json")
+                .unwrap(),
+            fs::read(base.join("assets/minecraft/blockstates/oak_door.json")).unwrap()
+        );
 
-    // The base root was only read.
-    assert!(
-        fs::symlink_metadata(base.join("facts.json"))
-            .unwrap()
-            .is_file()
-    );
+        // The base root was only read.
+        assert!(
+            fs::symlink_metadata(base.join("facts.json"))
+                .unwrap()
+                .is_file()
+        );
+    }
     fs::remove_dir_all(&scratch).unwrap();
 }
 
@@ -2034,6 +2046,86 @@ fn additions_append_by_priority_then_order_and_skip_unknown_targets() {
             .unwrap()
             .is_none()
     );
+}
+
+/// A mod's own carver joins the carvers bundle, so a biome of the mod that
+/// names it finds it. One of a type the world can't decode, or whose load
+/// conditions fail, is left out and listed for the worldgen loader.
+#[test]
+#[ignore = "daily"]
+fn content_root_carries_a_mods_carver() {
+    let Some(base) = prepared() else {
+        return;
+    };
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-carver-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    let dir = scratch.join("hollows");
+    let vanilla: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(base.join("worldgen/carvers.json")).unwrap()).unwrap();
+    let biomes: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(base.join("worldgen/biomes.json")).unwrap()).unwrap();
+    let mut hollow: serde_json::Value = serde_json::from_str(&biomes["minecraft:plains"]).unwrap();
+    let named = serde_json::json!(["hollows:deep_cave", "hollows:vent", "hollows:gated"]);
+    hollow["carvers"] = named.clone();
+    let hollow = hollow.to_string();
+    let mut gated: serde_json::Value = serde_json::from_str(&vanilla["minecraft:cave"]).unwrap();
+    gated["neoforge:conditions"] =
+        serde_json::json!([{"type": "neoforge:mod_loaded", "modid": "absent"}]);
+    let gated = gated.to_string();
+    let files = [
+        (
+            "horizon-mod.toml",
+            "id = \"hollows\"\nname = \"Hollows\"\nversion = \"1.0\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+        ),
+        // Shaped as 26.3's own cave carver, under the mod's id.
+        (
+            "data/hollows/worldgen/carver/deep_cave.json",
+            vanilla["minecraft:cave"].as_str(),
+        ),
+        // A carver type of the mod's Java.
+        (
+            "data/hollows/worldgen/carver/vent.json",
+            r#"{"type": "hollows:vent", "config": {"probability": 0.1}}"#,
+        ),
+        // A cave carver only for when a mod nobody loads is there.
+        ("data/hollows/worldgen/carver/gated.json", gated.as_str()),
+        ("data/hollows/worldgen/biome/hollow.json", hollow.as_str()),
+    ];
+    for (name, text) in files {
+        let path = dir.join(name);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, text).unwrap();
+    }
+    let package = horizon_mod_package::Package::read(&dir).unwrap();
+    let m = ContentMod {
+        id: "hollows".into(),
+        content: Content::read(&dir, &package.manifest).unwrap(),
+        jars: Vec::new(),
+    };
+    let root = resource_root_fixture(
+        &base,
+        Path::new(""),
+        std::slice::from_ref(&m),
+        &scratch.join("cache"),
+    )
+    .unwrap();
+    let carvers: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(root.join("worldgen/carvers.json")).unwrap()).unwrap();
+    assert_eq!(carvers["hollows:deep_cave"], vanilla["minecraft:cave"]);
+    assert!(carvers.contains_key("minecraft:cave"));
+    assert!(!carvers.contains_key("hollows:vent"));
+    assert!(!carvers.contains_key("hollows:gated"));
+    // The biome keeps every name: the worldgen loader drops the left-out ones
+    // after a world's data packs are in, unless one supplies them.
+    let biomes: BTreeMap<String, String> =
+        serde_json::from_slice(&fs::read(root.join("worldgen/biomes.json")).unwrap()).unwrap();
+    let hollow: serde_json::Value = serde_json::from_str(&biomes["hollows:hollow"]).unwrap();
+    assert_eq!(hollow["carvers"], named);
+    let left_out: Vec<String> =
+        serde_json::from_slice(&fs::read(root.join("worldgen/carvers_left_out.json")).unwrap())
+            .unwrap();
+    assert_eq!(left_out, ["hollows:gated", "hollows:vent"]);
+    let _ = fs::remove_dir_all(&scratch);
 }
 
 /// A structure mod's worldgen reaches the worldgen loader: its structure,
@@ -2748,6 +2840,46 @@ fn folder_mod(dir: &Path, files: &[(&str, &str)]) -> ContentMod {
         content: Content::read(dir, &package.manifest).unwrap(),
         jars: Vec::new(),
     }
+}
+
+/// The game mounts a flat package's entries as its checks read them: by the END record's
+/// count. One it lists past that count, outside the mod's namespaces, is never loaded.
+#[test]
+fn a_package_entry_past_its_end_count_is_not_mounted() {
+    use std::io::Write as _;
+    let scratch = std::env::temp_dir().join(format!("horizon-mod-hidden-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&scratch);
+    fs::create_dir_all(&scratch).unwrap();
+    let path = scratch.join("ruby.hmod");
+    let mut zip = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+    for (name, text) in [
+        ("horizon-mod.toml", manifest("ruby", "")),
+        ("assets/ruby/lang/en_us.json", "{}".to_owned()),
+        ("data/minecraft/recipe/stone.json", "{}".to_owned()),
+    ] {
+        zip.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(text.as_bytes()).unwrap();
+    }
+    zip.finish().unwrap();
+    let ruby = || {
+        let package = horizon_mod_package::Package::read(&path)?;
+        Ok::<_, String>(ContentMod {
+            id: "ruby".into(),
+            content: Content::read(&path, &package.manifest)?,
+            jars: Vec::new(),
+        })
+    };
+    // As written, the fence refuses the vanilla recipe.
+    assert!(ruby().is_err());
+    // The END record now lists the first two entries only.
+    let mut bytes = fs::read(&path).unwrap();
+    let end = bytes.len() - 22;
+    bytes[end + 8..end + 12].copy_from_slice(&[2, 0, 2, 0]);
+    fs::write(&path, &bytes).unwrap();
+    let mods = [ruby().unwrap()];
+    assert!(load_layers(&scratch.join("jars"), &mods).is_err());
+    let _ = fs::remove_dir_all(&scratch);
 }
 
 fn manifest(id: &str, namespaces: &str) -> String {
@@ -3834,47 +3966,50 @@ fn mod_recipe_results_are_an_item_stack_or_a_bare_item_id() {
         content: Content::read(&dir, &package.manifest).unwrap(),
         jars: Vec::new(),
     };
-    let relative = relative_base(&base);
-    let root = resource_root_fixture(
-        &relative,
-        Path::new(""),
-        std::slice::from_ref(&m),
-        &scratch.join("cache"),
-    )
-    .unwrap();
-    let resources = resolved_resources(
-        &base,
-        root.clone(),
-        Path::new(""),
-        std::slice::from_ref(&m),
-        scratch.join("cache"),
-    )
-    .unwrap();
-    let files = content_files(&resources);
-    let overlay = PackOverlay::new(&files);
-    let assets = Assets::load(&root).unwrap();
-    let new = assets.registry;
-    let facts = BlockFacts::load(&root, new).unwrap();
-    let defaults = horizon_world::item_defaults::read(&root).unwrap();
-    let items = Items::load(&root, new, &facts, &overlay, &defaults).unwrap();
-    let recipes = crate::crafting::Recipes::load(
-        &root,
-        &items,
-        &overlay,
-        &crate::test_resources::server_load(),
-    )
-    .unwrap();
-    for (name, input, _, item, count) in cases {
-        let grid = [
-            Some(crate::items::ItemStack::new(input, 1)),
-            None,
-            None,
-            None,
-        ];
-        let (_, made) = recipes
-            .find(crate::test_resources::server_loop_context(), &grid, 2)
-            .unwrap_or_else(|| panic!("{name}: no recipe"));
-        assert_eq!((&*made.item, made.count), (item, count), "{name}");
+    // Readers of the root hold its lock; Windows removes no folder with an open file.
+    {
+        let relative = relative_base(&base);
+        let root = resource_root_fixture(
+            &relative,
+            Path::new(""),
+            std::slice::from_ref(&m),
+            &scratch.join("cache"),
+        )
+        .unwrap();
+        let resources = resolved_resources(
+            &base,
+            root.clone(),
+            Path::new(""),
+            std::slice::from_ref(&m),
+            scratch.join("cache"),
+        )
+        .unwrap();
+        let files = content_files(&resources);
+        let overlay = PackOverlay::new(&files);
+        let assets = Assets::load(&root).unwrap();
+        let new = assets.registry;
+        let facts = BlockFacts::load(&root, new).unwrap();
+        let defaults = horizon_world::item_defaults::read(&root).unwrap();
+        let items = Items::load(&root, new, &facts, &overlay, &defaults).unwrap();
+        let recipes = crate::crafting::Recipes::load(
+            &root,
+            &items,
+            &overlay,
+            &crate::test_resources::server_load(),
+        )
+        .unwrap();
+        for (name, input, _, item, count) in cases {
+            let grid = [
+                Some(crate::items::ItemStack::new(input, 1)),
+                None,
+                None,
+                None,
+            ];
+            let (_, made) = recipes
+                .find(crate::test_resources::server_loop_context(), &grid, 2)
+                .unwrap_or_else(|| panic!("{name}: no recipe"));
+            assert_eq!((&*made.item, made.count), (item, count), "{name}");
+        }
     }
     fs::remove_dir_all(&scratch).unwrap();
 }

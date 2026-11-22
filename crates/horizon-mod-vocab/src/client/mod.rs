@@ -55,6 +55,7 @@ pub mod particles;
 pub mod player_chat;
 pub(crate) mod posed_parts;
 pub(crate) mod render_pipeline;
+pub(crate) mod replay;
 pub(crate) mod scene;
 pub(crate) mod screenshot;
 pub(crate) mod skull_models;
@@ -64,6 +65,7 @@ pub(crate) mod types;
 /// Buttons and text fields for mod screens.
 pub mod widgets;
 pub(crate) mod world_draw;
+pub(crate) mod world_request;
 
 pub(crate) mod spectator_shader;
 

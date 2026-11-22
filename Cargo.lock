@@ -512,10 +512,9 @@ dependencies = [
  "dunce",
  "horizon-addresses",
  "horizon-mod-package",
- "horizon-mod-point-emit",
  "horizon-mod-source",
  "horizon-mod-surface",
- "horizon-mod-wasm",
+ "horizon-mod-vocab",
  "horizon-port-pack",
  "horizon-release-sign",
  "libc",
@@ -530,7 +529,6 @@ dependencies = [
  "ureq",
  "wasm-encoder 0.261.0",
  "wasmparser 0.261.0",
- "wasmtime",
  "wat",
  "zip",
 ]
@@ -1842,7 +1840,6 @@ dependencies = [
  "horizon-game-discovery",
  "horizon-gameplay",
  "horizon-guest-stack",
- "horizon-hdr",
  "horizon-hooks",
  "horizon-items",
  "horizon-java-properties",
@@ -1867,7 +1864,6 @@ dependencies = [
  "horizon-threads",
  "horizon-world",
  "log",
- "miniz_oxide 0.8.9",
  "naga",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
@@ -1881,7 +1877,6 @@ dependencies = [
  "sha2",
  "tempfile",
  "toml",
- "unicode-bidi",
  "ureq",
  "wat",
  "wgpu",
@@ -1932,6 +1927,7 @@ dependencies = [
  "horizon-client-core",
  "horizon-client-d3d9",
  "horizon-engine-slots",
+ "horizon-hooks",
  "horizon-mod-api-macros",
  "horizon-theme",
  "log",
@@ -1945,6 +1941,8 @@ version = "0.1.0"
 dependencies = [
  "ab_glyph",
  "bytemuck",
+ "cap-fs-ext",
+ "cap-std",
  "chrono",
  "crc32fast",
  "dunce",
@@ -1999,14 +1997,18 @@ dependencies = [
  "pollster",
  "rayon",
  "rustix 1.1.5",
+ "same-file",
  "serde",
  "serde_json",
  "sha1",
  "sha2",
+ "shlex",
+ "smallvec",
  "tempfile",
  "unicode-bidi",
  "ureq",
  "wgpu",
+ "windows-sys 0.61.2",
  "winit",
  "xxhash-rust",
  "zip",
@@ -2132,7 +2134,6 @@ dependencies = [
 name = "horizon-engine-slots"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-api-gen",
  "horizon-mod-vocab",
 ]
 
@@ -2183,9 +2184,17 @@ dependencies = [
 name = "horizon-gameplay"
 version = "0.1.0"
 dependencies = [
+ "horizon-assets",
+ "horizon-client-core",
  "horizon-client-lib",
+ "horizon-command",
  "horizon-core",
+ "horizon-engine-slots",
+ "horizon-items",
+ "horizon-mod-package",
  "horizon-mod-runtime",
+ "horizon-mod-vocab",
+ "horizon-protocol",
  "horizon-threads",
  "horizon-world",
  "log",
@@ -2286,7 +2295,6 @@ version = "0.1.0"
 dependencies = [
  "heck",
  "horizon-game-discovery",
- "horizon-mod-point-shape",
  "horizon-mod-source",
  "horizon-mod-surface",
  "prettyplease",
@@ -2318,7 +2326,6 @@ dependencies = [
 name = "horizon-mod-api-macros"
 version = "0.1.0"
 dependencies = [
- "horizon-mod-point-shape",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -2382,7 +2389,6 @@ dependencies = [
  "horizon-core",
  "horizon-mod-api",
  "horizon-mod-api-macros",
- "horizon-mod-point-shape",
  "horizon-mod-surface",
  "horizon-mod-vocab",
  "horizon-shader-api",
@@ -2409,37 +2415,8 @@ dependencies = [
 ]
 
 [[package]]
-name = "horizon-mod-point-emit"
-version = "0.1.0"
-dependencies = [
- "horizon-mod-package",
- "serde",
-]
-
-[[package]]
-name = "horizon-mod-point-shape"
-version = "0.1.0"
-dependencies = [
- "proc-macro2",
- "quote",
- "serde",
- "serde_json",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "horizon-mod-points"
 version = "0.1.0"
-dependencies = [
- "horizon-engine-slots",
- "horizon-mod-api",
- "horizon-mod-api-gen",
- "horizon-mod-api-macros",
- "horizon-mod-point-shape",
- "quote",
- "serde_json",
- "syn 2.0.119",
-]
 
 [[package]]
 name = "horizon-mod-render"
@@ -2509,15 +2486,12 @@ version = "0.1.0"
 dependencies = [
  "horizon-client-core",
  "horizon-core",
- "horizon-engine-slots",
  "horizon-guest-stack",
  "horizon-java-properties",
  "horizon-mod-api",
  "horizon-mod-api-gen",
  "horizon-mod-api-macros",
  "horizon-mod-package",
- "horizon-mod-point-emit",
- "horizon-mod-points",
  "horizon-mod-runtime",
  "horizon-threads",
  "horizon-world",
@@ -2530,6 +2504,7 @@ dependencies = [
  "wasmparser 0.261.0",
  "wasmtime",
  "wat",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2551,7 +2526,6 @@ name = "horizon-modding-examples"
 version = "0.0.0"
 dependencies = [
  "horizon-mod-api",
- "horizon-mod-points",
 ]
 
 [[package]]
@@ -2654,7 +2628,6 @@ dependencies = [
  "horizon-java-properties",
  "horizon-mod-api-gen",
  "horizon-mod-package",
- "horizon-mod-point-shape",
  "horizon-perf-format",
  "horizon-prepare",
  "horizon-protocol",
@@ -2720,6 +2693,8 @@ dependencies = [
  "horizon-mod-runtime",
  "horizon-threads",
  "horizon-world",
+ "idna",
+ "idna_adapter",
  "ipconfig",
  "log",
  "serde_json",
@@ -2878,6 +2853,7 @@ dependencies = [
  "horizon-assets",
  "horizon-core",
  "horizon-threads",
+ "indexmap",
  "libm",
  "log",
  "lz4_flex",

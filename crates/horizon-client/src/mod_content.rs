@@ -2332,10 +2332,12 @@ const TAG_BUNDLES: [&str; 2] = ["block-tags.json", "worldgen/block_tags.json"];
 const BIOME_TAGS: &str = "worldgen/biome_tags.json";
 /// Worldgen registries a content mod may add to, and the bundle the
 /// worldgen loader reads each from (id → the file's text): what structure
-/// mods hold, and a mod's own biomes (never vanilla's: `worldgen_entry`).
-/// Noise and density functions change the terrain and are not read from mods.
-const WORLDGEN_BUNDLES: [(&str, &str); 7] = [
+/// mods hold, and a mod's own biomes (never vanilla's: `worldgen_entry`) and
+/// the carvers they name. Noise and density functions change the terrain and
+/// are not read from mods.
+const WORLDGEN_BUNDLES: [(&str, &str); 8] = [
     ("biome", BIOMES),
+    ("carver", CARVERS),
     ("structure", "worldgen/structures.json"),
     ("structure_set", "worldgen/structure_sets.json"),
     ("template_pool", "worldgen/template_pools.json"),
@@ -2370,7 +2372,10 @@ const COMMAND_REGISTRIES: [(&str, &str); 7] = [
 
 /// A mod file that adds to a worldgen bundle: (bundle, id).
 fn worldgen_entry(file: &str) -> Option<(&'static str, String)> {
-    let (ns, rest) = file.strip_prefix("data/")?.split_once("/worldgen/")?;
+    // `data/<ns>/worldgen/...` only: NeoForge's data maps sit deeper
+    // (`data/<ns>/data_maps/worldgen/biome/`) and are no worldgen of their own.
+    let (ns, rest) = file.strip_prefix("data/")?.split_once('/')?;
+    let rest = rest.strip_prefix("worldgen/")?;
     let (kind, path) = rest.split_once('/')?;
     if kind == "biome" && ns == "minecraft" {
         return None;
@@ -2516,7 +2521,13 @@ fn place_in_biomes(
     let placed: BTreeSet<String> = bundle(placed, PLACED_FEATURES)?.into_keys().collect();
     let feature_tags = bundle(None, FEATURE_TAGS)?;
     let (entity_categories, entity_tags) = modifier_entities(base, overlay, tags)?;
-    let carver_ids = biomes::carver_ids(&base.join(CARVERS))?;
+    // The carvers bundle with the mods' own carvers, written before this
+    // (`WORLDGEN_BUNDLES`), so a modifier may add one of them.
+    let mut carvers = out_path(overlay, CARVERS);
+    if !carvers.exists() {
+        carvers = base.join(CARVERS);
+    }
+    let carver_ids = biomes::carver_ids(&carvers)?;
     let mut saved = SavedModifiers {
         carver_ids,
         carver_tags: modifier_tags(base, overlay, tags, "worldgen/carver")?,
@@ -2802,6 +2813,10 @@ impl Overlay<'_> {
                 continue;
             }
             if meta.is_ok() {
+                // A junction (Windows) is removed as a directory, its target untouched.
+                #[cfg(windows)]
+                horizon_mod_package::junction::remove_link(&path)?;
+                #[cfg(not(windows))]
                 fs::remove_file(&path)?;
             }
             fs::create_dir(&path)?;
@@ -2838,6 +2853,11 @@ fn link(target: &Path, at: &Path) -> std::io::Result<()> {
 #[cfg(not(unix))]
 fn link(target: &Path, at: &Path) -> std::io::Result<()> {
     if target.is_dir() {
+        // A whole directory in one junction, as unix links it with one symlink.
+        #[cfg(windows)]
+        if !at.exists() && horizon_mod_package::junction::junction(target, at).is_ok() {
+            return Ok(());
+        }
         fs::create_dir_all(at)?;
         for entry in fs::read_dir(target)?.flatten() {
             link(&entry.path(), &at.join(entry.file_name()))?;
@@ -2867,7 +2887,8 @@ fn link_file(
 
 mod root_lifetime;
 use root_lifetime::prune_roots;
-pub use root_lifetime::retain_root;
+
+pub use root_lifetime::{RootHold, retain_root};
 mod load_conditions;
 use load_conditions::{TagLayers, TagMerge, merge_tag, tag_list};
 pub use load_conditions::{build_with_conditions, resource_root_with_conditions};
@@ -2881,6 +2902,10 @@ struct Known {
     biome_tags: std::collections::BTreeSet<String>,
     /// `data/<ns>/tags/<kind>/<path>.json` files the mods add.
     tag_files: std::collections::BTreeSet<String>,
+    /// Vanilla's block and item tags, by kind (their paths in the base's
+    /// `data/minecraft/tags/<kind>/`); a kind whose folder the base lacks is
+    /// absent.
+    vanilla_tags: BTreeMap<&'static str, std::collections::BTreeSet<String>>,
 }
 impl Known {
     fn new(base: &Path, plan: &Plan, tags: &BTreeMap<String, TagMerge>) -> Result<Self> {
@@ -2901,12 +2926,22 @@ impl Known {
                 false => Default::default(),
             })
         };
+        let mut vanilla_tags = BTreeMap::new();
+        for kind in ["block", "item"] {
+            let dir = base.join("data/minecraft/tags").join(kind);
+            if dir.is_dir() {
+                let mut paths = std::collections::BTreeSet::new();
+                tag_paths(&dir, "", &mut paths)?;
+                vanilla_tags.insert(kind, paths);
+            }
+        }
         Ok(Known {
             blocks,
             items,
             biomes: keys("worldgen/biomes.json")?,
             biome_tags: keys(BIOME_TAGS)?,
             tag_files: tags.keys().cloned().collect(),
+            vanilla_tags,
         })
     }
     /// Whether tag `file` keeps entry `v`: a known id or an existing tag,
@@ -2946,12 +2981,31 @@ impl Known {
                 self.tag_files.contains(&rel)
                     || match kind {
                         "worldgen/biome" => self.biome_tags.contains(&format!("{tns}:{path}")),
-                        _ => tns == "minecraft",
+                        // 1.21.1's tags 26.3 dropped or renamed (`concrete_powder`)
+                        // are unknown too: one would leave the block tags unresolved.
+                        _ => {
+                            tns == "minecraft"
+                                && self.vanilla_tags.get(kind).is_none_or(|t| t.contains(path))
+                        }
                     }
             }
             None => ids.contains(id),
         }
     }
+}
+
+/// The tag paths under `dir` (`mineable/pickaxe` for `mineable/pickaxe.json`).
+fn tag_paths(dir: &Path, prefix: &str, out: &mut std::collections::BTreeSet<String>) -> Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if entry.file_type()?.is_dir() {
+            tag_paths(&entry.path(), &format!("{prefix}{name}/"), out)?;
+        } else if let Some(stem) = name.strip_suffix(".json") {
+            out.insert(format!("{prefix}{stem}"));
+        }
+    }
+    Ok(())
 }
 
 /// Threads rewriting the tables at once. Each holds a whole table as a tree
@@ -3080,7 +3134,12 @@ fn load_layers<'a>(jar_store: &Path, mods: &'a [ContentMod]) -> Result<Vec<ModLa
                 if source.is_dir() {
                     crate::packs::Source::Dir(source)
                 } else {
-                    crate::packs::Source::Zip(source)
+                    // Exactly the entries the package's checks read.
+                    crate::packs::Source::Opened(
+                        horizon_assets::resource_source::ResourceSource::opened_archive(
+                            horizon_assets::zip::Zip::open_exact(&source)?,
+                        ),
+                    )
                 },
                 None,
             )?);
@@ -3150,10 +3209,10 @@ pub fn resolved_resources(
     }
     let mut assets_base = base_source.clone();
     if prepared != base {
+        // Held before the first read: a prune in another game can't retire it meanwhile.
+        let generated_source = root_lifetime::retained_source(&prepared);
         let generated: Vec<String> =
             serde_json::from_slice(&fs::read(prepared.join(GENERATED_FILES))?)?;
-        let generated_source = ResourceSource::directory(prepared.clone());
-        root_lifetime::retain_source(&prepared, &generated_source);
         let mut generated_assets = BTreeMap::new();
         for name in generated {
             if !horizon_assets::resource_source::stays_inside(&name) {

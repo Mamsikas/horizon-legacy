@@ -143,6 +143,13 @@ impl Game<'_> {
             .unwrap_or(otherwise)
     }
 
+    /// `Player.entityInteractionRange`/`blockInteractionRange` for the tick's picks:
+    /// the attribute carries creative's and a server's modifiers.
+    pub(super) fn update_interaction_ranges(&mut self) {
+        self.entity_reach = self.interaction_range("minecraft:entity_interaction_range", 3.0, 5.0);
+        self.block_reach = self.interaction_range("minecraft:block_interaction_range", 4.5, 5.0);
+    }
+
     /// A stack's `minecraft:attack_range` component, falling back to the spear's
     /// default reach (`spear::REACH`) for spear items unless explicitly removed.
     fn attack_range_component(&self, stack: &ItemStack) -> Option<serde_json::Value> {
@@ -613,6 +620,10 @@ impl Game<'_> {
             || before(self.interaction_hit().map(|h| h.1))
             || before(self.dragon_hit().map(|h| h.1))
             || before(
+                self.primed_tnt_hit(self.block_reach.max(self.entity_reach))
+                    .map(|(_, d)| d),
+            )
+            || before(
                 self.mob_hit_within(self.block_reach.max(self.entity_reach))
                     .map(|h| h.1),
             )
@@ -772,6 +783,7 @@ impl Game<'_> {
             self.boat_hit().map(|h| h.1),
             self.cart_hit().map(|h| h.1),
             self.dragon_hit().map(|h| h.1),
+            self.primed_tnt_hit(self.entity_reach).map(|(_, d)| d),
         ]);
         let active = self
             .using
@@ -829,6 +841,10 @@ impl Game<'_> {
             self.painting_hit().map(|h| h.1),
             self.frame_hit().map(|h| h.1),
             self.dragon_hit().map(|h| h.1),
+            // A nearer TNT outside the entity reach becomes a miss after
+            // `LocalPlayer.pick` filters it, hiding a block menu behind it too.
+            self.primed_tnt_hit(self.block_reach.max(self.entity_reach))
+                .map(|(_, d)| d),
         ];
         let nearest = cart
             .into_iter()

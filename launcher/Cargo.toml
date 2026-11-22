@@ -24,7 +24,6 @@ path = "src/bin/horizon-launcher-win7.rs"
 required-features = ["win7"]
 
 [dependencies]
-horizon-mod-point-emit = { path = "../crates/horizon-mod-point-emit" }
 horizon-addresses = { path = "../crates/horizon-addresses" }
 # Reads the object members out of the mods' rlibs for the API route's C link (`native_mods/api_route.rs`).
 object = { version = "0.39", default-features = false, features = ["read_core", "archive", "pe", "std"] }
@@ -123,11 +122,13 @@ raw-window-handle = "0.6"
 keyring = { version = "3", features = ["windows-native"] }
 trash = { version = "5", optional = true }
 # Java's heap slider reads the computer's memory; the uninstaller hides its running copy; an
-# abandoned launcher update is one whose process has gone. Already in the lockfile.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+# abandoned launcher update is one whose process has gone; a pre-launch command runs in a job
+# (launch/hook.rs). Already in the lockfile.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 # Shortcuts written by the shell itself (shortcut::write_windows_link): the hand-laid Shell Link has
 # no target ID list, so Explorer shows an empty target and starts nothing.
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"], optional = true }
+# Move Data reads Task Scheduler for background servers (servers::scheduled_tasks).
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Ole", "Win32_System_TaskScheduler", "Win32_System_Variant", "Win32_UI_Shell"], optional = true }
 # Per-user setup: the Uninstall entry and the launcher's own key under HKCU (installer.rs).
 winreg = "0.56"
 
@@ -138,10 +139,13 @@ winresource = "0.1"
 [dev-dependencies]
 # The mod inventory's `Side` in tests (`mod_api::Side`, which the launcher does not depend on).
 horizon-mod-vocab = { path = "../crates/horizon-mod-vocab" }
-horizon-mod-api-gen = { path = "../crates/horizon-mod-api-gen", features = ["listener-fixture"] }
+horizon-mod-api-gen = { path = "../crates/horizon-mod-api-gen" }
 libc = "0.2"
 # Tokenize source strings for the translation completeness test, including multiline calls.
 syn = "2"
+# Headless layout tests: GPUI's test platform draws without a GPU or a real window, and its
+# NoopTextSystem shapes deterministically (glass_server_dialog.rs's foot tests).
+gpui = { package = "gpui-fast", version = "0.1.13", features = ["test-support"] }
 
 [profile.release]
 strip = true

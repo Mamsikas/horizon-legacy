@@ -219,7 +219,9 @@ impl Launcher {
             return (Tone::Live, tr("Running").into());
         }
         if phase == Some(RowPhase::Starting) {
-            return (Tone::Busy, tr("Starting").into());
+            // The step the start is on, once it said one.
+            let step = self.play_step.now().unwrap_or(tr("Starting"));
+            return (Tone::Busy, step.into());
         }
         match i.kind {
             InstanceKind::Default | InstanceKind::Own => {
@@ -906,10 +908,10 @@ impl Launcher {
                     .child(
                         ui::text(12.5, FontWeight::NORMAL, ink::NOTE)
                             .mt(px(4.))
-                            .child(trf("Launcher {version}", &[("version", version)])),
+                            .child(self.launcher_ready_note(version)),
                     )
                     .child(
-                        ui::solid("update-launcher", tr("Update"), 32., 13., &t)
+                        ui::solid("update-launcher", tr("Update now"), 32., 13., &t)
                             .mt(px(10.))
                             .w_full()
                             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {

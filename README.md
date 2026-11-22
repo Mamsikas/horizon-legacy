@@ -22,8 +22,8 @@ of its modern GPU backends are not all implemented by DX9.
 </p>
 
 <p align="center">
-  <b>Minecraft: Java Edition 26.3, rewritten from scratch in Rust.</b><br>
-  It opens your worlds, generates the same terrain and plays by the same rules, without Java.
+  <b>Minecraft 26.3, rewritten from scratch in Rust.</b><br>
+  Play on existing worlds and servers.
 </p>
 
 <p align="center">
@@ -47,7 +47,7 @@ of its modern GPU backends are not all implemented by DX9.
 </p>
 
 <p align="center">
-  <sub>Against Java Edition with Sodium, Lithium, FerriteCore and ImmediatelyFast on a Ryzen 7 9800X3D with an RTX 5080. More computers on the <a href="https://playhorizon.dev/benchmarks">benchmarks page</a>.</sub>
+  <sub>*Against Java Edition with Sodium, Lithium, FerriteCore and ImmediatelyFast on a Ryzen 7 9800X3D with an RTX 5080. More computers on the <a href="https://playhorizon.dev/benchmarks">benchmarks page</a>.</sub>
 </p>
 
 <h2 align="center">What you get</h2>
@@ -56,6 +56,7 @@ of its modern GPU backends are not all implemented by DX9.
 - **Multiplayer:** vanilla and Horizon servers, LAN, and invite codes for playing your world with friends. You can [host a server](https://playhorizon.dev/docs/hosting) too.
 - **Mods:** Horizon's own mod system, with mods like zoom and a minimap, and shader packs. Browse the [catalogue](https://playhorizon.dev/mods) or [make a mod](https://playhorizon.dev/docs/make-a-mod).
 - **Beyond vanilla:** terrain up to 1,024 chunks away, HDR, controller support, graphics presets and dynamic lights.
+- **Dedicated server:** Server software for high performance, low memory usage, and near instant startup. See [the server benchmark](docs/performance/server-vs-vanilla.md).
 
 <h2 align="center">What you need</h2>
 

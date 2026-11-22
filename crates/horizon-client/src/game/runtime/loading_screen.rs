@@ -164,7 +164,7 @@ impl Loading {
             Some(&self.boot),
             None,
             None,
-            self.settings.horizon.api,
+            self.settings.horizon.effective_api(),
             #[cfg(all(windows, feature = "legacy-d3d9"))]
             &self.settings.horizon,
             shader_packs::picked_pack_shape(&self.settings).ray_tracing,
@@ -237,7 +237,7 @@ impl Loading {
             Some(&bundle.atlas),
             Some(&bundle.panorama),
             self.renderer.as_ref(),
-            self.settings.horizon.api,
+            self.settings.horizon.effective_api(),
             #[cfg(all(windows, feature = "legacy-d3d9"))]
             &self.settings.horizon,
             shader_packs::picked_pack_shape(&self.settings).ray_tracing,
@@ -345,7 +345,7 @@ impl Loading {
                 &gui,
                 previous.as_ref(),
                 loaded.renderer_cpu,
-                self.settings.horizon.api,
+                self.settings.horizon.effective_api(),
                 self.settings.horizon.translucent_batching,
                 self.settings.vsync,
                 &self.settings.horizon,

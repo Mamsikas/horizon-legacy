@@ -446,6 +446,12 @@ pub struct ItemStack {
     /// Components beyond count and damage (see `item_data`); None when default.
     pub extra: Option<Box<crate::item_data::StackData>>,
 }
+impl std::hash::Hash for ItemStack {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(&self.count, state);
+        self.hash_item_and_components(state);
+    }
+}
 /// `order`'s items in the registry's order (`command-registries.json`'s
 /// `items`, exported from the game); `order` itself when that is missing.
 fn registry_order(root: &Path, order: &[Arc<str>]) -> Vec<Arc<str>> {
@@ -713,16 +719,7 @@ pub(crate) fn load_tag_lists(
             raw.entry(id.to_owned()).or_default().push(&v);
         }
     }
-    fn resolve(name: &str, raw: &HashMap<String, TagLayers>, depth: u32) -> Vec<String> {
-        match raw.get(name) {
-            Some(layers) if depth <= 32 => layers.build(|tag| resolve(tag, raw, depth + 1)),
-            _ => Vec::new(),
-        }
-    }
-    Ok(raw
-        .keys()
-        .map(|k| (k.clone(), resolve(k, &raw, 0)))
-        .collect())
+    Ok(TagLayers::resolve_all(raw))
 }
 /// An entity type id or `#tag` as the set of entity type ids it names.
 fn entity_spec(tags: &HashMap<String, HashSet<String>>, spec: &str) -> HashSet<String> {
