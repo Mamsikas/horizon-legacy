@@ -193,8 +193,15 @@ SAFE_IMPORTS = {
 # Minimum-client contracts: learn.microsoft.com/windows/win32/api/ (individual API
 # reference pages, especially RegisterTouchWindow, QueryDisplayConfig,
 # SetWindowDisplayAffinity, GetQueuedCompletionStatusEx and K32GetProcessMemoryInfo).
+# The export-directory confinement pulls in the SID/ACL functions from
+# Windows XP's Advapi32. GetVolumeInformationByHandleW is Vista's Kernel32
+# export. GetThreadGroupAffinity and GetActiveProcessorGroupCount are Win7
+# Kernel32 exports. NtQueryDirectoryFile is listed for both Win7 SP1 NTDLLs
+# in https://github.com/j00ru/windows-syscalls (nt.csv for x64 and x86).
 CLIENT_IMPORTS = {'advapi32.dll': 'AdjustTokenPrivileges LookupPrivilegeValueA ImpersonateAnonymousToken '
-                 'RevertToSelf',
+                 'RevertToSelf ConvertSidToStringSidW EqualSid GetAclInformation '
+                 'GetSecurityDescriptorControl GetSecurityDescriptorDacl GetSecurityDescriptorOwner '
+                 'GetSecurityInfo IsValidAcl IsValidSid IsWellKnownSid SetSecurityInfo',
  'dwmapi.dll': 'DwmEnableBlurBehindWindow DwmSetWindowAttribute',
  'gdi32.dll': 'AddFontMemResourceEx CreateBitmap CreateRectRgn SetBitmapBits ChoosePixelFormat '
               'CreateDIBitmap DescribePixelFormat GetDIBits GetPixelFormat SetPixelFormat '
@@ -205,11 +212,12 @@ CLIENT_IMPORTS = {'advapi32.dll': 'AdjustTokenPrivileges LookupPrivilegeValueA I
                  'GetThreadPriority SuspendThread GetCurrentProcessorNumber GetDiskFreeSpaceW '
                  'GetQueuedCompletionStatusEx GlobalSize K32GetProcessMemoryInfo '
                  'QueryThreadCycleTime SetFileCompletionNotificationModes SetNamedPipeHandleState '
-                 'AddVectoredContinueHandler RemoveVectoredContinueHandler',
+                 'AddVectoredContinueHandler RemoveVectoredContinueHandler '
+                 'GetActiveProcessorGroupCount GetThreadGroupAffinity GetVolumeInformationByHandleW',
  'msvcrt.dll': '_beginthreadex _endthreadex _hypot _setjmp _vscprintf _vsnprintf _wgetenv fputs '
                'getenv log10 longjmp printf strerror _strdup _close _dup _dup2 '
                '_get_osfhandle _open_osfhandle',
- 'ntdll.dll': 'NtCancelIoFileEx NtDeviceIoControlFile',
+ 'ntdll.dll': 'NtCancelIoFileEx NtDeviceIoControlFile NtQueryDirectoryFile',
  'ole32.dll': 'PropVariantClear PropVariantCopy OleInitialize RegisterDragDrop RevokeDragDrop',
  'oleaut32.dll': 'VariantClear VariantCopy',
  'propsys.dll': 'PropVariantCompareEx PropVariantToBSTR PropVariantToBoolean PropVariantToDouble '
@@ -258,6 +266,8 @@ X64_IMPORTS = {"kernel32.dll": frozenset(("RtlAddFunctionTable", "RtlDeleteFunct
 # GetCurrentThreadStackLimits requires Windows 8; the Win7 stack helper must be
 # used instead, not an import-policy exception.
 # https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getcurrentthreadstacklimits
+# CPU-set functions require Windows 10. The legacy client resolves that API at run time.
+# https://learn.microsoft.com/windows/win32/api/processthreadsapi/nf-processthreadsapi-getsystemcpusetinformation
 FORBIDDEN_APIS = frozenset("""
     CreateDXGIFactory2 GetDpiForWindow GetDpiForMonitor GetSystemTimePreciseAsFileTime
     GetTempPath2W IsWow64Process2 ProcessPrng SetProcessDpiAwareness
@@ -265,6 +275,7 @@ FORBIDDEN_APIS = frozenset("""
     SetThreadDpiAwarenessContext GetCurrentThreadStackLimits WaitOnAddress WakeByAddressAll WakeByAddressSingle
     GetOverlappedResultEx GetSystemTimePreciseAsFileTime DiscardVirtualMemory
     OfferVirtualMemory ReclaimVirtualMemory VirtualAlloc2 MapViewOfFile3
+    GetProcessDefaultCpuSets GetSystemCpuSetInformation GetThreadSelectedCpuSets SetThreadSelectedCpuSets
 """.split())
 MACHINES = {"x64": (0x8664, 0x20B), "x86": (0x14C, 0x10B)}
 

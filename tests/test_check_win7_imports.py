@@ -91,7 +91,8 @@ class Win7Imports(unittest.TestCase):
         self.assertFalse(CHECK.audit(data)["passed"])
 
     def test_rejects_post_win7_api_in_both_import_tables(self):
-        for symbol in ("WaitOnAddress", "GetCurrentThreadStackLimits"):
+        for symbol in ("WaitOnAddress", "GetCurrentThreadStackLimits", "GetProcessDefaultCpuSets",
+                       "GetSystemCpuSetInformation", "GetThreadSelectedCpuSets", "SetThreadSelectedCpuSets"):
             for delayed in (False, True):
                 with self.subTest(symbol=symbol, delayed=delayed):
                     report = CHECK.audit(fixture(symbol=symbol, delayed=delayed))
@@ -108,7 +109,14 @@ class Win7Imports(unittest.TestCase):
     def test_accepts_reviewed_win7_runtime_exports_on_both_architectures(self):
         exports = [("kernel32.dll", "SetNamedPipeHandleState")]
         exports += [("kernel32.dll", symbol) for symbol in
-                    ("AddVectoredContinueHandler", "RemoveVectoredContinueHandler")]
+                    ("AddVectoredContinueHandler", "RemoveVectoredContinueHandler",
+                     "GetActiveProcessorGroupCount", "GetThreadGroupAffinity", "GetVolumeInformationByHandleW")]
+        exports += [("ntdll.dll", "NtQueryDirectoryFile")]
+        exports += [("advapi32.dll", symbol) for symbol in
+                    ("ConvertSidToStringSidW", "EqualSid", "GetAclInformation",
+                     "GetSecurityDescriptorControl", "GetSecurityDescriptorDacl",
+                     "GetSecurityDescriptorOwner", "GetSecurityInfo", "IsValidAcl",
+                     "IsValidSid", "IsWellKnownSid", "SetSecurityInfo")]
         exports += [("msvcrt.dll", symbol) for symbol in
                     ("_close", "_dup", "_dup2", "_get_osfhandle", "_open_osfhandle")]
         for architecture in ("x64", "x86"):

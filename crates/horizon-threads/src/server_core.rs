@@ -646,14 +646,81 @@ mod os {
 mod os {
     use super::{Core, Plan};
     use std::sync::Mutex;
+    use windows_sys::Win32::Foundation::HANDLE;
     use windows_sys::Win32::System::SystemInformation::{
-        CpuSetInformation, GetSystemCpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
+        CpuSetInformation, SYSTEM_CPU_SET_INFORMATION,
     };
     use windows_sys::Win32::System::Threading::{
         GetActiveProcessorGroupCount, GetCurrentProcess, GetCurrentThread, GetProcessAffinityMask,
-        GetProcessDefaultCpuSets, GetThreadGroupAffinity, GetThreadSelectedCpuSets,
-        SetThreadSelectedCpuSets,
+        GetThreadGroupAffinity,
     };
+    use windows_sys::core::BOOL;
+
+    type GetCpuSets = unsafe extern "system" fn(HANDLE, *mut u32, u32, *mut u32) -> BOOL;
+    type SetCpuSets = unsafe extern "system" fn(HANDLE, *const u32, u32) -> BOOL;
+    type GetCpuSetInfo = unsafe extern "system" fn(
+        *mut SYSTEM_CPU_SET_INFORMATION,
+        u32,
+        *mut u32,
+        HANDLE,
+        u32,
+    ) -> BOOL;
+
+    struct CpuSets {
+        information: GetCpuSetInfo,
+        process_default: GetCpuSets,
+        thread_selected: GetCpuSets,
+        select_thread: SetCpuSets,
+    }
+
+    #[cfg(not(target_vendor = "win7"))]
+    fn cpu_sets() -> Option<&'static CpuSets> {
+        use windows_sys::Win32::System::SystemInformation::GetSystemCpuSetInformation;
+        use windows_sys::Win32::System::Threading::{
+            GetProcessDefaultCpuSets, GetThreadSelectedCpuSets, SetThreadSelectedCpuSets,
+        };
+        static API: CpuSets = CpuSets {
+            information: GetSystemCpuSetInformation,
+            process_default: GetProcessDefaultCpuSets,
+            thread_selected: GetThreadSelectedCpuSets,
+            select_thread: SetThreadSelectedCpuSets,
+        };
+        Some(&API)
+    }
+
+    #[cfg(target_vendor = "win7")]
+    fn cpu_sets() -> Option<&'static CpuSets> {
+        use std::sync::OnceLock;
+        use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleA, GetProcAddress};
+
+        // CPU sets first shipped in Windows 10. Without the full API, leave
+        // process and thread affinity to the OS as on other unsupported hosts.
+        static API: OnceLock<Option<CpuSets>> = OnceLock::new();
+        // SAFETY: kernel32 stays loaded for the lifetime of the process. Each
+        // named procedure is cast to its Windows SDK signature above.
+        API.get_or_init(|| unsafe {
+            let module = GetModuleHandleA(c"kernel32.dll".as_ptr().cast());
+            if module.is_null() {
+                return None;
+            }
+            let address = |name: &std::ffi::CStr| GetProcAddress(module, name.as_ptr().cast());
+            Some(CpuSets {
+                information: std::mem::transmute::<_, GetCpuSetInfo>(address(
+                    c"GetSystemCpuSetInformation",
+                )?),
+                process_default: std::mem::transmute::<_, GetCpuSets>(address(
+                    c"GetProcessDefaultCpuSets",
+                )?),
+                thread_selected: std::mem::transmute::<_, GetCpuSets>(address(
+                    c"GetThreadSelectedCpuSets",
+                )?),
+                select_thread: std::mem::transmute::<_, SetCpuSets>(address(
+                    c"SetThreadSelectedCpuSets",
+                )?),
+            })
+        })
+        .as_ref()
+    }
 
     /// Logical processor index → CPU set id, for the machine's one processor group.
     static IDS: Mutex<Vec<(usize, u32)>> = Mutex::new(Vec::new());
@@ -674,6 +741,7 @@ mod os {
     /// processors the process's affinity mask allows. `None` past 64 CPUs (more than one
     /// processor group), which this keeps out of.
     pub fn topology() -> Option<(Vec<Core>, Vec<usize>)> {
+        let api = cpu_sets()?;
         // SAFETY: plain calls; the out pointers are live locals, the buffer is as long as said,
         // and each record is read within the length the system returned, by its own size.
         unsafe {
@@ -681,8 +749,7 @@ mod os {
                 return None;
             }
             let mut count = 0;
-            if GetProcessDefaultCpuSets(GetCurrentProcess(), std::ptr::null_mut(), 0, &mut count)
-                == 0
+            if (api.process_default)(GetCurrentProcess(), std::ptr::null_mut(), 0, &mut count) == 0
                 || count != 0
             {
                 return None;
@@ -693,18 +760,12 @@ mod os {
                 return None;
             }
             let mut length = 0u32;
-            GetSystemCpuSetInformation(
-                std::ptr::null_mut(),
-                0,
-                &mut length,
-                GetCurrentProcess(),
-                0,
-            );
+            (api.information)(std::ptr::null_mut(), 0, &mut length, GetCurrentProcess(), 0);
             if length == 0 {
                 return None;
             }
             let mut buffer = vec![0u64; (length as usize).div_ceil(8)];
-            if GetSystemCpuSetInformation(
+            if (api.information)(
                 buffer.as_mut_ptr().cast(),
                 length,
                 &mut length,
@@ -763,25 +824,19 @@ mod os {
 
     /// The CPU set ids this thread has selected, sorted (empty: none); `None` if the system
     /// doesn't say.
-    fn selection() -> Option<Vec<u32>> {
+    fn selection(api: &CpuSets) -> Option<Vec<u32>> {
         // SAFETY: this thread's own handle; the buffer holds as many ids as the count passed.
         unsafe {
             let mut count = 0;
-            if GetThreadSelectedCpuSets(GetCurrentThread(), std::ptr::null_mut(), 0, &mut count)
-                != 0
-            {
+            if (api.thread_selected)(GetCurrentThread(), std::ptr::null_mut(), 0, &mut count) != 0 {
                 return (count == 0).then(Vec::new);
             }
             if count == 0 {
                 return None;
             }
             let mut selected = vec![0u32; count as usize];
-            if GetThreadSelectedCpuSets(
-                GetCurrentThread(),
-                selected.as_mut_ptr(),
-                count,
-                &mut count,
-            ) == 0
+            if (api.thread_selected)(GetCurrentThread(), selected.as_mut_ptr(), count, &mut count)
+                == 0
             {
                 return None;
             }
@@ -792,8 +847,9 @@ mod os {
     }
 
     fn select(cpus: &[usize]) -> Option<State> {
+        let api = cpu_sets()?;
         // A non-empty selection is foreign: leave it untouched.
-        if !selection()?.is_empty() {
+        if !selection(api)?.is_empty() {
             return None;
         }
         let mut given = ids(cpus);
@@ -803,7 +859,7 @@ mod os {
         given.sort_unstable();
         // SAFETY: this thread's own handle; the ids are live for the call.
         unsafe {
-            (SetThreadSelectedCpuSets(GetCurrentThread(), given.as_ptr(), given.len() as u32) != 0)
+            ((api.select_thread)(GetCurrentThread(), given.as_ptr(), given.len() as u32) != 0)
                 .then_some(State { given })
         }
     }
@@ -849,12 +905,13 @@ mod os {
     /// Clears the selection `state` made, if the thread still has it: one it selected since
     /// is its own and stays, as a Linux thread keeps a mask it set after it was moved.
     pub fn restore(state: &State) {
-        if selection().as_ref() != Some(&state.given) {
+        let Some(api) = cpu_sets() else { return };
+        if selection(api).as_ref() != Some(&state.given) {
             return;
         }
         // SAFETY: this is the calling thread; no ids, which clears its selection.
         unsafe {
-            SetThreadSelectedCpuSets(GetCurrentThread(), std::ptr::null(), 0);
+            (api.select_thread)(GetCurrentThread(), std::ptr::null(), 0);
         }
     }
 }
