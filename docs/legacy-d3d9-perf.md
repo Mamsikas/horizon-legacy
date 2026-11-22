@@ -1030,3 +1030,18 @@ and clear on the one frame that allocates the page. The CPU byte test
 guards tightly packed and padded locks. Use a new cold walk and its log
 to measure this one-off change and check that steady-state coverage
 and the heavy section remain comparable.
+
+### Win7 packages for direct page initialization
+
+[Run 45009656070](https://github.com/Mamsikas/horizon-legacy/actions/runs/45009656070)
+built `39dd48f04f7fe560847ccaae56cafc5503a0b2e2` for Win7 x64 and x86.
+Import audits, policy tests and CPU resource and embedded SM2 checks
+passed. Local Win7 renderer compile checks passed in both ordinary
+and dev modes on both targets. The x64 check included the DX9 locked
+row test target. That test was also run with a CPU buffer for tight and
+padded pitch. Hardware timing for the direct clear remains pending.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [14750265428](https://github.com/Mamsikas/horizon-legacy/actions/runs/45009656070/artifacts/14750265428) | `706d6b8d9abc994bfd9e7ea0db5d0894a39913e91b0260812535484bbf9f7fc0` |
+| x86 | [14750130891](https://github.com/Mamsikas/horizon-legacy/actions/runs/45009656070/artifacts/14750130891) | `c9d09a784fdf35a48363144da51bf3240d6ab5c80678ba8715d02d6515ea9c64` |
