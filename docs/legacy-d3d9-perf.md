@@ -1274,6 +1274,10 @@ cherry-picking `2203e06b145335af37ef6c4993bc14ed2b1dcad3` onto
 `73b8ef27183adea3fea286223f677daff1ad1fb7` and run the standard Win7
 client build with `WIN7_D3D9_DEV=1` for the detached checkout.
 
+[Run 45149225385](https://github.com/Mamsikas/horizon-legacy/actions/runs/45149225385) built the downloadable
+x64 control at `9b88f7f95204e777498c747ace0a2836f30bb2ff` from that identical tree.
+The package passed the Win7 import audit and embedded SM2 checks.
+
 [Run 45036840020](https://github.com/Mamsikas/horizon-legacy/actions/runs/45036840020)
 built candidate B at `2203e06b145335af37ef6c4993bc14ed2b1dcad3` for
 both architectures. Both jobs passed the executable import audit,
@@ -1286,7 +1290,8 @@ both new hurt-overlay programs as PS2.
 
 | Package | Archive | ZIP SHA256 |
 | --- | --- | --- |
-| A x64 | Local build | `04d8001fa3bf29c3d667f317fa2e2f67d35e7dca4ce61095cb945160a8e753c4` |
+| A x64 | [14806701989](https://github.com/Mamsikas/horizon-legacy/actions/runs/45149225385/artifacts/14806701989) | `2d0aef4f4139930a9561641eb06cb7c6d8b093791a94adca537108651b6d28ed` |
+| A x64 (local) | Local build | `04d8001fa3bf29c3d667f317fa2e2f67d35e7dca4ce61095cb945160a8e753c4` |
 | B x64 | [14759944541](https://github.com/Mamsikas/horizon-legacy/actions/runs/45036840020/artifacts/14759944541) | `9068a4ccdf52d1930e5f527ec84652ba6b81231494ac29d46040fc8210934a4a` |
 | B x86 | [14760517328](https://github.com/Mamsikas/horizon-legacy/actions/runs/45036840020/artifacts/14760517328) | `8db68603dec4ecde7fa90800186a42732740be753ddd35d5dd256e36d35aeec7` |
 
