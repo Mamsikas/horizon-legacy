@@ -1392,3 +1392,26 @@ and a lower solid wall time on the same route. Compare the sum of
 terrain cache, indices/cold draws and solid submission as well as the
 whole frame and its tail. Check cutouts, terrain edits and resize on
 the native hardware. The transparency issue remains a separate test.
+
+### Windows 7 packages for resident material packing
+
+[Run 45160459036](https://github.com/Mamsikas/horizon-legacy/actions/runs/45160459036)
+built candidate C at `ef6b3bf914bce657e797b87e6fd053ce98c419c0`.
+Both jobs passed the executable Win7 import audit, the 15 import-policy
+tests and the CPU resource and embedded SM2 checks.
+Local Win7 dev client checks passed for both architectures. The ordinary
+x64 client and Win7 renderer test targets compiled. The host D3D9 dev
+suite passed 32 tests. The host harness ran the two packing tests with
+the real encoded vertex format and checked 32,768 combinations of
+visible packets and fog states. It recovered the same bytes and
+primitive order per draw group with no increase in draw count.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| C x64 | [14813745736](https://github.com/Mamsikas/horizon-legacy/actions/runs/45160459036/artifacts/14813745736) | `59fb023de2764d367d5bed5a6190299d57df92fec034816a159bfd48e4153f06` |
+| C x86 | [14813847027](https://github.com/Mamsikas/horizon-legacy/actions/runs/45160459036/artifacts/14813847027) | `75b1ce82f2a5bfbc9f2d1a7682b361c8817c4414cf6ff3b2e6656242fa33444c` |
+
+Compare C with the existing GitHub control A `9b88f7f952`. The captures
+in this iteration provide the reference for the first hardware run.
+Win7 static imports and CPU tests do not establish GMA FPS, visual
+parity or Reset and HD4570 behaviour.
