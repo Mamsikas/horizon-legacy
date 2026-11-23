@@ -11,12 +11,9 @@ pub(super) struct Packet {
     pub first: u32,
     pub count: u32,
     pub source: Range<u32>,
-    pub bucket: u8,
 }
-pub(super) type SolidBounds = [[Vec3; 2]; 7];
 pub(super) struct Section {
     pub solid: Vec<Packet>,
-    pub solid_bounds: Option<Box<SolidBounds>>,
     pub translucent: Vec<dx::TextureRange>,
     pub translucent_order: std::cell::RefCell<dx::PageOrder>,
     pub vertices: Arc<dx::MeshData>,
@@ -288,7 +285,6 @@ impl Renderer {
         }
         let convert::Converted {
             solid,
-            solid_bounds,
             translucent,
             shadow,
             sides,
@@ -297,8 +293,7 @@ impl Renderer {
             visibility,
             gpu,
         } = ready;
-        let bytes =
-            shadow.bytes() + u64::from(solid_bounds.is_some()) * size_of::<SolidBounds>() as u64;
+        let bytes = shadow.bytes();
         let decoded_bytes = gpu.len() as u64 * size_of::<dx::Vertex>() as u64;
         self.release_gpu_section(key);
         if let Some(old) = self.sections.remove(&key) {
@@ -311,7 +306,6 @@ impl Renderer {
             Section {
                 translucent_order: Default::default(),
                 solid,
-                solid_bounds,
                 translucent,
                 vertices: shadow,
                 gpu: Vec::new(),
@@ -801,7 +795,6 @@ mod tests {
         let neighbour = ([-1, 5, 3], 20);
         let mut section = Section {
             solid: Vec::new(),
-            solid_bounds: None,
             translucent: Vec::new(),
             translucent_order: Default::default(),
             vertices: Arc::new(dx::MeshData::new(&[])),
