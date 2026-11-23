@@ -394,9 +394,8 @@ impl Renderer {
                     batches[1]
                 );
                 log::info!(
-                    "D3D9 solid_plan_reused={} solid_culled_buckets={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
+                    "D3D9 solid_plan_reused={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
                     self.solid_reused,
-                    self.solid_cache.culled_buckets(),
                     self.uncached_mesh_bytes,
                     self.pending_sections.len(),
                     self.compactor
@@ -603,11 +602,6 @@ impl Renderer {
                 (self.next_arena, self.device.resets),
                 self.sides,
                 fog,
-                (dx::development_build() && self.device.caps.software_vertices).then_some((
-                    &frustum,
-                    frame.camera,
-                    self.layout,
-                )),
             );
             self.drawn_sections = visible.len();
             let mut decoded = std::mem::take(&mut self.decode_scratch);
@@ -618,7 +612,7 @@ impl Renderer {
                 for batch in self.solid_batches.values_mut() {
                     batch.next.clear();
                 }
-                for (visible_index, v) in visible.iter().enumerate() {
+                for v in &visible {
                     let key = &v.key;
                     let origin = Vec3::from_array(v.origin);
                     let section = self.sections.at(v.slot);
@@ -650,12 +644,10 @@ impl Renderer {
                     } else {
                         runs.push(0..u32::MAX);
                     }
-                    let buckets = self.solid_cache.buckets(visible_index);
                     for packet in &section.solid {
-                        if buckets & (1 << packet.bucket) == 0
-                            || !runs
-                                .iter()
-                                .any(|r| r.start < packet.source.end && packet.source.start < r.end)
+                        if !runs
+                            .iter()
+                            .any(|r| r.start < packet.source.end && packet.source.start < r.end)
                         {
                             continue;
                         }

@@ -234,12 +234,10 @@ impl Renderer {
             ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Noop)
         };
         let honey_layers = sprite_layers.and_then(|layers| sprites.honey_layers(layers));
-        let cull_solid = dx::development_build() && device.caps.software_vertices;
         let compactor = mesh::Compactor::new(
             sprites.layout.clone(),
             device.compact_vertices(),
             honey_layers,
-            cull_solid,
         );
         let glint = glint::Glint::new(&mut device, glint_pixels, glint_armor)?;
         let mut entity_staging = dx::development_build() && device.caps.software_vertices;
@@ -349,7 +347,7 @@ impl Renderer {
             pending_mesh_uploads: 0,
             seen_resets: 0,
             decode_scratch: Vec::new(),
-            convert_scratch: mesh::convert::Scratch::new(honey_layers, cull_solid),
+            convert_scratch: mesh::convert::Scratch::new(honey_layers),
             solid_batches: BTreeMap::new(),
             solid_cache: solid_cache::SolidCache::default(),
             solid_reused: false,

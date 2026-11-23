@@ -1302,3 +1302,53 @@ against renderer and frame times. Use standing as a regression control.
 Native GMA3150 and HD4570 execution, visuals, Reset and timing await
 hardware results. Review the four corrected effects and the terrain
 at the window edges during the hardware smoke test.
+
+### GMA face-bound result, 2026-11-23
+
+The four captures and both logs identify clean `9b88f7f952` (A)
+and `2203e06b14` (B) on GMA3150 with Chell 1.8b, HAL SWVP, PS2 and
+1024×600 RGB565. The recorded settings match within each pair. The owner
+confirmed lava, fire and the mob hurt overlay. Honey still differs
+visually and is deferred to the translucent pass work.
+
+| Metric | A | B |
+| --- | ---: | ---: |
+| Walk seconds / frames | 153.358 / 2147 | 150.108 / 2083 |
+| Walk FPS | 14.000 | 13.877 |
+| Walk DX9 wall, ms/frame | 53.369 | 53.580 |
+| Walk solid wall, ms/frame | 31.754 | 31.327 |
+| Walk frame p50 / p95 / p99, ms | 69.10 / 107.13 / 125.08 | 68.48 / 108.23 / 137.18 |
+| Walk slowest 1% mean, ms | 179.36 | 188.77 |
+| Standing FPS | 37.345 | 37.687 |
+| Standing solid wall, ms/frame | 10.078 | 9.911 |
+| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [40,50) | [20,25) / [30,40) / [40,50) |
+| Standing slowest 1% mean, ms | 57.69 | 53.89 |
+
+Across 29 A and 28 B whole walk log windows, 2,049 and 1,964
+frames respectively, solid submits fell from 283.50 to 266.16 indexed
+draws/frame and from 85,881 to 82,274 advertised vertices/frame.
+These numbers describe the actual submitted work in each run. The
+camera and visible geometry differ between the route samples. Standing
+has 23 whole log windows per build. Its counts were stable at 43 to
+42 draws and 24,624 to 24,512 vertices. There were zero aborted frames
+and zero recorded COM failures in these windows. GPU timestamps are
+absent.
+
+Over the common first 150 seconds of walk, FPS was 13.993 and 13.873.
+Solid draw wall fell 31.569 → 31.321 ms/frame. The separate indices and
+cold-draw stage rose 0.134 → 0.231 ms/frame. The last-frame log snapshots
+reused the solid plan in 11/29 and 2/28 windows respectively. Camera
+motion can change the group mask and rebuild a plan. The measured
+increase in plan time is smaller than the change in solid draw time.
+Entities rose 9.330 → 9.558 and GUI draw 4.752 → 4.870 ms/frame.
+Tick and preparation also rose. Solid improved in some matched route
+intervals and was slower in others. The slowest 21 frames in each
+common interval spent on average 41.72 → 40.90 ms in solid and
+13.82 → 17.02 ms in preparation. These captures do not attribute the
+frame tail or FPS change to culling alone.
+
+The steady standing counts show the mechanism works, but the mixed
+route times and frame tail do not establish a useful overall gain.
+The face-bound code was reverted. GitHub control A is the reference
+for the next isolated trial. Solid took more wall time than entities in
+all thirty full five-second walk blocks, keeping it the priority.
