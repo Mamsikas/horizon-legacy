@@ -8,9 +8,11 @@ pub(in super::super) struct Scratch {
     shadow: Vec<u8>,
     transforms: Vec<dx::AtlasUv>,
     honey: Option<honey::Layers>,
+    cull_solid: bool,
 }
 pub(in super::super) struct Converted {
     pub solid: Vec<Packet>,
+    pub solid_bounds: Option<Box<SolidBounds>>,
     pub translucent: Vec<dx::TextureRange>,
     pub shadow: Arc<dx::MeshData>,
     pub sides: crate::mesher::Sides,
@@ -20,9 +22,10 @@ pub(in super::super) struct Converted {
     pub gpu: dx::EncodedVertices,
 }
 impl Scratch {
-    pub(in super::super) fn new(honey: Option<[u16; 3]>) -> Self {
+    pub(in super::super) fn new(honey: Option<[u16; 3]>, cull_solid: bool) -> Self {
         Self {
             honey: honey.map(honey::Layers),
+            cull_solid,
             ..Self::default()
         }
     }
@@ -100,6 +103,13 @@ impl Scratch {
         let vertices = &mut self.vertices;
         vertices.clear();
         vertices.reserve(mesh.solid.len() + mesh.translucent.len());
+        let offset = Vec3::new(
+            (key.0.rem_euclid(8) * 16) as f32,
+            (key.1.rem_euclid(8) * 16) as f32,
+            (key.2.rem_euclid(8) * 16) as f32,
+        );
+        let mut solid_bounds = (self.cull_solid && !mesh.solid.is_empty())
+            .then(|| Box::new([[Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)]; 7]));
         let mut solid = Vec::new();
         for (i, part) in self
             .groups
@@ -109,6 +119,20 @@ impl Scratch {
         {
             let page = i / 2 % pages;
             let bucket = i / (2 * pages);
+            if let Some(bounds) = &mut solid_bounds {
+                let [lo, hi] = &mut bounds[bucket];
+                if !lo.x.is_nan() {
+                    for vertex in part {
+                        let pos = Vec3::from_array(vertex.pos) + offset;
+                        if !pos.is_finite() {
+                            *lo = Vec3::splat(f32::NAN);
+                            break;
+                        }
+                        *lo = lo.min(pos);
+                        *hi = hi.max(pos);
+                    }
+                }
+            }
             let source = thresholds.map_or(0..mesh.solid.len() as u32 / 4, |ends| {
                 if bucket == 0 {
                     0..ends[0]
@@ -122,6 +146,7 @@ impl Scratch {
                 first: vertices.len() as u32,
                 count: part.len() as u32,
                 source,
+                bucket: bucket as u8,
             });
             vertices.extend_from_slice(part);
         }
@@ -162,11 +187,6 @@ impl Scratch {
             }
         }
         let translucent = dx::append_texture_pages(&self.groups[..pages], vertices)?;
-        let offset = [
-            (key.0.rem_euclid(8) * 16) as f32,
-            (key.1.rem_euclid(8) * 16) as f32,
-            (key.2.rem_euclid(8) * 16) as f32,
-        ];
         for v in vertices.iter_mut() {
             for axis in 0..3 {
                 v.pos[axis] += offset[axis];
@@ -183,6 +203,7 @@ impl Scratch {
         phases.lap("d3d9_mesh_shadow");
         Ok(Converted {
             solid,
+            solid_bounds,
             translucent,
             shadow,
             sides,
