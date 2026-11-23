@@ -100,6 +100,10 @@ impl EncodedVertices {
             count: 0,
         }
     }
+    pub fn try_reserve_vertices(&mut self, additional: usize) -> Option<()> {
+        let bytes = additional.checked_mul(self.encoding.stride())?;
+        self.bytes.try_reserve_exact(bytes).ok()
+    }
     /// Append a lossless CPU shadow directly in its original GPU format.
     /// Compaction and demand uploads need bytes, not expanded float vertices.
     pub fn append_mesh(&mut self, source: &crate::MeshData) -> Result<(), String> {

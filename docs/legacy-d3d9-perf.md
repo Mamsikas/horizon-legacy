@@ -1352,3 +1352,43 @@ route times and frame tail do not establish a useful overall gain.
 The face-bound code was reverted. GitHub control A is the reference
 for the next isolated trial. Solid took more wall time than entities in
 all thirty full five-second walk blocks, keeping it the priority.
+
+### Pack compatible solid ranges during existing arena compaction
+
+Upstream was reviewed at `2e7d2c6bb6f533224df1c4dfaf67548b9bd2c7c9`,
+288 commits past the integrated pin. `eee912b040` clusters terrain
+by locality so the GPU can process smaller, tighter meshlets. It also
+keeps the relative emission order of overlapping quads. DX9 applies
+the same locality principle to the existing submission batches.
+`1fd5f925a8` reduces shared mesher and ambient occlusion preparation.
+`d8f558197d` requires the modern compute and depth pyramid path.
+The dev trial uses the current shared client revision.
+
+Before compaction, vertex data is laid out section by section.
+Different atlas pages, cutout states and translucent tails can
+separate opaque draw ranges that share one DX9 state key. A resident
+compaction job on dev SWVP now tries to put compatible ranges side
+by side in its existing replacement arena. The layout is stable
+within each page and cutout state. Per-section source indices, facing,
+fog selection and translucent emission order remain valid. The
+existing batch merger can make one tight draw out of adjacent visible
+ranges. Any skipped geometry still leaves a gap between draws.
+
+`mesh/compact/materials.rs` validates and packs up to 512 ranges.
+The extra worker payload is one encoded arena of at most 2 MiB.
+It uses the existing single compaction job and page-size bound.
+Jobs with invalid, excessive or already contiguous ranges use the
+original layout. `mesh/compact.rs` keeps the same revision checks and
+allocates the replacement VB before releasing the old one. The range
+mapping lives with the resident arena, with the original compressed
+shadows available for eviction, reload and Reset. `mesh.rs` and
+`frame.rs` look up the section's sorted source slices. Arrivals and
+demand uploads keep the original layout. Hardware VP uses the existing
+compact vertex and upload path.
+
+The log reports `solid_material_packed_arenas`. A useful result should
+show fewer solid indexed draws at comparable submitted vertex counts
+and a lower solid wall time on the same route. Compare the sum of
+terrain cache, indices/cold draws and solid submission as well as the
+whole frame and its tail. Check cutouts, terrain edits and resize on
+the native hardware. The transparency issue remains a separate test.

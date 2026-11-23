@@ -4,17 +4,21 @@ use super::*;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+mod materials;
+
 type Snapshot = (SectionKey, u64, Arc<dx::MeshData>);
 pub(super) struct Job {
     region: RegionKey,
     sections: Vec<Snapshot>,
     resident: bool,
+    material_runs: Option<Vec<materials::Run>>,
 }
 struct Prepared {
     region: RegionKey,
     sections: Vec<(SectionKey, u64, Range<u32>)>,
     resident: bool,
     encoded: dx::EncodedVertices,
+    material_parts: Option<Vec<dx::UploadPart<usize>>>,
 }
 pub(super) enum Work {
     Compact(Job),
@@ -99,11 +103,19 @@ impl Compactor {
                             combined.append_mesh(&data)?;
                             sections.push((key, revision, first..combined.len() as u32));
                         }
+                        let (encoded, material_parts) = match job
+                            .material_runs
+                            .and_then(|runs| materials::pack(&combined, runs))
+                        {
+                            Some((encoded, parts)) => (encoded, Some(parts)),
+                            None => (combined, None),
+                        };
                         Ok(Prepared {
                             region: job.region,
                             sections,
                             resident: job.resident,
-                            encoded: combined,
+                            encoded,
+                            material_parts,
                         })
                     };
                     let prepared = prepare();
@@ -178,13 +190,28 @@ impl Renderer {
         self.next_arena += 1;
         let id = self.next_arena;
         let mut keys = Vec::new();
-        for (key, _, source) in prepared.sections {
+        let mut parts = prepared
+            .material_parts
+            .map(|parts| parts.into_iter().peekable());
+        let material_packed = parts.is_some();
+        for (slot, (key, _, source)) in prepared.sections.into_iter().enumerate() {
             self.release_gpu_section(key);
-            self.sections.get_mut(&key).unwrap().gpu.push(GpuSlice {
-                arena: id,
-                first: source.start,
-                source: 0..source.end - source.start,
-            });
+            let gpu = &mut self.sections.get_mut(&key).unwrap().gpu;
+            if let Some(parts) = &mut parts {
+                while let Some(part) = parts.next_if(|p| p.key == slot) {
+                    gpu.push(GpuSlice {
+                        arena: id,
+                        first: part.first,
+                        source: part.source,
+                    });
+                }
+            } else {
+                gpu.push(GpuSlice {
+                    arena: id,
+                    first: source.start,
+                    source: 0..source.len() as u32,
+                });
+            }
             keys.push(key);
         }
         self.gpu_mesh_bytes += mesh.bytes();
@@ -196,6 +223,7 @@ impl Renderer {
                 live: prepared.encoded.len() as u32,
                 last_used: self.frames + 1,
                 sections: keys,
+                material_packed,
             },
         );
         if prepared.resident {
@@ -273,13 +301,22 @@ impl Renderer {
         if covered < 3 || vertices == 0 {
             return;
         }
-        let sections = chosen
+        let sections: Vec<_> = chosen
             .into_iter()
             .map(|key| {
                 let section = &self.sections[&key];
                 (key, section.revision, section.vertices.clone())
             })
             .collect();
+        let material_runs = if dx::development_build() && self.device.caps.software_vertices {
+            materials::plan(
+                sections
+                    .iter()
+                    .map(|(key, _, data)| (data.len(), self.sections[key].solid.as_slice())),
+            )
+        } else {
+            None
+        };
         let worker = self.compactor.as_mut().unwrap();
         worker.busy = worker
             .jobs
@@ -287,6 +324,7 @@ impl Renderer {
                 region,
                 sections,
                 resident: true,
+                material_runs,
             }))
             .is_ok();
     }
@@ -335,6 +373,7 @@ impl Renderer {
                 region,
                 sections,
                 resident: false,
+                material_runs: None,
             }))
             .is_ok();
         self.prefetch_scan = self.frames + 1;

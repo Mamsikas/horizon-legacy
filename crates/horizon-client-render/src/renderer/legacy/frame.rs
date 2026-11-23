@@ -404,6 +404,7 @@ impl Renderer {
                     self.staged_sections
                 );
                 let mut vertex_bytes = [0u64; 3];
+                let mut packed_arenas = 0;
                 for a in self.arenas.values() {
                     let i = match a.mesh.stride() {
                         20 => 0,
@@ -411,12 +412,14 @@ impl Renderer {
                         _ => 2,
                     };
                     vertex_bytes[i] += a.mesh.bytes();
+                    packed_arenas += usize::from(a.material_packed);
                 }
                 log::info!(
-                    "D3D9 terrain_vertex_bytes compact20={} wide28={} ffp32={}",
+                    "D3D9 terrain_vertex_bytes compact20={} wide28={} ffp32={} solid_material_packed_arenas={}",
                     vertex_bytes[0],
                     vertex_bytes[1],
-                    vertex_bytes[2]
+                    vertex_bytes[2],
+                    packed_arenas
                 );
                 log::info!(
                     "D3D9 animation_cache hits={} misses={} cpu_bytes={}",
@@ -672,7 +675,9 @@ impl Renderer {
                                 &decoded,
                             )?;
                         } else {
-                            for slice in &section.gpu {
+                            for slice in
+                                section.candidate_slices(packet.first..packet.first + packet.count)
+                            {
                                 let first = packet.first.max(slice.source.start);
                                 let end = (packet.first + packet.count).min(slice.source.end);
                                 if first < end {

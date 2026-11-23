@@ -30,6 +30,17 @@ impl Section {
         self.blocks.retain(|(at, _)| *at != pos);
         self.block_entity_revision = revision;
     }
+
+    pub(super) fn candidate_slices(&self, vertices: Range<u32>) -> &[GpuSlice] {
+        if self.gpu.len() <= 2 {
+            return &self.gpu;
+        }
+        // Arrival, demand upload and compaction all keep the source slices sorted.
+        let start = self.gpu.partition_point(|s| s.source.end <= vertices.start);
+        let slices = &self.gpu[start..];
+        let end = slices.partition_point(|s| s.source.start < vertices.end);
+        &slices[..end]
+    }
 }
 pub(super) type RegionKey = (i32, i32, i32);
 pub(super) struct GpuSlice {
@@ -43,6 +54,7 @@ pub(super) struct Arena {
     pub live: u32,
     pub last_used: u64,
     pub sections: Vec<SectionKey>,
+    pub material_packed: bool,
 }
 pub(super) fn region_key(key: SectionKey) -> RegionKey {
     (
@@ -484,8 +496,8 @@ impl Renderer {
             missing |= section.gpu.is_empty()
                 && !section.vertices.is_empty()
                 && self.frames >= section.retry_after;
-            for slice in &section.gpu {
-                self.arenas.get_mut(&slice.arena).unwrap().last_used = self.frames + 1;
+            for group in section.gpu.chunk_by(|a, b| a.arena == b.arena) {
+                self.arenas.get_mut(&group[0].arena).unwrap().last_used = self.frames + 1;
             }
         }
         if !missing {
@@ -558,6 +570,7 @@ impl Renderer {
                             live,
                             last_used: self.frames + 1,
                             sections: page.sections,
+                            material_packed: false,
                         },
                     );
                 }

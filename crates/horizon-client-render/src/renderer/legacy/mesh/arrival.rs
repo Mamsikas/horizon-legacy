@@ -81,6 +81,7 @@ impl Renderer {
                     live,
                     last_used: self.frames,
                     sections: keys,
+                    material_packed: false,
                 },
             );
         }
