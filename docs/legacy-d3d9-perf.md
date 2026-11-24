@@ -1514,3 +1514,20 @@ Upstream review at `1a8910c3e9267a2f339f0d1db295ccdfa022f376` included
 shared upload queue work in `cbac118119` and cave graph work in
 `cb2132352e`. The modern shader changes in `d41da14ca2` target wgpu.
 The integrated upstream pin for this experiment remains `10b9f34727`.
+
+### Windows 7 packages for FFP shadow decode
+
+[Run 45425376467](https://github.com/Mamsikas/horizon-legacy/actions/runs/45425376467) built candidate D
+at `3f6bb578c2ea8e3b08491277c7010733a4ebe0d8` on `dx9-dev`. Both
+architectures passed the Win7 executable import audit, 15 import-policy
+tests and the CPU resource and embedded SM2 tests. Local Win7 client
+checks also passed for dev x64 and x86 and ordinary x64.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
++| D x64 | [14938616921](https://github.com/Mamsikas/horizon-legacy/actions/runs/45425376467/artifacts/14938616921) | `47fec4f56d3559ab3bca09c7849a46aca67566c674f57ab8d37f97cbef7564d2` |
+| D x86 | [14937711614](https://github.com/Mamsikas/horizon-legacy/actions/runs/45425376467/artifacts/14937711614) | `2a05a298888b63d7ee5ff74b0385c0809c7bf9e898476678d00e729caa64c1f1` |
+
+Use the existing C x64 walk as the control and record the same route
+with D x64. Keep the dev diagnostics and attach the client profile and
+latest log. The C x64 package remains available from [run 45160459036](https://github.com/Mamsikas/horizon-legacy/actions/runs/45160459036/artifacts/14813745736).
