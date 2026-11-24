@@ -119,12 +119,16 @@ impl MeshData {
         out.resize(self.vertices, bytemuck::Zeroable::zeroed());
         let stride = self.encoding.stride();
         let dest = &mut bytemuck::cast_slice_mut::<_, u8>(out)[..self.vertices * stride];
-        self.decode_bytes(dest)?;
+        self.decode_bytes(dest, false)?;
         crate::terrain::expand_in_place(self.encoding, out);
         Ok(())
     }
     /// Restore the original GPU layout without expanding/re-encoding its vertices.
-    pub(crate) fn decode_bytes(&self, dest: &mut [u8]) -> Result<(), String> {
+    pub(crate) fn decode_bytes(
+        &self,
+        dest: &mut [u8],
+        material_compaction: bool,
+    ) -> Result<(), String> {
         let stride = self.encoding.stride();
         if self.vertices.checked_mul(stride) != Some(dest.len()) {
             return Err("D3D9 mesh shadow destination length mismatch".into());
@@ -135,9 +139,13 @@ impl MeshData {
             if n != dest.len() {
                 return Err("D3D9 mesh shadow length mismatch".into());
             }
-            shuffle(dest, stride, true);
-            for i in stride..dest.len() {
-                dest[i] ^= dest[i - stride];
+            if material_compaction && self.encoding == crate::VertexEncoding::Full {
+                restore_full_deltas(dest);
+            } else {
+                shuffle(dest, stride, true);
+                for i in stride..dest.len() {
+                    dest[i] ^= dest[i - stride];
+                }
             }
         } else {
             dest.copy_from_slice(&self.bytes);
@@ -145,6 +153,31 @@ impl MeshData {
         Ok(())
     }
 }
+
+const SHADOW_BLOCK_VERTICES: usize = 16;
+
+fn restore_full_deltas(bytes: &mut [u8]) {
+    const STRIDE: usize = size_of::<Vertex>();
+    let mut previous = [0u8; STRIDE];
+    let mut planes = [0u8; STRIDE * SHADOW_BLOCK_VERTICES];
+    for chunk in bytes.chunks_mut(planes.len()) {
+        planes[..chunk.len()].copy_from_slice(chunk);
+        let count = chunk.len() / STRIDE;
+        // Each byte plane is an XOR prefix. Carry the last restored byte
+        // into the next block while writing each vertex's original layout.
+        for (byte, previous) in previous.iter_mut().enumerate() {
+            let start = byte * count;
+            for (vertex, &delta) in chunk
+                .chunks_exact_mut(STRIDE)
+                .zip(&planes[start..start + count])
+            {
+                *previous ^= delta;
+                vertex[byte] = *previous;
+            }
+        }
+    }
+}
+
 fn shuffle(bytes: &mut [u8], stride: usize, inverse: bool) {
     match stride {
         20 => shuffle_fixed::<20>(bytes, inverse),
@@ -154,8 +187,8 @@ fn shuffle(bytes: &mut [u8], stride: usize, inverse: bool) {
     }
 }
 fn shuffle_fixed<const STRIDE: usize>(bytes: &mut [u8], inverse: bool) {
-    let mut scratch = [0u8; size_of::<Vertex>() * 16];
-    for chunk in bytes.chunks_mut(STRIDE * 16) {
+    let mut scratch = [0u8; size_of::<Vertex>() * SHADOW_BLOCK_VERTICES];
+    for chunk in bytes.chunks_mut(STRIDE * SHADOW_BLOCK_VERTICES) {
         scratch[..chunk.len()].copy_from_slice(chunk);
         let n = chunk.len() / STRIDE;
         for b in 0..STRIDE {
@@ -392,6 +425,33 @@ mod tests {
         }
         MeshData::new(&[]).decode(&mut decoded).unwrap();
         assert!(decoded.is_empty());
+    }
+    #[test]
+    fn material_compaction_preserves_shadow_bytes_across_block_boundaries() {
+        use crate::{EncodedVertices, VertexEncoding};
+
+        for len in [12, 16, 20, 60, 64, 68, 4100] {
+            let vertices: Vec<_> = (0..len)
+                .map(|i| Vertex {
+                    pos: [(i % 16) as f32, -0.0, f32::from_bits(0x7fc0_0000 | i)],
+                    color: 0xff12_3456 ^ i,
+                    uv: [0.25, 0.75],
+                    light: [0.125, 0.875],
+                })
+                .collect();
+            let source = EncodedVertices::new(&vertices, false);
+            let compressed = MeshData::from_encoded(&source, &mut Vec::new());
+            assert!(compressed.compressed);
+            let mut combined = EncodedVertices::empty(VertexEncoding::Full);
+            for shadow in [compressed, MeshData::pending(&source)] {
+                combined
+                    .append_mesh_for_material_compaction(&shadow)
+                    .unwrap();
+            }
+            let (decoded, raw) = combined.bytes().split_at(source.bytes().len());
+            assert_eq!(decoded, source.bytes());
+            assert_eq!(raw, source.bytes());
+        }
     }
     #[test]
     fn disjoint_visible_quad_ranges_batch_without_drawing_hidden_faces() {

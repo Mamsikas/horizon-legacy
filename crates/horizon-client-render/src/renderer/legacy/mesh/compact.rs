@@ -12,6 +12,7 @@ pub(super) struct Job {
     sections: Vec<Snapshot>,
     resident: bool,
     material_runs: Option<Vec<materials::Run>>,
+    profile_decode: bool,
 }
 struct Prepared {
     region: RegionKey,
@@ -19,6 +20,14 @@ struct Prepared {
     resident: bool,
     encoded: dx::EncodedVertices,
     material_parts: Option<Vec<dx::UploadPart<usize>>>,
+    material_decode: Option<Duration>,
+}
+#[derive(Default)]
+struct DecodeStats {
+    jobs: u64,
+    bytes: u64,
+    wall: Duration,
+    max: Duration,
 }
 pub(super) enum Work {
     Compact(Job),
@@ -40,6 +49,7 @@ pub(in super::super) struct Compactor {
     pub(super) shadow_busy: bool,
     pub(super) shadow_stats: [u64; 3],
     busy: bool,
+    material_decode: DecodeStats,
 }
 impl Compactor {
     pub(in super::super) fn new(
@@ -98,11 +108,19 @@ impl Compactor {
                             .first()
                             .map_or(dx::VertexEncoding::Full, |s| s.2.encoding());
                         let mut combined = dx::EncodedVertices::empty(encoding);
+                        let material_compaction = job.material_runs.is_some();
+                        let decode_start =
+                            (material_compaction && job.profile_decode).then(Instant::now);
                         for (key, revision, data) in job.sections {
                             let first = combined.len() as u32;
-                            combined.append_mesh(&data)?;
+                            if material_compaction {
+                                combined.append_mesh_for_material_compaction(&data)?;
+                            } else {
+                                combined.append_mesh(&data)?;
+                            }
                             sections.push((key, revision, first..combined.len() as u32));
                         }
+                        let material_decode = decode_start.map(|start| start.elapsed());
                         let (encoded, material_parts) = match job
                             .material_runs
                             .and_then(|runs| materials::pack(&combined, runs))
@@ -116,6 +134,7 @@ impl Compactor {
                             resident: job.resident,
                             encoded,
                             material_parts,
+                            material_decode,
                         })
                     };
                     let prepared = prepare();
@@ -140,7 +159,21 @@ impl Compactor {
             shadow_busy: false,
             shadow_stats: [0; 3],
             busy: false,
+            material_decode: DecodeStats::default(),
         })
+    }
+
+    pub(in super::super) fn log_material_decode(&mut self) {
+        let stats = std::mem::take(&mut self.material_decode);
+        if stats.jobs != 0 {
+            log::info!(
+                "D3D9 material_compaction_decode jobs={} bytes={} wall_ms={:.3} max_ms={:.3}",
+                stats.jobs,
+                stats.bytes,
+                stats.wall.as_secs_f64() * 1e3,
+                stats.max.as_secs_f64() * 1e3,
+            );
+        }
     }
 }
 impl Renderer {
@@ -159,6 +192,13 @@ impl Renderer {
                 return Ok(());
             }
         };
+        if let Some(wall) = prepared.material_decode {
+            let stats = &mut worker.material_decode;
+            stats.jobs += 1;
+            stats.bytes += prepared.encoded.bytes().len() as u64;
+            stats.wall += wall;
+            stats.max = stats.max.max(wall);
+        }
         if prepared.sections.iter().any(|(key, revision, _)| {
             self.sections
                 .get(key)
@@ -325,6 +365,7 @@ impl Renderer {
                 sections,
                 resident: true,
                 material_runs,
+                profile_decode: self.diagnostics,
             }))
             .is_ok();
     }
@@ -374,6 +415,7 @@ impl Renderer {
                 sections,
                 resident: false,
                 material_runs: None,
+                profile_decode: false,
             }))
             .is_ok();
         self.prefetch_scan = self.frames + 1;

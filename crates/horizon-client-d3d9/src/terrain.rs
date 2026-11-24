@@ -107,6 +107,20 @@ impl EncodedVertices {
     /// Append a lossless CPU shadow directly in its original GPU format.
     /// Compaction and demand uploads need bytes, not expanded float vertices.
     pub fn append_mesh(&mut self, source: &crate::MeshData) -> Result<(), String> {
+        self.append_shadow(source, false)
+    }
+    /// Restore full FFP byte planes and XOR deltas together during material compaction.
+    pub fn append_mesh_for_material_compaction(
+        &mut self,
+        source: &crate::MeshData,
+    ) -> Result<(), String> {
+        self.append_shadow(source, true)
+    }
+    fn append_shadow(
+        &mut self,
+        source: &crate::MeshData,
+        material_compaction: bool,
+    ) -> Result<(), String> {
         if source.encoding() != self.encoding || source.len() % 4 != 0 {
             return Err("D3D9 incompatible encoded mesh".into());
         }
@@ -120,7 +134,7 @@ impl EncodedVertices {
             .ok_or("D3D9 combined vertex bytes overflow")?;
         let start = self.bytes.len();
         self.bytes.resize(end, 0);
-        if let Err(error) = source.decode_bytes(&mut self.bytes[start..]) {
+        if let Err(error) = source.decode_bytes(&mut self.bytes[start..], material_compaction) {
             self.bytes.truncate(start);
             return Err(error);
         }

@@ -393,6 +393,9 @@ impl Renderer {
                     batches[0],
                     batches[1]
                 );
+                if let Some(worker) = &mut self.compactor {
+                    worker.log_material_decode();
+                }
                 log::info!(
                     "D3D9 solid_plan_reused={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
                     self.solid_reused,

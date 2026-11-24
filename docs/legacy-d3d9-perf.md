@@ -1415,3 +1415,102 @@ Compare C with the existing GitHub control A `9b88f7f952`. The captures
 in this iteration provide the reference for the first hardware run.
 Win7 static imports and CPU tests do not establish GMA FPS, visual
 parity or Reset and HD4570 behaviour.
+
+### GMA resident material result, 2026-11-24
+
+The standing capture `profile-20261124-142211Z.hzperf`, walk capture
+`profile-20261124-143159Z.hzperf` and `latest (5).log` identify clean C
+`ef6b3bf914bce657e797b87e6fd053ce98c419c0`. Control A is clean
+`9b88f7f95204e777498c747ace0a2836f30bb2ff`. Both runs used GMA3150 with
+Chell 1.8b, HAL SWVP, FFP32, PS2, 1024×600 RGB565 and matching recorded
+options and toolchains. Native call and vertex counts use complete
+five-second log windows. Frame and pass times use the full captures.
+
+| Metric | A | C |
+| --- | ---: | ---: |
+| Walk seconds / frames | 153.358 / 2147 | 152.893 / 2171 |
+| Walk FPS | 14.000 | 14.199 |
+| Walk DX9 wall, ms/frame | 53.369 | 51.995 |
+| Walk solid wall, ms/frame | 31.754 | 29.988 |
+| Walk solid indexed draws/frame | 283.50 | 160.88 |
+| Walk solid indexed NumVertices/frame | 85,881 | 85,698 |
+| Walk frame p50 / p95 / p99, ms | 69.10 / 107.13 / 125.08 | 67.13 / 108.21 / 153.02 |
+| Walk slowest 1% mean, ms | 179.36 | 196.04 |
+| Standing seconds / frames | 120.712 / 4508 | 142.609 / 5601 |
+| Standing FPS | 37.345 | 39.275 |
+| Standing solid indexed draws/frame | 43 | 30 |
+| Standing solid indexed NumVertices/frame | 24,624 | 24,624 |
+| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [40,50) | [20,25) / [30,40) / [30,40) |
+| Standing slowest 1% mean, ms | 57.69 | 60.97 |
+
+On the common first 150 seconds of walk, FPS was 13.993 → 14.180,
+DX9 wall was 53.330 → 52.018 ms/frame and solid fell from 31.569 to
+29.872 ms/frame. Solid improved in 26 of 30 five-second blocks.
+Terrain cache rose 0.344 → 0.360 ms/frame and indices/cold draws rose
+0.134 → 0.147. Entities were 9.330 → 9.558 ms/frame. The common first
+120 seconds of standing reached 37.342 → 38.267 FPS, with solid at
+10.088 → 9.812 ms/frame.
+
+Twenty-nine full walk log windows per build covered 2,049 and 2,074
+frames, with no aborted frames or recorded COM failures. C had
+7–15 packed arenas in every window and four in each standing window.
+Solid submitted 0.2% fewer advertised vertices with 43% fewer draws on
+walk. There were no per-frame solid VB or IB uploads.
+Measured main-thread execution across the walk windows was 66.57 →
+65.05 ms/frame. GPU timestamps were absent.
+
+On walk, C had 23 frames over 125 ms during seconds 15–30. A had none
+in that interval. The p99 for the rest of the common 150 seconds was
+127.72 → 125.72 ms. This split locates the main regression in the tail.
+The 15–30 second interval shows higher solid, tick and prepare wall
+times. Compactions continued in later windows with lower solid time.
+The log aggregates five seconds of work, so it cannot assign the spikes
+to individual jobs. Comparisons align by time from record start and
+cannot guarantee identical camera positions. Keep C in dev for its
+observed solid improvement and retest the walk tail before promotion.
+
+### Reduce FFP shadow decode cost in resident material compaction
+
+`geometry.rs` restores each 16-vertex byte plane and its XOR prefix in
+one pass for compressed full FFP shadows in the existing dev SWVP
+material-compaction job. Each byte keeps its prefix across blocks.
+The worker uses 512 bytes of temporary plane storage and 32 bytes of
+prefix storage. It retains the original encoded layout and leaves
+the raw shadow copy and compact hardware formats on the existing path.
+`terrain.rs` exposes the scoped append operation with the same checked
+size, encoding and rollback checks.
+
+`mesh/compact.rs` selects this operation for the existing material
+plan, before packing, within the same single job and 2 MiB arena limit.
+It measures wall time for appending and decoding the planned sections
+when diagnostics are enabled. `frame.rs` reports the resulting
+`material_compaction_decode` totals for collected jobs in the existing
+five-second log. Fields record job count, restored bytes, sum and max
+elapsed milliseconds. The interval excludes the material packing and
+the owner thread's VB creation, and includes jobs later discarded on
+revision mismatch. Draws, arena mapping, revision checks and lifecycle
+use the same C code.
+
+The 33 host D3D9 dev tests include exact float bit patterns, partial
+blocks and compressed and pending raw shadows. The host packing
+harness passed 32,768 combinations of visible packets and fog states.
+A local Xeon Platinum 8573C benchmark ran the real append operations
+on synthetic section shadows with pinned Rust, ThinLTO and SSE3/SSSE3.
+The times include allocation, LZ4 decode and restoration into a
+combined buffer. Each entry is the median of nine alternating rounds.
+
+| Restored vertices | C, µs/job | D, µs/job |
+| ---: | ---: | ---: |
+| 2,048 | 90.66 | 46.41 |
+| 8,192 | 352.54 | 169.05 |
+| 65,536 | 2675.18 | 1155.98 |
+
+Compare D to C on the fixed walk using the full frame distribution,
+the 15–30 second interval, renderer and solid wall, and the new log
+line. The host measurement covers only CPU shadow append. GMA frame
+times and native visuals, resize, Reset and HD4570 await hardware.
+
+Upstream review at `1a8910c3e9267a2f339f0d1db295ccdfa022f376` included
+shared upload queue work in `cbac118119` and cave graph work in
+`cb2132352e`. The modern shader changes in `d41da14ca2` target wgpu.
+The integrated upstream pin for this experiment remains `10b9f34727`.
