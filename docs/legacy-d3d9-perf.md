@@ -1613,3 +1613,142 @@ effect is inconclusive. C's reduction in submitted draw calls also
 appears at constant submitted vertices in standing. D changes worker
 decode and reporting. Its entity-stage timings describe scene and
 timing variation observed across C and D.
+
+## November 25 long GMA repeats and RTX reload captures
+
+Both GMA files named `D_gma_*.hzperf` belong to C
+`ef6b3bf914bce657e797b87e6fd053ce98c419c0`. The client profile-start
+times match the standing and walk in `D.log` at 16:13:40 and 16:17:20
+local time. The log has one clean build identity. `С.log` identifies
+the same C revision for the other pair. `B (2).log` identifies clean
+B `2203e06b145335af37ef6c4993bc14ed2b1dcad3`. All three pairs are N455,
+Chell 1.8b GMA3150 HAL SWVP, x64, 1024×600, RGB565 and the same
+compiler/toolkit. The earlier short D pair remains valid.
+
+| Metric | B | C | C repeat (files labelled D) |
+| --- | ---: | ---: | ---: |
+| Walk seconds / frames | 298.417 / 4253 | 299.523 / 4342 | 300.357 / 4351 |
+| Walk FPS | 14.252 | 14.496 | 14.486 |
+| Walk DX9 wall, ms/frame | 52.224 | 51.234 | 51.056 |
+| Walk solid wall, ms/frame | 30.510 | 29.623 | 29.631 |
+| Walk solid indexed draws/frame | 266.31 | 161.89 | 159.63 |
+| Walk solid indexed NumVertices/frame | 82,412 | 85,942 | 86,004 |
+| Walk frame p50 / p95 / p99, ms | 68.09 / 102.69 / 117.45 | 66.42 / 104.00 / 128.51 | 66.58 / 103.69 / 135.91 |
+| Walk slowest 1% mean, ms | 157.96 | 174.16 | 182.82 |
+| Walk closing process RSS, MiB | 722.2 | 815.0 | 819.1 |
+| Standing FPS | 39.958 | 40.009 | 41.521 |
+| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [30,40) | [20,25) / [30,40) / [40,50) | [20,25) / [30,40) / [30,40) |
+| Standing slowest 1% mean, ms | 49.03 | 52.17 | 48.28 |
+
+On the common 295 seconds, solid was 30.423, 29.520 and 29.511
+ms/frame. The combined solid, indices/cold draws and terrain cache time
+improved against B even when each 15-second segment is omitted in
+turn. The two C runs have a 7.40 ms walk p99 difference on the same
+binary. Standing differs by 1.51 FPS across those runs. B has a better
+walk p99 and lower ending RSS in this set. Both C runs retain about
+4 MiB of shadows and 27–28 MiB of buffers versus B's 4 and 27 MiB
+at capture end. The recorded renderer allocations explain little
+of the 93–97 MiB RSS difference.
+
+The native counters cover 58 complete walk windows per build. They
+record no aborted frames or COM failures. The two C runs took about
+10.76 and 11.03 s of worker wall time across 3,727 and 3,858 staged
+sections. Worker execution overlaps the game thread, which accounted
+for 92.73% and 92.50% of elapsed time. That makes terrain preparation
+worth reducing for N455 alongside the 29.6 ms solid submit stage.
+
+### RTX 3050 and F3+A
+
+The RTX DX9 capture is clean D `3f6bb578c2ea8e3b08491277c7010733a4ebe0d8`,
+HAL hardware VP with compact vertex support, 1920×1080 RGB565. The
+three wgpu captures are Horizon Nightly `f1bb66f353cf67f2aa4665293fc75c8d91186fc7`,
+25 commits after the fork's shared pin. The logs place F3+A at about
+three seconds. The capture metadata records profiler options. Full
+graphics settings and identical game binaries are unverified.
+
+| Metric | DX9 D | OpenGL | DX12 | Vulkan |
+| --- | ---: | ---: | ---: | ---: |
+| Full capture FPS | 173.09 | 256.32 | 364.07 | 372.79 |
+| FPS over seconds 20–60 | 160.50 | 259.70 | 371.30 | 379.07 |
+| Renderer wall over seconds 20–60, ms/frame | 4.762 | 3.400 | 2.315 | 2.225 |
+| Slowest 1% mean, whole capture, ms | 16.42 | 10.08 | 9.12 | 7.54 |
+| End process RSS, MiB | 2657.4 | 1139.4 | 1396.6 | 1154.8 |
+| End section arenas, MiB | 1019.0 | 792.0 | 787.3 | 787.3 |
+| End live section vertices, MiB | 932.6 | 750.0 | 749.8 | 749.7 |
+
+The DX9 scene had 3,272 visible sections before F3+A. The first post-
+reload snapshots at 8.2, 13.2, 18.2 and 23.2 s have 1,554, 2,293,
+2,906 and 3,272 visible sections. The rise from 479 to 982 MiB of
+buffer bytes tracks that refill. Displayed geometry initially drops
+and the frame rate temporarily rises. At 15–20 s, DX9 runs at 117.4
+FPS with 1.722 ms of index planning/cold draws, 2.624 ms of solid
+and 0.452 ms of arrival uploads per frame. The staged arrival
+completion and arena logs show both page fragmentation and subsequent
+compactions. The wgpu arena size and used geometry are already close
+to the starting values at the 10 s snapshot. The samples bound the
+reload progression without timing a complete-image threshold.
+
+Both versions call `all_sections_changed` and rebuild loaded sections.
+DX9 converts each CPU section to atlas geometry and retained shadows
+on a single staging worker, then allocates immutable native VBs.
+The tested wgpu revision uploads packed input to ranges of shared arena
+buffers using staged copies, as in `gfx.rs::upload_mesh`. Its
+`SectionLists::draw` reuses bindings for adjacent page runs and uses
+multi-draw where supported. DX9 still makes about 1,800 solid draws
+per frame late in this RTX run. Over seconds 20–60, DX9 spends
+2.165 ms on solid, 0.768 ms on translucent and 0.758 ms on solid
+plans/cold draws. Its shared `prepare` also takes 1.116 ms/frame
+versus 0.230–0.274 ms/frame on wgpu, with most of the difference in
+block-entity geometry. These are separate limits on the comparison.
+DX9 has no GPU timestamps. Wgpu's health GPU medians in this interval
+are about 2.88 ms on GL, 2.26 ms on DX12 and 2.40 ms on Vulkan.
+
+DX9 also retains 281.7 MiB of encoded CPU shadows for re-upload,
+eviction and Reset. Arena bytes are allocation counts. RSS includes
+the whole process and driver mappings and gives no exact VRAM
+measurement. Together, the live payload, unused arena space and
+CPU shadows establish specific differences. They leave some of the
+process RSS gap unattributed. Future GMA decisions use its two scenes
+and their geometry and frame costs. The RTX paths are a separate
+architecture comparison.
+
+### Write FFP shadow deltas directly during terrain preparation
+
+The next dev candidate E changes one step of CPU mesh preparation in
+`crates/horizon-client-d3d9/src/geometry.rs`. D copies interleaved
+vertex bytes, computes the bytewise XOR against the previous vertex
+and transposes the deltas into planes before LZ4. E writes each delta
+directly into the plane using the previous source byte. It reuses the
+encoder's existing scratch buffer and carries 32 previous bytes
+across each 16-vertex block, including partial blocks. The bytes
+passed to LZ4 and the compressed and raw shadow layouts are identical.
+The change is active for full FFP encoding in dev builds. The 20/28-byte
+hardware formats use the existing encoder.
+
+This removes CPU work from the bounded worker that prepared about
+3,800 sections in each long C walk. It also applies when that worker
+compresses an edit's previously published raw shadow. The packing
+and draw algorithms from D consume the same vertex bytes and material
+ranges. The codec change adds no budget, resource ownership or
+invalidation dependency.
+
+The host check compares the exact pre-LZ4 bytes to the old algorithm
+across block edges and scratch reuse. The 34 host DX9 dev tests and
+32 ordinary tests passed. A Xeon Platinum 8573C run timed the real
+`MeshData::from_encoded` operation including LZ4 on synthetic section
+data. These are medians of nine alternating runs with the pinned
+compiler, ThinLTO and SSE3/SSSE3. Each pair produced the same output size.
+
+| Vertices per section | D, µs/section | E, µs/section |
+| ---: | ---: | ---: |
+| 512 | 28.506 | 17.192 |
+| 2,048 | 112.889 | 60.398 |
+| 8,192 | 456.366 | 250.632 |
+| 32,768 | 1800.695 | 978.223 |
+
+The host result describes encoding cost. On GMA compare the
+300-second D and E walk, using staging completed counts, conversion
+wall time, frame distributions and solid work as the controls.
+Use the 180-second standing capture for the resident scene. Confirm
+the build SHA in the startup log before recording. The long C
+duplicates establish a reference for this route's timing variation.

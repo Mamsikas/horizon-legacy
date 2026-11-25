@@ -82,13 +82,17 @@ impl MeshData {
         // Vertex deltas have repeated colours/light and short position/UV
         // changes. Byte planes let LZ4 see those runs without losing one bit
         // (including signed zero/NaN payloads). Small blocks bound decode scratch.
-        shuffled.clear();
-        shuffled.extend_from_slice(raw);
-        let stride = encoding.stride();
-        for i in (stride..shuffled.len()).rev() {
-            shuffled[i] ^= shuffled[i - stride];
+        if crate::development_build() && encoding == crate::VertexEncoding::Full {
+            write_full_deltas(raw, shuffled);
+        } else {
+            shuffled.clear();
+            shuffled.extend_from_slice(raw);
+            let stride = encoding.stride();
+            for i in (stride..shuffled.len()).rev() {
+                shuffled[i] ^= shuffled[i - stride];
+            }
+            shuffle(shuffled, stride, false);
         }
-        shuffle(shuffled, stride, false);
         let compressed = lz4_flex::block::compress(shuffled);
         let use_compressed = compressed.len() < raw.len();
         Self {
@@ -155,6 +159,33 @@ impl MeshData {
 }
 
 const SHADOW_BLOCK_VERTICES: usize = 16;
+
+fn write_full_deltas(raw: &[u8], shuffled: &mut Vec<u8>) {
+    const STRIDE: usize = size_of::<Vertex>();
+    const BLOCK_BYTES: usize = STRIDE * SHADOW_BLOCK_VERTICES;
+    debug_assert_eq!(raw.len() % STRIDE, 0);
+    let mut previous = [0u8; STRIDE];
+    shuffled.resize(raw.len(), 0);
+    for (input, output) in raw
+        .chunks(BLOCK_BYTES)
+        .zip(shuffled.chunks_mut(BLOCK_BYTES))
+    {
+        let count = input.len() / STRIDE;
+        // Emit the exact LZ4 input without materializing interleaved deltas.
+        // The last original byte in each plane is carried into the next block.
+        for (byte, (plane, previous)) in output
+            .chunks_exact_mut(count)
+            .zip(&mut previous)
+            .enumerate()
+        {
+            for (vertex, delta) in input.chunks_exact(STRIDE).zip(plane) {
+                let value = vertex[byte];
+                *delta = value ^ *previous;
+                *previous = value;
+            }
+        }
+    }
+}
 
 fn restore_full_deltas(bytes: &mut [u8]) {
     const STRIDE: usize = size_of::<Vertex>();
@@ -425,6 +456,29 @@ mod tests {
         }
         MeshData::new(&[]).decode(&mut decoded).unwrap();
         assert!(decoded.is_empty());
+    }
+    #[test]
+    fn full_shadow_encoder_preserves_lz4_input_across_blocks_and_scratch_reuse() {
+        const STRIDE: usize = size_of::<Vertex>();
+        let mut scratch = Vec::new();
+        let mut bits = 0x49ab_8731u32;
+        for vertices in [64, 12, 16, 20, 4111, 1, 0, 32] {
+            let raw: Vec<_> = (0..vertices * STRIDE)
+                .map(|_| {
+                    bits = bits.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    (bits >> 24) as u8
+                })
+                .collect();
+            let mut reference = raw.clone();
+            for i in (STRIDE..reference.len()).rev() {
+                reference[i] ^= reference[i - STRIDE];
+            }
+            shuffle(&mut reference, STRIDE, false);
+            write_full_deltas(&raw, &mut scratch);
+            assert_eq!(scratch, reference);
+            restore_full_deltas(&mut scratch);
+            assert_eq!(scratch, raw);
+        }
     }
     #[test]
     fn material_compaction_preserves_shadow_bytes_across_block_boundaries() {
