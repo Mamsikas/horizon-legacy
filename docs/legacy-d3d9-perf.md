@@ -1936,3 +1936,51 @@ counters and sampled thread time cannot price the skipped setters or
 assign the slowdown to the cache itself. F has no measured benefit
 that offsets its slower recordings, so restore E's per-frame sampler
 and texture-stage setup for the next trial.
+
+### Pack compatible solid ranges on first upload
+
+The GMA F walk moves through 1,379 new arrival pages covering 2,336
+section arrivals between the first and last complete log windows.
+The median snapshot has 10 material-packed arenas out of 24 resident
+arenas. Packing currently occurs during resident compaction. On the
+newly loaded pages, solid still submits separate ranges around other
+materials and translucent spans until a replacement arena is built.
+The captured walk spends 29.33 ms/frame on solid with 163.41 indexed
+draws and 86,254 vertices in the submitted ranges. The sky span is only
+0.04 ms/frame with the tested options, so upstream's reverse-Z sky
+reordering in `e549bffef3` is outside this experiment.
+
+Horizon wgpu's `gfx.rs::upload_mesh` places new sections in shared
+pages, and `SectionLists::draw` reuses vertex and index bindings across
+adjacent page runs. The DX9 arrival path already batches compatible
+sections into one native VB. G applies the existing resident material
+packer at this first upload in a dev SWVP build. Moving the same
+material ranges together allows the existing solid draw plan to
+merge adjacent visible ranges. Each draw retains its exact 16-bit
+indexed bounds. The driver still processes the same submitted
+vertices for identical visibility. There is no new native buffer
+allocation beyond the arrival VB.
+
+`legacy/mesh/materials.rs` is shared by resident compaction and
+`legacy/mesh/arrival.rs`. An arrival page must contain at least two
+whole current sections with contiguous source coverage. The packer
+retains original primitive order within each material and retains
+source order within each section's translucent ranges. Existing fog,
+cutout, facing and visibility rules still decide which ranges can
+merge. The former layout serves single or split sections, holes from
+stale revisions, or pages outside the 512-range budget or without more
+material adjacency. Synchronous edits, demand loading, ordinary
+builds and HW VS2 use their previous arrival path. The original
+CPU shadow and existing Reset/eviction lifecycle are retained.
+Packing adds at most one temporary encoded page below 2 MiB plus
+bounded metadata. It adds a render-thread copy only when packing
+succeeds. A failed native upload still falls back to demand loading.
+
+`mesh.rs` selects the bulk arrival path. `legacy.rs` and
+`legacy/frame.rs` expose `material_packed_pages_total` on the
+existing diagnostic line. `d3d9_arrival_material_pack` measures
+planning and copying within the enclosing arrival span. For the
+same GMA route, compare that arrival cost, solid counts, ranges'
+NumVertices, solid wall time and frame tails to E walk2. Standing
+is a regression check. The CPU cases check byte-identical source
+slices, stable material order, and original-layout fallbacks.

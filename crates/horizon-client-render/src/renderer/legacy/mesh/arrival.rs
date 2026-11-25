@@ -20,10 +20,10 @@ impl Renderer {
         batch.push(region_key(key), (key, self.sections[&key].revision), gpu)?;
         Ok(())
     }
-    pub(super) fn commit_arrivals(&mut self, batch: Arrivals) {
+    pub(super) fn commit_arrivals(&mut self, batch: Arrivals, pack_materials: bool) {
         let mut uploaded = FxHashSet::default();
         for page in batch.into_pages() {
-            let parts: Vec<_> = page
+            let mut parts: Vec<_> = page
                 .parts
                 .into_iter()
                 .filter(|part| {
@@ -37,7 +37,22 @@ impl Renderer {
             if parts.is_empty() {
                 continue;
             }
-            let mesh = match self.device.mesh_encoded(&page.vertices) {
+            let mut vertices = page.vertices;
+            let mut material_packed = false;
+            if pack_materials && parts.len() >= 2 {
+                let _span = crate::spans::guard("d3d9_arrival_material_pack");
+                if let Some((packed, mapped)) =
+                    materials::pack_arrival(&vertices, &parts, |(key, _)| {
+                        let section = &self.sections[&key];
+                        (section.vertices.len(), section.solid.as_slice())
+                    })
+                {
+                    vertices = packed;
+                    parts = mapped;
+                    material_packed = true;
+                }
+            }
+            let mesh = match self.device.mesh_encoded(&vertices) {
                 Ok(mesh) => mesh,
                 Err(error) => {
                     if dx::is_device_lost(error.as_ref()) {
@@ -70,6 +85,7 @@ impl Renderer {
                 uploaded.insert(key);
             }
             self.arrival_pages += 1;
+            self.arrival_material_packed_pages += u64::from(material_packed);
             self.arrival_max_sections = self.arrival_max_sections.max(keys.len());
             self.pending_mesh_uploads += mesh.bytes();
             self.gpu_mesh_bytes += mesh.bytes();
@@ -81,7 +97,7 @@ impl Renderer {
                     live,
                     last_used: self.frames,
                     sections: keys,
-                    material_packed: false,
+                    material_packed,
                 },
             );
         }

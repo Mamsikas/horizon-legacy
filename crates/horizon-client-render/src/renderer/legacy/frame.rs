@@ -379,10 +379,11 @@ impl Renderer {
                     self.gui_cache.bytes()
                 );
                 log::info!(
-                    "D3D9 arrival pages_total={} sections_total={} max_sections_per_page={}",
+                    "D3D9 arrival pages_total={} sections_total={} max_sections_per_page={} material_packed_pages_total={}",
                     self.arrival_pages,
                     self.arrival_sections,
-                    self.arrival_max_sections
+                    self.arrival_max_sections,
+                    self.arrival_material_packed_pages
                 );
                 let batches = self
                     .compactor

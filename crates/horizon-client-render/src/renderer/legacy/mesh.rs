@@ -2,6 +2,7 @@ use super::*;
 mod arrival;
 mod compact;
 pub(super) mod convert;
+mod materials;
 mod shadows;
 mod upload;
 pub(super) use compact::Compactor;
@@ -250,7 +251,10 @@ impl Renderer {
             self.upload_cpu += started.elapsed();
         }
         let started = Instant::now();
-        self.commit_arrivals(batch);
+        self.commit_arrivals(
+            batch,
+            dx::development_build() && self.device.caps.software_vertices,
+        );
         self.upload_cpu += started.elapsed();
         Ok(())
     }
@@ -277,7 +281,7 @@ impl Renderer {
         let gpu = self.apply_converted(key, ready);
         let mut batch = dx::UploadBatch::new(self.device.max_vertices())?;
         self.queue_arrival(&mut batch, key, &gpu)?;
-        self.commit_arrivals(batch);
+        self.commit_arrivals(batch, false);
         Ok(())
     }
     fn apply_converted(
