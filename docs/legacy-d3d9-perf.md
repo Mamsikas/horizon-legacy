@@ -2229,3 +2229,55 @@ pass takes 20.83 ms/frame. Compare similar glint workload and the
 new lock counters together with submit wall time. Verify enchanted
 items and armor on the native GMA device. Native frame times,
 visuals, resize and Reset checks on GMA and HD4570 remain hardware work.
+
+### GMA dynamic glint staging result and rollback
+
+The two attached I captures start at 23:44:48 and 23:51:24 local
+time on November 25. Both match the profiler start lines in
+`I.log`, which identifies clean I x64 at the SHA above. The GMA3150
+Chell 1.8b HAL SWVP, RGB565 and 1024×600 setup and recorded options
+match H. Use those two captures rather than the other profile
+start in the same log. There are no DX9 GPU timestamps.
+
+| GMA metric | H | I |
+| --- | ---: | ---: |
+| Walk seconds / frames | 298.846 / 4510 | 300.250 / 4487 |
+| Walk FPS | 15.091 | 14.944 |
+| Walk DX9 wall, ms/frame | 48.930 | 49.430 |
+| Walk solid wall, ms/frame | 28.726 | 29.169 |
+| Walk dynamic entity convert wall, ms/frame | 3.790 | 3.829 |
+| Walk dynamic entity submit wall, ms/frame | 3.621 | 3.545 |
+| Walk dynamic native pass wall, ms/frame | 7.675 | 7.677 |
+| Walk dynamic VB locks/frame | 4.582 | 1.274 |
+| Walk dynamic indexed draws / NumVertices per frame | 5.98 / 8,630 | 6.13 / 8,641 |
+| Walk dynamic vertex uploads, bytes/frame | 276,172 | 276,524 |
+| Walk frame p50 / p95 / p99, ms | 64.56 / 98.69 / 111.36 | 64.73 / 101.28 / 130.85 |
+| Walk slowest 1% mean, ms | 140.93 | 154.77 |
+| Walk single longest frame, ms | 418.59 | 219.76 |
+| Standing FPS | 39.979 | 39.420 |
+| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [30,40) | [20,25) / [30,40) / [40,50) |
+| Standing slowest 1% mean, ms | 47.34 | 51.67 |
+
+Native whole windows cover 4,423 H and 4,444 I walk frames, with
+zero recorded COM failures or aborted frames. Between I's first
+and last complete snapshots, 584 glint stage groups skip 14,759
+locks across 4,397 frames. The 36-second and 182-second windows
+stay near 31 glint batches/frame and go from about 32 VB locks to
+2. At 36 seconds dynamic wall falls from 12.62 to 12.04 ms,
+with higher submitted geometry in I. At 182 seconds it grows
+from 9.63 to 11.48 ms, alongside more submitted vertices.
+The windows ending near 121–123 and 267–269 seconds improve
+while submitting fewer vertices. These window pairs show the
+lock mechanism and variable workload. They cannot isolate latency
+inside the lock or the remainder of the driver pass.
+
+The overall submit saving comes mainly from the first 30 seconds.
+Over seconds 30–295 the submit measurements are 3.647 and 3.669
+ms/frame. On common 0–295-second windows, omitting any one
+15-second segment gives a submit delta of −0.10 to +0.03 ms/frame,
+a DX9 delta of +0.32 to +0.59 ms/frame and an FPS delta of −0.19
+to −0.08. Solid wall accounts for much of the renderer difference.
+Standing submitted zero dynamic vertices and zero dynamic locks
+in both builds. The captures cannot attribute its slowdown to glint.
+Restore the H code. The experiment reduced native locks substantially
+and did not show a sustained timing gain to justify adoption.

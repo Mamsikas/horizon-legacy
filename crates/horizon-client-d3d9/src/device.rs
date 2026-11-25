@@ -2330,18 +2330,15 @@ impl Device {
     }
     /// Upload ordered entity quad batches once without expanding them to triangles.
     pub fn stage_quads(&mut self, vertices: &[Vertex]) -> Result<StagedQuads> {
-        self.stage_quad_slices(&[vertices])
-    }
-    /// Write the input slices in order into one ring reservation and one lock.
-    pub fn stage_quad_slices(&mut self, slices: &[&[Vertex]]) -> Result<StagedQuads> {
-        let count = crate::geometry::staged_quad_count(slices, self.max_vertices())
-            .ok_or("D3D9 staged quad slices outside alignment or buffer capacity")?;
-        let first = self.stage_vertex_slices(slices, count)?;
+        if !vertices.len().is_multiple_of(4) {
+            return Err("D3D9 incomplete staged quad".into());
+        }
+        let first = self.stage_vertices(vertices)?;
         Ok(StagedQuads {
             owner: self.inner.clone(),
             serial: self.transient_serial,
             first,
-            count: count as u32,
+            count: vertices.len() as u32,
         })
     }
     pub fn draw_staged_quads(
@@ -2455,15 +2452,9 @@ impl Device {
         Ok(())
     }
     fn stage_vertices(&mut self, vertices: &[Vertex]) -> Result<u32> {
-        self.stage_vertex_slices(&[vertices], vertices.len())
-    }
-    // Count is the sum of the lengths of these immutable slices, either from
-    // the single-slice caller or the checked quad count.
-    fn stage_vertex_slices(&mut self, slices: &[&[Vertex]], count: usize) -> Result<u32> {
-        if count == 0 || count > self.max_vertices() {
+        if vertices.is_empty() || vertices.len() > self.max_vertices() {
             return Err("D3D9 transient upload outside buffer capacity".into());
         }
-        debug_assert_eq!(count, slices.iter().map(|s| s.len()).sum::<usize>());
         if self.transient.is_none() {
             let mut buffer = None;
             self.transient_capacity = self.max_vertices() * size_of::<Vertex>();
@@ -2498,10 +2489,10 @@ impl Device {
             .ok_or("D3D9 upload sequence exhausted")?;
         self.inner.stream_sequence.set(serial);
         self.transient_serial = serial;
-        let bytes = count * size_of::<Vertex>();
+        let bytes = bytemuck::cast_slice::<_, u8>(vertices);
         let (offset, discard) = self
             .transient_ring
-            .reserve(bytes, self.transient_capacity)
+            .reserve(bytes.len(), self.transient_capacity)
             .ok_or("D3D9 transient ring overflow")?;
         if discard {
             self.state_cache.stream.invalidate();
@@ -2510,8 +2501,8 @@ impl Device {
             .transient
             .as_ref()
             .ok_or("D3D9 dynamic vertex buffer missing")?;
-        // SAFETY: the immutable slices' total size matches the checked lock.
-        // NOOVERWRITE appends to untouched storage. DISCARD permits renaming.
+        // SAFETY: lock size matches the copy. NOOVERWRITE appends to untouched storage;
+        // DISCARD lets the driver rename it when the bounded ring wraps.
         unsafe {
             let mut memory = ptr::null_mut();
             profile_call!(
@@ -2519,7 +2510,7 @@ impl Device {
                 LockVertex,
                 buffer.Lock(
                     offset as u32,
-                    bytes as u32,
+                    bytes.len() as u32,
                     &mut memory,
                     if discard {
                         D3DLOCK_DISCARD
@@ -2532,18 +2523,13 @@ impl Device {
                 profile_call!(self.inner, UnlockVertex, buffer.Unlock())?;
                 return Err("D3D9 empty transient lock".into());
             }
-            let mut dest = memory.cast::<u8>();
-            for vertices in slices {
-                let source = bytemuck::cast_slice::<_, u8>(vertices);
-                ptr::copy_nonoverlapping(source.as_ptr(), dest, source.len());
-                dest = dest.add(source.len());
-            }
+            ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
             profile_call!(self.inner, UnlockVertex, buffer.Unlock())?;
         }
-        self.uploads += bytes as u64;
-        self.stream_uploads += bytes as u64;
+        self.uploads += bytes.len() as u64;
+        self.stream_uploads += bytes.len() as u64;
         self.stream_locks += 1;
-        profile_count!(self.inner, |c| c.upload_bytes[1] += bytes as u64);
+        profile_count!(self.inner, |c| c.upload_bytes[1] += bytes.len() as u64);
         Ok((offset / size_of::<Vertex>()) as u32)
     }
     /// Capture only on request. Readback is deliberately absent from the normal frame path.

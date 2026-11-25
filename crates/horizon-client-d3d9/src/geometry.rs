@@ -9,18 +9,6 @@ pub struct Vertex {
     pub light: [f32; 2],
 }
 
-/// Check each draw's quad alignment before allocating a shared transient range.
-#[cfg(any(windows, test))]
-pub(crate) fn staged_quad_count(slices: &[&[Vertex]], limit: usize) -> Option<usize> {
-    let count = slices.iter().try_fold(0usize, |count, vertices| {
-        if !vertices.len().is_multiple_of(4) {
-            return None;
-        }
-        count.checked_add(vertices.len()).filter(|&n| n <= limit)
-    })?;
-    (count != 0).then_some(count)
-}
-
 /// The shared quad IB starts at zero; its base must include the ring offset,
 /// while software VP sees only the drawn subrange, not the whole staged stream.
 #[cfg(any(windows, test))]
@@ -378,23 +366,6 @@ pub fn fog_interval(environment: (f32, f32), distance: (f32, f32)) -> (f32, f32)
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn staged_quad_slices_require_complete_draws_within_the_ring_limit() {
-        use bytemuck::Zeroable;
-        let vertices = [Vertex::zeroed(); 12];
-        let ordered = [&vertices[..4], &vertices[4..]];
-        let count = staged_quad_count(&ordered, 12).unwrap() as u32;
-        assert_eq!(staged_quad_range(5, count, 0..4), Some((5, 4)));
-        assert_eq!(staged_quad_range(5, count, 4..12), Some((9, 8)));
-        assert_eq!(staged_quad_count(&ordered, 8), None);
-        // The total is quad-aligned, but the two draw ranges are not.
-        assert_eq!(
-            staged_quad_count(&[&vertices[..5], &vertices[5..]], 12),
-            None
-        );
-        assert_eq!(staged_quad_count(&[&vertices[..0]], 12), None);
-    }
-
     #[test]
     fn staged_quads_keep_tight_bounds_at_a_non_quad_aligned_ring_offset() {
         // A preceding triangle/line upload can leave a non-quad-aligned base.
