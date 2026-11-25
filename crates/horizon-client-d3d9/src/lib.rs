@@ -5,6 +5,8 @@ pub const fn development_build() -> bool {
 }
 #[cfg(any(windows, test))]
 mod stream_cache;
+#[cfg(any(windows, test))]
+mod texture_state_cache;
 // Pass markers compile to empty inline methods in ordinary Windows builds.
 #[cfg(any(windows, all(test, feature = "submit-profile")))]
 mod submit_profile;

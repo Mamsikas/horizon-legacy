@@ -1790,3 +1790,78 @@ checks passed for dev x64 and x86 and ordinary x64.
 
 The x64 package matches the GMA control architecture. GMA and HD4570
 graphics, resize and Reset checks await native testing of E.
+
+### GMA direct FFP encoding result, 2026-11-25
+
+`E.log` identifies clean E `f9b94f9f45ce480b258d40f4ed728a1ef423ab35`
+and matches all three capture starts. The Chell 1.8b GMA3150 HAL, SWVP,
+FFP32, RGB565, 1024×600, toolchain and architecture match the verified
+long D control. Use `E_walk2.hzperf` for the full route comparison.
+Only the first 145 seconds of the other walk are used to compare the
+route before the reported zombie interruption.
+
+| Metric | D | E walk2 |
+| --- | ---: | ---: |
+| Walk seconds / frames | 299.301 / 4399 | 299.129 / 4487 |
+| Walk FPS | 14.698 | 15.000 |
+| Walk DX9 wall, ms/frame | 50.439 | 49.507 |
+| Walk solid wall, ms/frame | 29.268 | 28.641 |
+| Walk frame p50 / p95 / p99, ms | 65.43 / 103.88 / 121.70 | 64.99 / 99.77 / 119.52 |
+| Walk slowest 1% mean, ms | 170.39 | 146.46 |
+| Walk solid indexed draws/frame | 159.68 | 161.81 |
+| Walk solid indexed NumVertices/frame | 86,179 | 85,971 |
+| Standing FPS | 38.672 | 41.176 |
+| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [40,50) | [20,25) / [30,40) / [30,40) |
+| Standing slowest 1% mean, ms | 49.91 | 42.15 |
+
+The 58 whole log windows in each walk contain 3,856 staged section
+results on D and 3,859 and 3,846 on E. Total conversion wall is 11.20 s
+on D and 8.61 and 8.56 s on E. This corresponds to 2.904 ms/section
+versus 2.230 and 2.225. Even over just the common first 145 seconds,
+the means are 2.872 ms on D and 2.244 and 2.254 on E. This measures
+the whole parallel conversion stage on GMA, including scene-dependent
+work. The exact byte checks and the host codec experiment isolate
+the reduced encoding work. Keep E in dev.
+
+The same first 145 seconds reach 14.490 FPS on D and 14.476 and
+15.028 on E. On the common first 295 seconds, clean E gains 0.308 FPS
+and 0.660 ms/frame in the sum of solid, cache and indices/cold draws.
+The terrain gain persists when any one 15-second segment is omitted.
+Clean E has 38 frames over 125 ms versus 34 on D, with smaller worst
+spikes overall. Its most expensive staged section took 110.73 ms
+versus 24.03 on D. Neither standing run performed bulk staging or
+resident shadow decode during the recorded windows. The standing
+FPS difference therefore cannot measure encoding cost directly.
+Native windows have zero COM failures or aborted frames. DX9 GPU
+timestamps remain unavailable.
+
+### Reuse texture-stage and sampler values after a successful Present
+
+The E log has an average of 39.6 actual sampler setters and 77.0
+texture-stage setters per walk frame. Standing has 13 and 19. The
+solid pass accounts for 12 and 16 per frame in either scene. E
+forgets these values at each frame start, even when the last requests
+from the preceding scene agree with the first requested values.
+Reuse the native device's tracked numeric values through a clean
+Present on the dev SWVP path.
+
+`device.rs` moves the existing sampler and stage slots onto the
+native device owner so a renderer reuse shares the same record of
+actual COM values. The setter wrappers keep the existing requests
+and actual-call counters. `texture_state_cache.rs` remembers only
+successful setters. A failed setter forgets its slot and an incomplete
+frame resets the table on the next begin. Lost device, Reset, presentation rebuild and
+resource-pack renderer replacement invalidate the table. D3D9
+render state, resource bindings, shader state and transforms still
+follow their frame-start setup. Hardware VP and ordinary builds
+use a fresh table at frame start.
+
+The table has 141 numeric entries and one frame flag per device. It
+holds no COM resources. The CPU test checks repeat elision, a failed
+setter, a frame without Present, explicit invalidation and the
+per-frame fallback. All 35 dev tests and 33 ordinary tests passed
+on the host. The hardware comparison uses the existing clean
+E walk and standing as the control. Compare actual sampler and TSS
+sets per frame alongside draw and vertex counts, pass wall time and
+frame distribution. Also exercise fog, texture filtering, HUD clips,
+glint, resize and resource-pack reload on the native device.

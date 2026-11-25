@@ -26,6 +26,7 @@ const D3DERR_DEVICENOTRESET: HRESULT = HRESULT(0x88760869u32 as i32);
 const D3DTS_WORLD: D3DTRANSFORMSTATETYPE = D3DTRANSFORMSTATETYPE(256);
 const FVF: u32 = D3DFVF_XYZ | D3DFVF_DIFFUSE | D3DFVF_TEX2;
 const MAX_QUADS: u32 = 16_383;
+use crate::texture_state_cache::TextureStateCache;
 use crate::{EncodedVertices, Fog, IndexBatch, Ring, Vertex, VertexEncoding};
 // Evaluate the original COM expression exactly once, with unchanged error flow.
 // The normal build expands to just that expression, without a counter branch.
@@ -135,6 +136,7 @@ struct Inner {
     #[cfg(feature = "submit-profile")]
     profile: crate::submit_profile::Profile,
     stream_sequence: Cell<u64>,
+    texture_states: RefCell<TextureStateCache>,
     default_meshes: RefCell<Vec<Weak<MeshHandle>>>,
     presentation: RefCell<Option<Presentation>>,
     world: RefCell<world_target::State>,
@@ -196,8 +198,6 @@ impl Mesh {
 }
 struct StateCache {
     render: [Option<u32>; 256],
-    stage: [[Option<u32>; 33]; 3],
-    sampler: [[Option<u32>; 14]; 3],
     textures: [usize; 3],
     stream: crate::stream_cache::StreamCache,
 }
@@ -205,8 +205,6 @@ impl Default for StateCache {
     fn default() -> Self {
         Self {
             render: [None; 256],
-            stage: [[None; 33]; 3],
-            sampler: [[None; 14]; 3],
             textures: [usize::MAX; 3],
             stream: crate::stream_cache::StreamCache::default(),
         }
@@ -260,6 +258,8 @@ impl StateCache {
         }
         Ok(())
     }
+}
+impl TextureStateCache {
     fn stage(
         &mut self,
         inner: &Inner,
@@ -269,19 +269,16 @@ impl StateCache {
     ) -> windows::core::Result<()> {
         let device = &inner.device;
         profile_count!(inner, |c| c.cache_requests[2] += 1);
-        let slot = &mut self.stage[index as usize][state.0 as usize];
-        if *slot != Some(value) {
+        self.set_stage(index, state.0, value, || {
             // SAFETY: stages 0/1 were checked in caps; device and constants are live.
             unsafe {
                 profile_call!(
                     inner,
                     SetTextureStageState,
                     device.SetTextureStageState(index, state, value)
-                )?;
+                )
             }
-            *slot = Some(value);
-        }
-        Ok(())
+        })
     }
     fn sampler(
         &mut self,
@@ -292,19 +289,16 @@ impl StateCache {
     ) -> windows::core::Result<()> {
         let device = &inner.device;
         profile_count!(inner, |c| c.cache_requests[1] += 1);
-        let slot = &mut self.sampler[index as usize][state.0 as usize];
-        if *slot != Some(value) {
+        self.set_sampler(index, state.0, value, || {
             // SAFETY: samplers 0/1 and their D3D9 values were checked in caps.
             unsafe {
                 profile_call!(
                     inner,
                     SetSamplerState,
                     device.SetSamplerState(index, state, value)
-                )?;
+                )
             }
-            *slot = Some(value);
-        }
-        Ok(())
+        })
     }
 }
 /// One frame's transient vertices. It owns no DEFAULT resource, so retaining this
@@ -589,6 +583,7 @@ impl Device {
                 #[cfg(feature = "submit-profile")]
                 profile: crate::submit_profile::Profile::default(),
                 stream_sequence: Cell::new(0),
+                texture_states: RefCell::new(TextureStateCache::default()),
                 default_meshes: RefCell::new(Vec::new()),
                 presentation: RefCell::new(None),
                 world: RefCell::new(world_target::State::default()),
@@ -640,6 +635,7 @@ impl Device {
                 "D3D9 stream0_cache enabled={} lifetime=frame invalidate_on_discard=true",
                 software_vertices
             );
+            log::info!("D3D9 texture_state_cache retain_after_present={software_vertices}");
         }
         result.create_indices()?;
         if raw.PixelShaderVersion >= 0xffff_0200
@@ -760,6 +756,7 @@ impl Device {
     }
     /// Reuse a suspended renderer's device while replacing its resource pack.
     pub fn reuse(&self) -> Self {
+        self.inner.texture_states.borrow_mut().invalidate();
         Self {
             inner: self.inner.clone(),
             caps: self.caps.clone(),
@@ -943,6 +940,7 @@ impl Device {
         }
     }
     fn detach_presentation(&self) {
+        self.inner.texture_states.borrow_mut().invalidate();
         // SAFETY: outside BeginScene; restore the implicit target before dropping
         // the additional target. The best-effort path also runs on a lost device.
         unsafe {
@@ -1007,11 +1005,15 @@ impl Device {
         if self.present.BackBufferWidth == 0 || self.present.BackBufferHeight == 0 {
             return Ok(false);
         }
+        self.inner
+            .texture_states
+            .borrow_mut()
+            .begin_frame(crate::development_build() && self.caps.software_vertices && !self.lost);
         // SAFETY: this device is used only by its creating thread.
         let cooperative = unsafe { self.inner.device.TestCooperativeLevel() };
         match cooperative {
             Err(e) if e.code() == D3DERR_DEVICELOST => {
-                self.lost = true;
+                self.mark_lost();
                 return Ok(false);
             }
             Err(e) if e.code() == D3DERR_DEVICENOTRESET => self.reset_pending = true,
@@ -1059,7 +1061,7 @@ impl Device {
                 primary.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE as u32;
                 match self.inner.device.Reset(&mut primary) {
                     Err(e) if e.code() == D3DERR_DEVICELOST => {
-                        self.lost = true;
+                        self.mark_lost();
                         return Ok(false);
                     }
                     Err(e) => return Err(e.into()),
@@ -1085,7 +1087,7 @@ impl Device {
             && let Err(error) = self.create_presentation()
         {
             if is_device_lost(error.as_ref()) {
-                self.lost = true;
+                self.mark_lost();
                 return Ok(false);
             }
             return Err(error);
@@ -1214,13 +1216,14 @@ impl Device {
         Ok(())
     }
     pub fn finish(&mut self) -> Result<bool> {
-        if self.scene {
+        let scene = self.scene;
+        if scene {
             // SAFETY: closes the matching BeginScene, including after a drawing error.
             let ended = unsafe { self.inner.device.EndScene() };
             self.scene = false;
             match ended {
                 Err(e) if e.code() == D3DERR_DEVICELOST || e.code() == D3DERR_DEVICENOTRESET => {
-                    self.lost = true;
+                    self.mark_lost();
                     return Ok(false);
                 }
                 Err(e) => return Err(e.into()),
@@ -1228,7 +1231,7 @@ impl Device {
             }
         }
         // SAFETY: null rectangles present the complete windowed swapchain.
-        match unsafe {
+        let presented = unsafe {
             self.inner
                 .presentation
                 .borrow()
@@ -1236,16 +1239,23 @@ impl Device {
                 .ok_or("D3D9 presentation surface missing")?
                 .chain
                 .Present(ptr::null(), ptr::null(), HWND::default(), ptr::null(), 0)
-        } {
+        };
+        match presented {
             Err(e) if e.code() == D3DERR_DEVICELOST || e.code() == D3DERR_DEVICENOTRESET => {
-                self.lost = true;
+                self.mark_lost();
                 Ok(false)
             }
             Err(e) => Err(e.into()),
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                if scene && crate::development_build() && self.caps.software_vertices {
+                    self.inner.texture_states.borrow_mut().presented();
+                }
+                Ok(true)
+            }
         }
     }
     pub fn cancel_frame(&mut self) {
+        self.inner.texture_states.borrow_mut().invalidate();
         if self.scene {
             // SAFETY: best-effort matching EndScene on an error path; never called twice.
             let _ = unsafe { self.inner.device.EndScene() };
@@ -1257,6 +1267,7 @@ impl Device {
         }
     }
     pub fn mark_lost(&mut self) {
+        self.inner.texture_states.borrow_mut().invalidate();
         self.lost = true;
     }
     pub fn is_lost(&self) -> bool {
@@ -1869,12 +1880,13 @@ impl Device {
         unsafe {
             let d = &self.inner.device;
             let cache = &mut self.state_cache;
+            let mut texture_states = self.inner.texture_states.borrow_mut();
             if cache.textures[0] != texture.raw.as_raw() as usize {
                 profile_call!(self.inner, SetTexture, d.SetTexture(0, &texture.base))?;
                 cache.textures[0] = texture.raw.as_raw() as usize;
                 self.binds += 1;
             }
-            cache.stage(
+            texture_states.stage(
                 &self.inner,
                 0,
                 D3DTSS_COLOROP,
@@ -1885,12 +1897,12 @@ impl Device {
                 }
                 .0 as u32,
             )?;
-            cache.stage(&self.inner, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
-            cache.stage(&self.inner, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
-            cache.stage(&self.inner, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as u32)?;
-            cache.stage(&self.inner, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE)?;
-            cache.stage(&self.inner, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE)?;
-            cache.stage(&self.inner, 0, D3DTSS_TEXCOORDINDEX, 0)?;
+            texture_states.stage(&self.inner, 0, D3DTSS_COLORARG1, D3DTA_TEXTURE)?;
+            texture_states.stage(&self.inner, 0, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
+            texture_states.stage(&self.inner, 0, D3DTSS_ALPHAOP, D3DTOP_MODULATE.0 as u32)?;
+            texture_states.stage(&self.inner, 0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE)?;
+            texture_states.stage(&self.inner, 0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE)?;
+            texture_states.stage(&self.inner, 0, D3DTSS_TEXCOORDINDEX, 0)?;
             let glint_square = state.glint != 0 && self.caps.raw.MaxTextureBlendStages >= 3;
             let lm = if state.lightmap || state.glint != 0 {
                 lightmap
@@ -1904,7 +1916,7 @@ impl Device {
                 cache.textures[1] = light_id;
                 self.binds += 1;
             }
-            cache.stage(
+            texture_states.stage(
                 &self.inner,
                 1,
                 D3DTSS_COLOROP,
@@ -1916,7 +1928,7 @@ impl Device {
                     D3DTOP_DISABLE.0
                 } as u32,
             )?;
-            cache.stage(
+            texture_states.stage(
                 &self.inner,
                 1,
                 D3DTSS_COLORARG1,
@@ -1926,7 +1938,7 @@ impl Device {
                     D3DTA_TEXTURE
                 },
             )?;
-            cache.stage(
+            texture_states.stage(
                 &self.inner,
                 1,
                 D3DTSS_COLORARG2,
@@ -1938,7 +1950,7 @@ impl Device {
                     D3DTA_CURRENT
                 },
             )?;
-            cache.stage(
+            texture_states.stage(
                 &self.inner,
                 2,
                 D3DTSS_COLOROP,
@@ -1950,10 +1962,10 @@ impl Device {
                 .0 as u32,
             )?;
             if glint_square {
-                cache.stage(&self.inner, 2, D3DTSS_COLORARG1, D3DTA_CURRENT)?;
-                cache.stage(&self.inner, 2, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
-                cache.stage(&self.inner, 2, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32)?;
-                cache.stage(&self.inner, 2, D3DTSS_ALPHAARG1, D3DTA_CURRENT)?;
+                texture_states.stage(&self.inner, 2, D3DTSS_COLORARG1, D3DTA_CURRENT)?;
+                texture_states.stage(&self.inner, 2, D3DTSS_COLORARG2, D3DTA_DIFFUSE)?;
+                texture_states.stage(&self.inner, 2, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32)?;
+                texture_states.stage(&self.inner, 2, D3DTSS_ALPHAARG1, D3DTA_CURRENT)?;
             }
             if let Some(hurt) = ffp_hurt {
                 cache.render(&self.inner, D3DRS_TEXTUREFACTOR, rgba_to_argb(hurt))?;
@@ -1964,29 +1976,49 @@ impl Device {
                     cache.textures[2] = id;
                     self.binds += 1;
                 }
-                cache.stage(&self.inner, 2, D3DTSS_COLORARG1, D3DTA_CURRENT)?;
-                cache.stage(&self.inner, 2, D3DTSS_COLORARG2, D3DTA_TEXTURE)?;
-                cache.stage(&self.inner, 2, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32)?;
-                cache.stage(&self.inner, 2, D3DTSS_ALPHAARG1, D3DTA_CURRENT)?;
-                cache.stage(&self.inner, 2, D3DTSS_TEXCOORDINDEX, 1)?;
-                cache.stage(
+                texture_states.stage(&self.inner, 2, D3DTSS_COLORARG1, D3DTA_CURRENT)?;
+                texture_states.stage(&self.inner, 2, D3DTSS_COLORARG2, D3DTA_TEXTURE)?;
+                texture_states.stage(&self.inner, 2, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1.0 as u32)?;
+                texture_states.stage(&self.inner, 2, D3DTSS_ALPHAARG1, D3DTA_CURRENT)?;
+                texture_states.stage(&self.inner, 2, D3DTSS_TEXCOORDINDEX, 1)?;
+                texture_states.stage(
                     &self.inner,
                     2,
                     D3DTSS_TEXTURETRANSFORMFLAGS,
                     D3DTTFF_DISABLE.0 as u32,
                 )?;
-                cache.sampler(&self.inner, 2, D3DSAMP_MINFILTER, D3DTEXF_LINEAR.0 as u32)?;
-                cache.sampler(&self.inner, 2, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR.0 as u32)?;
-                cache.sampler(&self.inner, 2, D3DSAMP_MIPFILTER, D3DTEXF_NONE.0 as u32)?;
-                cache.sampler(&self.inner, 2, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP.0 as u32)?;
-                cache.sampler(&self.inner, 2, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP.0 as u32)?;
+                texture_states.sampler(
+                    &self.inner,
+                    2,
+                    D3DSAMP_MINFILTER,
+                    D3DTEXF_LINEAR.0 as u32,
+                )?;
+                texture_states.sampler(
+                    &self.inner,
+                    2,
+                    D3DSAMP_MAGFILTER,
+                    D3DTEXF_LINEAR.0 as u32,
+                )?;
+                texture_states.sampler(&self.inner, 2, D3DSAMP_MIPFILTER, D3DTEXF_NONE.0 as u32)?;
+                texture_states.sampler(
+                    &self.inner,
+                    2,
+                    D3DSAMP_ADDRESSU,
+                    D3DTADDRESS_CLAMP.0 as u32,
+                )?;
+                texture_states.sampler(
+                    &self.inner,
+                    2,
+                    D3DSAMP_ADDRESSV,
+                    D3DTADDRESS_CLAMP.0 as u32,
+                )?;
             } else if cache.textures[2] != usize::MAX {
                 profile_call!(self.inner, SetTexture, d.SetTexture(2, None))?;
                 cache.textures[2] = usize::MAX;
             }
-            cache.stage(&self.inner, 1, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2.0 as u32)?;
-            cache.stage(&self.inner, 1, D3DTSS_ALPHAARG2, D3DTA_CURRENT)?;
-            cache.stage(&self.inner, 1, D3DTSS_TEXCOORDINDEX, 1)?;
+            texture_states.stage(&self.inner, 1, D3DTSS_ALPHAOP, D3DTOP_SELECTARG2.0 as u32)?;
+            texture_states.stage(&self.inner, 1, D3DTSS_ALPHAARG2, D3DTA_CURRENT)?;
+            texture_states.stage(&self.inner, 1, D3DTSS_TEXCOORDINDEX, 1)?;
             let (src, dst) = match state.blend {
                 Blend::Opaque | Blend::Alpha => (D3DBLEND_SRCALPHA, D3DBLEND_INVSRCALPHA),
                 Blend::Additive => (D3DBLEND_SRCALPHA, D3DBLEND_ONE),
@@ -2080,26 +2112,26 @@ impl Device {
             }
             let fog_mode = mode.and_then(PixelProgram::fog);
             if fog_mode.is_some_and(crate::FogProgram::position) {
-                cache.stage(
+                texture_states.stage(
                     &self.inner,
                     2,
                     D3DTSS_TEXCOORDINDEX,
                     D3DTSS_TCI_CAMERASPACEPOSITION | 2,
                 )?;
-                cache.stage(
+                texture_states.stage(
                     &self.inner,
                     2,
                     D3DTSS_TEXTURETRANSFORMFLAGS,
                     D3DTTFF_COUNT3.0 as u32,
                 )?;
             } else if self.fog_shader.is_some() && ffp_hurt.is_none() {
-                cache.stage(
+                texture_states.stage(
                     &self.inner,
                     2,
                     D3DTSS_TEXTURETRANSFORMFLAGS,
                     D3DTTFF_DISABLE.0 as u32,
                 )?;
-                cache.stage(&self.inner, 2, D3DTSS_TEXCOORDINDEX, 2)?;
+                texture_states.stage(&self.inner, 2, D3DTSS_TEXCOORDINDEX, 2)?;
             }
             let shader_fog = fog_mode.is_some();
             if shader_fog && self.fog_constants != state.fog {
@@ -2149,7 +2181,7 @@ impl Device {
                     D3DTEXF_POINT
                 };
                 let anisotropic = sampler == 0 && state.linear && self.anisotropy > 1;
-                cache.sampler(
+                texture_states.sampler(
                     &self.inner,
                     sampler,
                     D3DSAMP_MINFILTER,
@@ -2159,14 +2191,14 @@ impl Device {
                         filter.0 as u32
                     },
                 )?;
-                cache.sampler(
+                texture_states.sampler(
                     &self.inner,
                     sampler,
                     D3DSAMP_MAXANISOTROPY,
                     if anisotropic { self.anisotropy } else { 1 },
                 )?;
-                cache.sampler(&self.inner, sampler, D3DSAMP_MAGFILTER, filter.0 as u32)?;
-                cache.sampler(
+                texture_states.sampler(&self.inner, sampler, D3DSAMP_MAGFILTER, filter.0 as u32)?;
+                texture_states.sampler(
                     &self.inner,
                     sampler,
                     D3DSAMP_MIPFILTER,
@@ -2188,8 +2220,8 @@ impl Device {
                 } else {
                     D3DTADDRESS_CLAMP
                 };
-                cache.sampler(&self.inner, sampler, D3DSAMP_ADDRESSU, address.0 as u32)?;
-                cache.sampler(&self.inner, sampler, D3DSAMP_ADDRESSV, address.0 as u32)?;
+                texture_states.sampler(&self.inner, sampler, D3DSAMP_ADDRESSU, address.0 as u32)?;
+                texture_states.sampler(&self.inner, sampler, D3DSAMP_ADDRESSV, address.0 as u32)?;
             }
         }
         Ok(())
