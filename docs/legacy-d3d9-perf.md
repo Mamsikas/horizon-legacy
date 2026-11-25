@@ -2091,3 +2091,34 @@ uses the same atlas geometry on FFP and hardware VS2.
 Compare the walk's dynamic convert span to E walk2 at comparable
 submitted vertices and compare overall frame-time tails. Standing
 also exercises the shared atlas path through the HUD.
+
+### Windows 7 packages for atlas UV conversion
+
+[Run 45645322017](https://github.com/Mamsikas/horizon-legacy/actions/runs/45645322017) built H
+at `7d14444711e3625997c103c935cd4fbde9a15462` on `dx9-dev`. Both builds
+passed the Win7 import audits, 15 import-policy tests per architecture,
+and the DX9 CPU resource and embedded SM2 checks. Local Windows client
+checks passed on dev x64 and x86 and ordinary x64. The host passed
+34 dev and 32 ordinary backend tests. Three targeted atlas tests passed
+against both conversion paths.
+
+A host replay used the two live mapping routines on 294,912 quads
+per timed sample, with ordinary and clipped UVs on each layout.
+Each pair emitted matching page and UV hashes. The hot mapper's
+x64 assembly uses two integer division sites and one packed float
+division site, compared with eight and four on E. The host median
+times are 22.03 to 21.80 ms on the shared pages and 22.32 to 22.76 ms
+on the compact page. These changes are within the sample spread.
+Native GMA CPU time, frame pacing and graphics remain hardware checks.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| H x64 | [15037214435](https://github.com/Mamsikas/horizon-legacy/actions/runs/45645322017/artifacts/15037214435) | `0286eb828fec3cdf5bf2ad971a18d47855e01a5382671b80e06ab12ed25b1792` |
+| H x86 | [15040415355](https://github.com/Mamsikas/horizon-legacy/actions/runs/45645322017/artifacts/15040415355) | `1e2997faa714f1cda5ad2c1b5d74d5fce99600d07d45013f0cb9145f729f4765` |
+
+Record the same 300-second walk and 180-second standing on H x64
+with `latest.log`. Compare to the existing `E_walk2.hzperf` and
+`E_stand.hzperf`. The main comparison is dynamic entity conversion
+at comparable submitted geometry, with the GUI and whole-frame
+times as regression checks. Native checks on GMA3150 and HD4570
+are pending.
