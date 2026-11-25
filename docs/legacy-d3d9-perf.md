@@ -1984,3 +1984,27 @@ same GMA route, compare that arrival cost, solid counts, ranges'
 NumVertices, solid wall time and frame tails to E walk2. Standing
 is a regression check. The CPU cases check byte-identical source
 slices, stable material order, and original-layout fallbacks.
+
+### Windows 7 packages for first-upload material packing
+
+[Run 45619586052](https://github.com/Mamsikas/horizon-legacy/actions/runs/45619586052) built G
+at `9d042bbfa4efd8c26c136bc36797cb7712319c27` on `dx9-dev`.
+Both packages passed the executable import audit, 15 import-policy
+tests per architecture, and the CPU resource and embedded SM2 checks.
+Local checks covered dev x64 and x86 and ordinary x64. The host passed
+34 dev and 32 ordinary DX9 tests. Four targeted material tests covered
+exact byte mapping, fallback for incomplete or noncontiguous arrivals
+and draw order under different visibility and fog masks.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| G x64 | [15026686277](https://github.com/Mamsikas/horizon-legacy/actions/runs/45619586052/artifacts/15026686277) | `67e09be5ac25f12488b08995b624e59d07ea49b7d70fe9174fadb9023712d807` |
+| G x86 | [15027301332](https://github.com/Mamsikas/horizon-legacy/actions/runs/45619586052/artifacts/15027301332) | `5c0ebc9c6fbaef9467f1526a92a9c58fc30c57b5d2c47f6090f52d25b8e9ddc7` |
+
+Use G x64 with the existing E x64 control recordings. Record the
+same 300-second walk and 180-second standing, plus `latest.log`.
+The log identifies G by `source_sha` and reports
+`material_packed_pages_total`. Compare solid and arrival wall time
+together with draw counts, range vertices and frame tails.
+Native GMA3150 and HD4570 rendering, resize and Reset remain to be
+checked. The package checks establish Win7 imports and build coverage.
