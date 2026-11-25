@@ -1525,9 +1525,67 @@ checks also passed for dev x64 and x86 and ordinary x64.
 
 | Package | Artifact | GitHub ZIP SHA256 |
 | --- | --- | --- |
-+| D x64 | [14938616921](https://github.com/Mamsikas/horizon-legacy/actions/runs/45425376467/artifacts/14938616921) | `47fec4f56d3559ab3bca09c7849a46aca67566c674f57ab8d37f97cbef7564d2` |
+| D x64 | [14938616921](https://github.com/Mamsikas/horizon-legacy/actions/runs/45425376467/artifacts/14938616921) | `47fec4f56d3559ab3bca09c7849a46aca67566c674f57ab8d37f97cbef7564d2` |
 | D x86 | [14937711614](https://github.com/Mamsikas/horizon-legacy/actions/runs/45425376467/artifacts/14937711614) | `2a05a298888b63d7ee5ff74b0385c0809c7bf9e898476678d00e729caa64c1f1` |
 
 Use the existing C x64 walk as the control and record the same route
 with D x64. Keep the dev diagnostics and attach the client profile and
 latest log. The C x64 package remains available from [run 45160459036](https://github.com/Mamsikas/horizon-legacy/actions/runs/45160459036/artifacts/14813745736).
+
+### GMA FFP shadow decode result, 2026-11-25
+
+`profile-20261125-085014Z.hzperf` is the walk and
+`profile-20261125-084745Z.hzperf` is standing. `latest (6).log`
+identifies clean D `3f6bb578c2ea8e3b08491277c7010733a4ebe0d8`, with
+the same x64 toolchain, GMA3150 Chell 1.8b HAL SWVP, 1024×600 RGB565,
+FFP32 and PS2 as C. The recorded options match for each scene.
+
+| Metric | C | D |
+| --- | ---: | ---: |
+| Walk seconds / frames | 152.893 / 2171 | 152.692 / 2208 |
+| Walk FPS | 14.199 | 14.461 |
+| Walk DX9 wall, ms/frame | 51.995 | 51.432 |
+| Walk solid wall, ms/frame | 29.988 | 29.637 |
+| Walk frame p50 / p95 / p99, ms | 67.13 / 108.21 / 153.02 | 66.37 / 106.38 / 150.04 |
+| Walk slowest 1% mean, ms | 196.04 | 201.67 |
+| Walk solid indexed draws/frame | 160.88 | 159.10 |
+| Walk solid indexed NumVertices/frame | 85,698 | 85,239 |
+| Walk entities wall, ms/frame | 9.426 | 9.257 |
+| Walk dynamic entity indexed NumVertices/frame | 8,715 | 8,555 |
+| Standing FPS, common first 115 s | 37.974 | 35.870 |
+| Standing solid indexed draws/frame | 30 | 32 |
+| Standing slowest 1% mean, whole capture, ms | 60.97 | 76.90 |
+
+Timing rows use whole captures unless stated. Draw and vertex rows use
+whole native log windows. On the common first 150 seconds of walk, FPS
+was 14.180 → 14.460 and solid draw wall was 29.872 → 29.521 ms/frame.
+Control A was 13.993 FPS and 31.569 ms/frame for solid on that interval.
+C and D had 23 of 185 and 25 of 200 frames over 125 ms during seconds
+15–30. Both captures have their longest isolated frame near 39.3 s.
+
+The entity stage accounted for 13.39% of walk frame time in both C and
+D. The once-per-second entity counter had a median of 86 in both runs.
+Dynamic submit nevertheless used 8,715 → 8,555 indexed vertices and
+6.19 → 5.95 draws/frame. In the earlier A/B walk over 150 seconds,
+entities rose from 9.330 to 9.558 ms/frame. A symmetric weighting of
+the five-second blocks assigns 0.10 ms of that delta to the differing
+frame counts across blocks and 0.13 ms to the times within blocks.
+Blocks align by elapsed time. Visibility, geometry, draw state and
+driver waits can vary within them.
+
+D logged 135 planned material-compaction jobs in 29 full walk
+windows. Decode appended 177.84 MiB of encoded vertices in 2.94 s of
+elapsed worker time, averaging 21.78 ms/job with a 41.59 ms maximum.
+This runs alongside the frame thread. C has no matching worker timer.
+Standing had no collected material-decode jobs in its full windows,
+with 24,624 advertised solid vertices/frame in both builds and four
+versus five packed arenas. Two D standing frames took 614 and 430 ms
+with renderer spans of 28 and 32 ms. The standing result records
+both the lower mean FPS and the larger isolated spikes.
+
+There were zero aborted frames or recorded COM failures in the
+selected windows. GPU timestamps were absent. Retain the byte-exact
+decode change in dev. The walk mean improved in this pair and the
+slowest frames still need attention. The captures cannot isolate an
+FPS gain from D's decode change. Native visual, resize, Reset and
+HD4570 coverage is still open.
