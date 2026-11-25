@@ -1887,3 +1887,52 @@ Use `E_walk2.hzperf` and `E_stand.hzperf` as the controls for
 F x64. Capture 300 seconds of the same walk, 180 seconds standing,
 and the log. The F startup line reads
 `D3D9 texture_state_cache retain_after_present=true` on dev SWVP.
+
+### GMA texture-state reuse result and rollback, 2026-11-25
+
+The F log identifies the clean F SHA above and matches both capture
+starts. E and F use GMA3150 Chell 1.8b, HAL SWVP, FFP32, Win7 x64,
+RGB565 and 1024×600. The captures expose the same recorded settings.
+E walk2 is the full route control.
+
+| GMA metric | E | F |
+| --- | ---: | ---: |
+| Walk seconds / frames | 299.129 / 4487 | 298.944 / 4347 |
+| Walk FPS | 15.000 | 14.541 |
+| Walk DX9 wall, ms/frame | 49.507 | 50.953 |
+| Walk solid wall, ms/frame | 28.641 | 29.327 |
+| Walk entities / translucent / GUI wall, ms/frame | 8.907 / 3.235 / 4.684 | 9.265 / 3.358 / 4.813 |
+| Walk frame p50 / p95 / p99, ms | 64.99 / 99.77 / 119.52 | 66.31 / 104.09 / 126.51 |
+| Walk slowest 1% mean, ms | 146.46 | 170.05 |
+| Walk sampler / TSS calls per frame | 39.60 / 76.96 | 28.68 / 58.20 |
+| Walk solid sampler / TSS calls per frame | 12 / 16 | 1 / 1 |
+| Walk solid indexed draws / NumVertices per frame | 161.81 / 85,971 | 163.41 / 86,254 |
+| Standing seconds / frames | 180.641 / 7438 | 179.864 / 7076 |
+| Standing FPS | 41.176 | 39.341 |
+| Standing DX9 / solid / translucent wall, ms/frame | 20.001 / 8.977 / 7.324 | 20.963 / 9.382 / 7.694 |
+| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [30,40) | [20,25) / [30,40) / [40,50) |
+| Standing slowest 1% mean, ms | 42.15 | 51.35 |
+| Standing sampler / TSS calls per frame | 13 / 19 | 2 / 4 |
+
+There were 58 full log windows per walk (4,387 E and 4,255 F frames)
+and 35 E and 34 F standing windows. No COM failures or aborted
+frames were recorded. The setter reduction is reproducible in the
+log. The observed frame and DX9 wall times worsened in both scenes.
+Standing advertised 24,624 solid and 20,084 translucent vertices in
+both tests, with 29 versus 31 solid draws and 1.00 versus 3.13 GUI
+DrawPrimitive calls. Its median complete-window FPS was 44.90 versus
+44.06. The larger mean difference includes several slower windows.
+
+The first 30 seconds of walk show 13.53 versus 12.27 FPS and 52.25
+versus 57.89 ms DX9 wall. The 145–295 second segment shows 14.99
+versus 14.85 FPS and 49.57 versus 49.88 ms, with p99 improving from
+114.65 to 112.18 ms over that segment. On the common first 295 seconds,
+omitting any one 15-second segment still leaves F down by 0.31–0.50 FPS.
+The earlier two E walks differ by 0.55 FPS over their common first
+145 seconds before the reported interruption. Time-aligned five-second
+windows rarely matched both solid ranges and entity geometry closely.
+Renderer wall includes driver work and possible waits. The aggregate
+counters and sampled thread time cannot price the skipped setters or
+assign the slowdown to the cache itself. F has no measured benefit
+that offsets its slower recordings, so restore E's per-frame sampler
+and texture-stage setup for the next trial.
