@@ -2309,3 +2309,33 @@ Use H walk and standing as controls. Compare the native probe and
 bind counts, geometry, pass wall and frame tails. The experiment
 reduces CPU-side checks. It uses the existing transparency order
 and alpha behavior.
+
+### Windows 7 packages for texture-only state changes
+
+[Run 45661402530](https://github.com/Mamsikas/horizon-legacy/actions/runs/45661402530) built J
+at `2499512de794dc242c91334b59b3fac565356315` on `dx9-dev`. Both packages
+passed the Win7 executable import audit, 15 import-policy tests per
+architecture, and the CPU resource and embedded SM2 tests. Local
+Win7 client checks passed for dev x64 and x86 and ordinary x64.
+The host passed 34 dev and 32 ordinary DX9 tests.
+
+A CPU replay of both live state routines matched 98,304 modeled
+native state snapshots with identical texture-bind counts. The
+trace covers SWVP and HW VP, two or three texture stages, pixel
+and fixed-function fog, auxiliary texture replacement, hurt and
+scissor, glint, invalidations and anisotropy changes. A separate
+failure case checks that an unsuccessful bind cannot publish
+a reusable key. Driver time, rendering and Reset behavior
+remain native hardware checks.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| J x64 | [15046843298](https://github.com/Mamsikas/horizon-legacy/actions/runs/45661402530/artifacts/15046843298) | `7a801d6f59884903ad5ed0291f17fcf4d1ca91622170510305b9685e6e3aa807` |
+| J x86 | [15045798884](https://github.com/Mamsikas/horizon-legacy/actions/runs/45661402530/artifacts/15045798884) | `79fc75ce6f0793b8b7ce2b37c37526c6383dff495a37996a1072e0e08afe4bc8` |
+
+For GMA compare with the existing H x64 walk and standing. Record
+the same 300-second walk and 180-second standing on J x64 and
+include `latest.log`. Use `base_texture_only`, cache probe counts
+and actual texture binds to validate the mechanism. Compare pass
+wall times and frame distributions. Native smoke on HD4570 and
+native GMA visual checks remain open.
