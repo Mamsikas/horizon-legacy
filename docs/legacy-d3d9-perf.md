@@ -1589,3 +1589,27 @@ decode change in dev. The walk mean improved in this pair and the
 slowest frames still need attention. The captures cannot isolate an
 FPS gain from D's decode change. Native visual, resize, Reset and
 HD4570 coverage is still open.
+
+#### Sensitivity to route segments
+
+Use the first 150 seconds and sum the three sibling terrain spans
+`solid`, `cache` and `indices/cold draws`. The overall result divides
+total stage wall time by total frames. Recalculate it ten times,
+omitting the same 15-second segment from both captures each time.
+
+| Pair | Delta, ms/frame | Improved segments | Delta range with one segment omitted, ms/frame |
+| --- | ---: | ---: | ---: |
+| A → B, face bounds | −0.143 | 7/10 | −0.505 to +0.083 |
+| A → C, material packing | −1.669 | 9/10 | −2.377 to −1.444 |
+| C → D, shadow decode | −0.348 | 8/10 | −0.400 to −0.291 |
+
+The interval check tests dependence on a single segment within these
+runs. Independent repeats measure run-to-run variation. Preserve both
+candidate and control SHAs for close results. Judge those changes
+using another paired run when the choice matters. Use per-pass draw
+and vertex counts to verify the mechanism, and the full distributions
+from both scenes to judge FPS and frame pacing. B's average terrain
+effect is inconclusive. C's reduction in submitted draw calls also
+appears at constant submitted vertices in standing. D changes worker
+decode and reporting. Its entity-stage timings describe scene and
+timing variation observed across C and D.
