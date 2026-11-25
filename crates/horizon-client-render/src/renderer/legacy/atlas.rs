@@ -312,6 +312,7 @@ pub(super) struct Pixels {
 }
 struct PixelPages {
     side: u32,
+    inverse_side: f32,
     compact: Option<CompactSlots>,
     locations: Vec<Option<(usize, u32, u32)>>,
     pages: Vec<Option<dx::Texture>>,
@@ -404,6 +405,8 @@ impl CompactSlots {
 
 impl PixelPages {
     fn new(image: &dx::TileImage, side: u32, single_page: bool) -> Result<Self> {
+        // Both layouts allocate power-of-two pages, so the reciprocal is exact.
+        debug_assert!(side.is_power_of_two());
         let mut locations = Vec::new();
         let mut dirty = Vec::new();
         let mut pending = Vec::new();
@@ -422,6 +425,7 @@ impl PixelPages {
         };
         Ok(Self {
             side,
+            inverse_side: (side as f32).recip(),
             compact,
             locations,
             pages,
@@ -709,6 +713,8 @@ impl<'a> PixelView<'a> {
         let mut compact = self.compact.map(RefCell::borrow_mut);
         let image = self.image;
         let tile = image.tile;
+        debug_assert!(tile.is_power_of_two());
+        let tile_shift = tile.trailing_zeros();
         let min = std::array::from_fn::<_, 2, _>(|k| {
             input
                 .iter()
@@ -724,13 +730,18 @@ impl<'a> PixelView<'a> {
                 .clamp(0.0, 1.0)
         });
         let axis = [image.width, image.height];
-        let start = std::array::from_fn::<_, 2, _>(|k| {
-            ((min[k] * axis[k] as f32) as u32 / tile).min(axis[k].div_ceil(tile) - 1)
-        });
+        let tile_counts = [image.columns, image.rows];
+        let tile_at = |texel: u32, axis_index: usize| {
+            if dx::development_build() {
+                (texel >> tile_shift).min(tile_counts[axis_index] - 1)
+            } else {
+                (texel / tile).min(axis[axis_index].div_ceil(tile) - 1)
+            }
+        };
+        let start =
+            std::array::from_fn::<_, 2, _>(|k| tile_at((min[k] * axis[k] as f32) as u32, k));
         let end = std::array::from_fn::<_, 2, _>(|k| {
-            (((max[k] * axis[k] as f32).ceil().max(1.0) as u32 - 1) / tile)
-                .min(axis[k].div_ceil(tile) - 1)
-                .max(start[k])
+            tile_at((max[k] * axis[k] as f32).ceil().max(1.0) as u32 - 1, k).max(start[k])
         });
         for y in start[1]..=end[1] {
             for x in start[0]..=end[0] {
@@ -738,15 +749,15 @@ impl<'a> PixelView<'a> {
                 if !image.present(id) {
                     continue;
                 }
-                let (page, ox, oy, side) = compact
+                let (page, ox, oy, side, inverse_side) = compact
                     .as_mut()
                     .and_then(|s| {
                         s.place(image, id)
-                            .map(|(_, x, y)| (ENTITY_PAGE, x, y, s.side))
+                            .map(|(_, x, y)| (ENTITY_PAGE, x, y, s.side, s.inverse_side))
                     })
                     .unwrap_or_else(|| {
                         let (page, x, y) = main.place(image, id).unwrap();
-                        (page, x, y, main.side)
+                        (page, x, y, main.side, main.inverse_side)
                     });
                 let mut polygon: smallvec::SmallVec<[dx::Vertex; 8]> = if start == end {
                     smallvec::SmallVec::from_slice(input)
@@ -766,16 +777,25 @@ impl<'a> PixelView<'a> {
                 if polygon.len() < 3 {
                     continue;
                 }
+                let normalize = |texel: f32| {
+                    if dx::development_build() {
+                        texel * inverse_side
+                    } else {
+                        texel / side as f32
+                    }
+                };
                 for v in &mut polygon {
                     v.uv = [
-                        (v.uv[0] * image.width as f32 - x as f32 * tile as f32
-                            + ox as f32
-                            + image.padding as f32)
-                            / side as f32,
-                        (v.uv[1] * image.height as f32 - y as f32 * tile as f32
-                            + oy as f32
-                            + image.padding as f32)
-                            / side as f32,
+                        normalize(
+                            v.uv[0] * image.width as f32 - x as f32 * tile as f32
+                                + ox as f32
+                                + image.padding as f32,
+                        ),
+                        normalize(
+                            v.uv[1] * image.height as f32 - y as f32 * tile as f32
+                                + oy as f32
+                                + image.padding as f32,
+                        ),
                     ];
                 }
                 emit(page, &polygon);
@@ -787,6 +807,54 @@ impl<'a> PixelView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_uvs_match_division_for_fractional_texel_positions() {
+        let image = dx::TileImage::new(&[255; 17 * 13 * 4], 17, 13, 8, 1).unwrap();
+        let pixels = Pixels {
+            width: 17,
+            height: 13,
+            main: RefCell::new(PixelPages::new(&image, 16, false).unwrap()),
+            entities: Some(RefCell::new(PixelPages::new(&image, 32, true).unwrap())),
+            image,
+        };
+        let quad = |left, right| {
+            [[left, 0.13], [right, 0.13], [right, 0.52], [left, 0.52]].map(|uv| dx::Vertex {
+                pos: [0.0; 3],
+                uv,
+                color: 0xffffffff,
+                light: [0.5; 2],
+            })
+        };
+        for (view, side, pages, offset) in [
+            (pixels.view(), 16.0, [0, 1], 0.0),
+            (pixels.entity_view().unwrap(), 32.0, [ENTITY_PAGE; 2], 10.0),
+        ] {
+            let mut draws = 0;
+            view.polygon(&quad(0.14, 8.0 / 17.0), |page, vertices| {
+                assert_eq!(page, pages[0]);
+                assert_eq!(vertices.len(), 4);
+                draws += 1;
+            });
+            assert_eq!(draws, 1);
+            let input = quad(0.52, 0.84);
+            let mut draws = 0;
+            view.polygon(&input, |page, vertices| {
+                assert_eq!(page, pages[1]);
+                assert_eq!(vertices.len(), input.len());
+                for (vertex, source) in vertices.iter().zip(input) {
+                    let old_u = (source.uv[0] * 17.0 - 8.0 + offset + 1.0) / side;
+                    let old_v = (source.uv[1] * 13.0 + 1.0) / side;
+                    assert_eq!(
+                        vertex.uv.map(f32::to_bits),
+                        [old_u, old_v].map(f32::to_bits)
+                    );
+                }
+                draws += 1;
+            });
+            assert_eq!(draws, 1);
+        }
+    }
 
     #[test]
     fn compact_page_keeps_seam_texels_and_falls_back_when_full() {

@@ -2057,3 +2057,37 @@ cannot establish a packing-related standing slowdown.
 Restore E's bulk upload layout. The draw count fell, while the
 timings show no sustained renderer or frame-time benefit. Resident
 material compaction remains the measured baseline.
+
+### Reuse the DX9 atlas dimensions in UV conversion
+
+On GMA G's walk spends 4.40 ms/frame in
+`d3d9_dynamic_entity_convert` and 3.64 ms/frame in dynamic submit.
+The native dynamic pass advertises 8,573 indexed vertices and
+5.89 draws per frame. Recent terrain experiments reduced draw
+counts while overall frame time stayed close to the control.
+The next trial targets arithmetic in the existing DX9 atlas mapper.
+Horizon wgpu's `entity.wgsl` can use base atlas UVs directly on its
+ordinary entity path. DX9 must map from the shared virtual image to
+resident physical pages. Its sprite path already stores a page
+reciprocal in `AtlasUv`.
+
+In `legacy/atlas.rs`, dev `PixelView::polygon` uses the existing
+tile grid dimensions and shifts by the base-two exponent of its
+tile size. Integer truncation and clamping remain exact. The
+final normalization of physical coordinates multiplies by a
+reciprocal computed once per `PixelPages` layout. Each physical
+side is a power of two. Multiplying by this exact reciprocal
+preserves the bits of the prior division for finite coordinates.
+Virtual image dimensions can be arbitrary. The clipped polygon
+bounds still use their original calculations.
+
+The patch adds one f32 per physical layout, with the value rebuilt
+when the layout is created. The main-atlas fallback uses the main
+page scale. Test fixtures exercise fractional texels in a 17×13
+virtual image, exclusive upper tile boundaries, clipping seams,
+placement on both layouts, and fallback when compact slots are full.
+The experiment is selected by the existing dev build. The code
+uses the same atlas geometry on FFP and hardware VS2.
+Compare the walk's dynamic convert span to E walk2 at comparable
+submitted vertices and compare overall frame-time tails. Standing
+also exercises the shared atlas path through the HUD.
