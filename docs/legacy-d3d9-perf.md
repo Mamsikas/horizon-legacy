@@ -2008,3 +2008,52 @@ The log identifies G by `source_sha` and reports
 together with draw counts, range vertices and frame tails.
 Native GMA3150 and HD4570 rendering, resize and Reset remain to be
 checked. The package checks establish Win7 imports and build coverage.
+
+### GMA first-upload material packing result and rollback, 2026-11-25
+
+`G.log` identifies the clean G x64 SHA above, GMA3150 Chell 1.8b,
+HAL SWVP FFP32, 1024×600 and RGB565. Its profiler starts match
+`G_stand.hzperf` and `G_walk.hzperf`. Measurements use the recorded
+intervals, after the owner waited for the server ping to settle.
+The recorded settings match E.
+
+| GMA metric | E | G |
+| --- | ---: | ---: |
+| Walk seconds / frames | 299.129 / 4487 | 300.017 / 4489 |
+| Walk FPS | 15.000 | 14.962 |
+| Walk DX9 wall, ms/frame | 49.507 | 49.580 |
+| Walk solid wall, ms/frame | 28.641 | 28.437 |
+| Walk arrival uploads, ms/frame | 0.287 | 0.351 |
+| Walk first-upload material packing, ms/frame | — | 0.062 |
+| Walk frame p50 / p95 / p99, ms | 64.99 / 99.77 / 119.52 | 64.46 / 100.89 / 122.32 |
+| Walk slowest 1% mean, ms | 146.46 | 155.98 |
+| Walk solid indexed draws/frame | 161.81 | 146.45 |
+| Walk solid indexed NumVertices/frame | 85,971 | 86,722 |
+| Standing seconds / frames | 180.641 / 7438 | 183.361 / 7302 |
+| Standing FPS | 41.176 | 39.823 |
+| Standing DX9 / solid / translucent wall, ms/frame | 20.001 / 8.977 / 7.324 | 20.674 / 9.314 / 7.578 |
+| Standing solid indexed draws / NumVertices per frame | 29 / 24,624 | 30 / 24,624 |
+| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [30,40) | [20,25) / [30,40) / [30,40) |
+| Standing slowest 1% mean, ms | 42.15 | 50.46 |
+
+G's first and last complete walk windows track 1,360 new pages and
+571 material-packed uploads. The median resident arena count is 22
+in both walks, with 10 packed in E and 16 in G. Counts use 58 complete
+E and 59 G windows. These show 9.5% fewer solid draw calls with 0.9%
+more advertised vertices. Measured render-thread busy time is 93.7%
+and 93.9% of the respective walk intervals. There were zero aborted
+frames and no recorded COM failures. Hardware GPU timestamps are
+unavailable on these recordings.
+
+The first 30 seconds gain 0.67 FPS and 1.97 ms/frame of solid wall.
+Over seconds 30–295 the solid saving is 0.062 ms/frame, alongside
+0.061 ms/frame more arrival time. Over the common first 295 seconds,
+omitting any one 15-second segment leaves an FPS change of
+−0.16 to +0.05. G's standing has no arrivals or compaction during
+the capture. It makes one more solid draw per frame, and there is
+frame-to-frame timing variation in other passes. These results
+cannot establish a packing-related standing slowdown.
+
+Restore E's bulk upload layout. The draw count fell, while the
+timings show no sustained renderer or frame-time benefit. Resident
+material compaction remains the measured baseline.

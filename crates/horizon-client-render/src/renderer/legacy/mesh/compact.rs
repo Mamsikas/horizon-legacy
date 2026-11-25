@@ -4,6 +4,7 @@ use super::*;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
+mod materials;
 
 type Snapshot = (SectionKey, u64, Arc<dx::MeshData>);
 pub(super) struct Job {

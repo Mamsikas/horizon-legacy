@@ -105,45 +105,6 @@ pub(super) fn pack(
     Some((output, parts))
 }
 
-/// A page assembled from current, complete sections can use the same material
-/// layout as resident compaction. A split section or a stale part leaves the
-/// original page in place, including its existing source-to-buffer offsets.
-pub(super) fn pack_arrival<'a, K: Copy>(
-    encoded: &dx::EncodedVertices,
-    parts: &[dx::UploadPart<K>],
-    section: impl Fn(K) -> (usize, &'a [Packet]),
-) -> Option<(dx::EncodedVertices, Vec<dx::UploadPart<K>>)> {
-    if parts.len() < 2 || parts.len() > MAX_RANGES {
-        return None;
-    }
-    let mut sources = smallvec::SmallVec::<[(usize, &[Packet]); 8]>::new();
-    sources.try_reserve(parts.len()).ok()?;
-    let mut offset = 0;
-    for part in parts {
-        let (len, packets) = section(part.key);
-        if part.first as usize != offset
-            || part.source.start != 0
-            || part.source.end as usize != len
-        {
-            return None;
-        }
-        offset = offset.checked_add(len)?;
-        sources.push((len, packets));
-    }
-    if offset != encoded.len() {
-        return None;
-    }
-    let (vertices, ranges) = pack(encoded, plan(sources.into_iter())?)?;
-    let mut mapped = Vec::new();
-    mapped.try_reserve_exact(ranges.len()).ok()?;
-    mapped.extend(ranges.into_iter().map(|part| dx::UploadPart {
-        key: parts[part.key].key,
-        first: part.first,
-        source: part.source,
-    }));
-    Some((vertices, mapped))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,56 +178,5 @@ mod tests {
             .map(|i| packet(i as u32 * 4, 0, true))
             .collect::<Vec<_>>();
         assert!(plan([(MAX_RANGES * 4, too_many.as_slice())].into_iter()).is_none());
-    }
-
-    #[test]
-    fn first_upload_packs_only_whole_pages_with_current_sections() {
-        let first = [packet(0, 0, true), packet(4, 0, false), packet(8, 0, true)];
-        let second = [packet(0, 1, true), packet(4, 0, true)];
-        let original = input();
-        let lookup = |key| match key {
-            (9, 11) => (16, first.as_slice()),
-            (4, 15) => (12, second.as_slice()),
-            _ => unreachable!(),
-        };
-        let mut parts = [
-            dx::UploadPart {
-                key: (9, 11),
-                first: 0,
-                source: 0..16,
-            },
-            dx::UploadPart {
-                key: (4, 15),
-                first: 16,
-                source: 0..12,
-            },
-        ];
-        let (encoded, packed) = pack_arrival(&original, &parts, lookup).unwrap();
-        assert_eq!(encoded.len(), original.len());
-        let stride = original.encoding().stride();
-        let mut source_offset = [0, 16];
-        for part in packed {
-            let i = usize::from(part.key == (4, 15));
-            assert_eq!(part.key, parts[i].key);
-            assert_eq!(source_offset[i], parts[i].first + part.source.start);
-            let dest = part.first as usize * stride;
-            let src = source_offset[i] as usize * stride;
-            let bytes = part.source.len() * stride;
-            assert_eq!(
-                &encoded.bytes()[dest..dest + bytes],
-                &original.bytes()[src..src + bytes]
-            );
-            source_offset[i] += part.source.len() as u32;
-        }
-        assert_eq!(source_offset, [16, 28]);
-
-        // A dropped stale part leaves a hole; a section split between native
-        // pages has incomplete coverage. Both use their original offsets.
-        assert!(pack_arrival(&original, &parts[1..], lookup).is_none());
-        parts[0].source.end = 12;
-        assert!(pack_arrival(&original, &parts, lookup).is_none());
-        parts[0].source.end = 16;
-        parts[1].first += 4;
-        assert!(pack_arrival(&original, &parts, lookup).is_none());
     }
 }
