@@ -2203,3 +2203,29 @@ the dynamic submit span to H walk, plus vertices, draw counts,
 frame-time percentiles and visible glint on enchanted equipment.
 Standing is the frame-pacing control. The CPU fixture checks
 complete slices, limits and tight ranges at a non-aligned ring base.
+
+### Windows 7 packages for dynamic glint staging
+
+[Run 45651997606](https://github.com/Mamsikas/horizon-legacy/actions/runs/45651997606) built I
+at `4912a445d900684a4af56a3cd6b238848140e8ff` on `dx9-dev`.
+Both builds passed the Win7 import audits, 15 import-policy tests
+per architecture, and the DX9 CPU resource and embedded SM2 tests.
+Local client checks passed for dev x64 and x86 and ordinary x64.
+The DX9 host suites passed 35 dev and 33 ordinary tests. A separate
+CPU replay of the renderer foil path used a mock device to check
+the same ordered states, masks and payloads with a skipped page,
+a capacity fallback, a failed lock, and device loss.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| I x64 | [15042014477](https://github.com/Mamsikas/horizon-legacy/actions/runs/45651997606/artifacts/15042014477) | `5f32f0afc72ca872e3064848ea6cc274f492f9082b39d6d148e0f41e643d8252` |
+| I x86 | [15043635529](https://github.com/Mamsikas/horizon-legacy/actions/runs/45651997606/artifacts/15043635529) | `6b01c77a3fdbf2349d684497f0873a4659ff3fc072d09b796e959fc510045540` |
+
+Use the H recordings as the controls for I x64. Record the same
+300-second walk and 180-second standing with `latest.log`. In H,
+the five-second windows ending near 36, 121 and 182 seconds make
+31–32 dynamic VB locks per frame. Near 121 seconds the dynamic
+pass takes 20.83 ms/frame. Compare similar glint workload and the
+new lock counters together with submit wall time. Verify enchanted
+items and armor on the native GMA device. Native frame times,
+visuals, resize and Reset checks on GMA and HD4570 remain hardware work.
