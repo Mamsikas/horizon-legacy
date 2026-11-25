@@ -2281,3 +2281,31 @@ Standing submitted zero dynamic vertices and zero dynamic locks
 in both builds. The captures cannot attribute its slowdown to glint.
 Restore the H code. The experiment reduced native locks substantially
 and did not show a sustained timing gain to justify adoption.
+
+### Reuse draw state when only the base texture changes
+
+The H standing translucent pass averages 253 render, 276 sampler and
+368 texture-stage cache probes per frame. Its corresponding native
+setter counts are 3, 0 and 0. On walk, the solid pass averages
+83, 91 and 121 probes and the GUI averages 364, 397 and 554.
+These counters identify CPU work between adjacent draws even when
+native state changes are already deduplicated. The next experiment
+changes that work without changing draw order or geometry.
+
+In `horizon-client-d3d9/src/device.rs`, the dev SWVP path binds
+stage zero and reuses already applied settings when the preceding
+successful `DrawState` and auxiliary texture match exactly.
+Scissor, hurt overlays and glint use the full setup. Filter and mip
+selection come from the same DrawState and caps. Anisotropy changes,
+new frames, depth clears and scaled-target transitions invalidate
+the existing key as before. The complete key is recorded after
+successful native calls, so failures cannot enable the shortcut.
+The ordinary and HW VS2 paths keep the full setup when a key changes.
+There is no extra retained state or cross-frame reuse.
+
+`submit_profile.rs` counts `base_texture_only` by pass, alongside
+actual SetTexture, the three probe groups and existing draw counts.
+Use H walk and standing as controls. Compare the native probe and
+bind counts, geometry, pass wall and frame tails. The experiment
+reduces CPU-side checks. It uses the existing transparency order
+and alpha behavior.

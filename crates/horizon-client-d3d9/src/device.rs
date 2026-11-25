@@ -1851,10 +1851,37 @@ impl Device {
             texture.raw.as_raw() as usize,
             lightmap.map_or(0, |t| t.raw.as_raw() as usize),
         );
-        if self.cached_state == Some(key) {
+        let previous = self.cached_state;
+        if previous == Some(key) {
             return Ok(());
         }
-        self.cached_state = Some(key);
+        // Publish the whole key only after the native calls have succeeded.
+        self.cached_state = None;
+        if self.state_cache.textures[0] != key.1 {
+            // SAFETY: the base texture was checked against the native owner above.
+            unsafe {
+                profile_call!(
+                    self.inner,
+                    SetTexture,
+                    self.inner.device.SetTexture(0, &texture.base)
+                )?;
+            }
+            self.state_cache.textures[0] = key.1;
+            self.binds += 1;
+        }
+        // All remaining settings for an ordinary unclipped draw depend on
+        // DrawState, the auxiliary texture, and the current device settings.
+        if crate::development_build()
+            && self.caps.software_vertices
+            && state.scissor.is_none()
+            && state.hurt_overlay.is_none()
+            && state.glint == 0
+            && previous.is_some_and(|(old, _, auxiliary)| old == state && auxiliary == key.2)
+        {
+            self.cached_state = Some(key);
+            profile_count!(self.inner, |c| c.base_texture_only += 1);
+            return Ok(());
+        }
         let hurt = state
             .hurt_overlay
             .filter(|_| state.lightmap && state.glint == 0);
@@ -1869,11 +1896,6 @@ impl Device {
         unsafe {
             let d = &self.inner.device;
             let cache = &mut self.state_cache;
-            if cache.textures[0] != texture.raw.as_raw() as usize {
-                profile_call!(self.inner, SetTexture, d.SetTexture(0, &texture.base))?;
-                cache.textures[0] = texture.raw.as_raw() as usize;
-                self.binds += 1;
-            }
             cache.stage(
                 &self.inner,
                 0,
@@ -2192,6 +2214,7 @@ impl Device {
                 cache.sampler(&self.inner, sampler, D3DSAMP_ADDRESSV, address.0 as u32)?;
             }
         }
+        self.cached_state = Some(key);
         Ok(())
     }
     pub fn draw(&mut self, mesh: &Mesh, first: u32, count: u32) -> Result<()> {
