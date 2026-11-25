@@ -1850,8 +1850,9 @@ native device owner so a renderer reuse shares the same record of
 actual COM values. The setter wrappers keep the existing requests
 and actual-call counters. `texture_state_cache.rs` remembers only
 successful setters. A failed setter forgets its slot and an incomplete
-frame resets the table on the next begin. Lost device, Reset, presentation rebuild and
-resource-pack renderer replacement invalidate the table. D3D9
+frame resets the table on the next begin. Lost device, Reset,
+presentation rebuild and resource-pack renderer replacement invalidate
+the table. D3D9
 render state, resource bindings, shader state and transforms still
 follow their frame-start setup. Hardware VP and ordinary builds
 use a fresh table at frame start.
@@ -1865,3 +1866,24 @@ E walk and standing as the control. Compare actual sampler and TSS
 sets per frame alongside draw and vertex counts, pass wall time and
 frame distribution. Also exercise fog, texture filtering, HUD clips,
 glint, resize and resource-pack reload on the native device.
+
+### Windows 7 packages for texture-state reuse
+
+[Run 45603122656](https://github.com/Mamsikas/horizon-legacy/actions/runs/45603122656) built F
+at `4e9eddda3b61b92f6f886c4990227a3184d24f0f` on `dx9-dev`.
+Both architectures passed the Win7 executable import audit, 15 import-policy
+tests, and the CPU resource and embedded SM2 tests. Local client checks
+passed for dev x64 and x86 and ordinary x64. A host replay of the actual
+cache logic matched the baseline numeric state after 983,040 synthetic
+requests across 4,096 frames, including simulated setter failures and
+invalidations. Real driver rendering and time remain hardware checks.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| F x64 | [15017957505](https://github.com/Mamsikas/horizon-legacy/actions/runs/45603122656/artifacts/15017957505) | `808b54a520d0443987fda8c238bbabbb0a43d1ec3eca81aef35174bc6b20d1d2` |
+| F x86 | [15017762116](https://github.com/Mamsikas/horizon-legacy/actions/runs/45603122656/artifacts/15017762116) | `d74865c14d48b39c6bbb78b71e26867c3ba7c7df766c2c922b4203c56debbe26` |
+
+Use `E_walk2.hzperf` and `E_stand.hzperf` as the controls for
+F x64. Capture 300 seconds of the same walk, 180 seconds standing,
+and the log. The F startup line reads
+`D3D9 texture_state_cache retain_after_present=true` on dev SWVP.
