@@ -1621,26 +1621,30 @@ Both GMA files named `D_gma_*.hzperf` belong to C
 times match the standing and walk in `D.log` at 16:13:40 and 16:17:20
 local time. The log has one clean build identity. `С.log` identifies
 the same C revision for the other pair. `B (2).log` identifies clean
-B `2203e06b145335af37ef6c4993bc14ed2b1dcad3`. All three pairs are N455,
+B `2203e06b145335af37ef6c4993bc14ed2b1dcad3`. The subsequent
+`realgmaD_stand.hzperf` and `realgmaD_walk.hzperf` match the profile
+starts at 17:18:11 and 17:22:03 in `D_gma_real.log`. That log identifies
+clean D `3f6bb578c2ea8e3b08491277c7010733a4ebe0d8`. All pairs are N455,
 Chell 1.8b GMA3150 HAL SWVP, x64, 1024×600, RGB565 and the same
 compiler/toolkit. The earlier short D pair remains valid.
 
-| Metric | B | C | C repeat (files labelled D) |
-| --- | ---: | ---: | ---: |
-| Walk seconds / frames | 298.417 / 4253 | 299.523 / 4342 | 300.357 / 4351 |
-| Walk FPS | 14.252 | 14.496 | 14.486 |
-| Walk DX9 wall, ms/frame | 52.224 | 51.234 | 51.056 |
-| Walk solid wall, ms/frame | 30.510 | 29.623 | 29.631 |
-| Walk solid indexed draws/frame | 266.31 | 161.89 | 159.63 |
-| Walk solid indexed NumVertices/frame | 82,412 | 85,942 | 86,004 |
-| Walk frame p50 / p95 / p99, ms | 68.09 / 102.69 / 117.45 | 66.42 / 104.00 / 128.51 | 66.58 / 103.69 / 135.91 |
-| Walk slowest 1% mean, ms | 157.96 | 174.16 | 182.82 |
-| Walk closing process RSS, MiB | 722.2 | 815.0 | 819.1 |
-| Standing FPS | 39.958 | 40.009 | 41.521 |
-| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [30,40) | [20,25) / [30,40) / [40,50) | [20,25) / [30,40) / [30,40) |
-| Standing slowest 1% mean, ms | 49.03 | 52.17 | 48.28 |
+| Metric | B | C | C repeat (files labelled D) | D |
+| --- | ---: | ---: | ---: | ---: |
+| Walk seconds / frames | 298.417 / 4253 | 299.523 / 4342 | 300.357 / 4351 | 299.301 / 4399 |
+| Walk FPS | 14.252 | 14.496 | 14.486 | 14.698 |
+| Walk DX9 wall, ms/frame | 52.224 | 51.234 | 51.056 | 50.439 |
+| Walk solid wall, ms/frame | 30.510 | 29.623 | 29.631 | 29.268 |
+| Walk solid indexed draws/frame | 266.31 | 161.89 | 159.63 | 159.68 |
+| Walk solid indexed NumVertices/frame | 82,412 | 85,942 | 86,004 | 86,179 |
+| Walk frame p50 / p95 / p99, ms | 68.09 / 102.69 / 117.45 | 66.42 / 104.00 / 128.51 | 66.58 / 103.69 / 135.91 | 65.43 / 103.88 / 121.70 |
+| Walk slowest 1% mean, ms | 157.96 | 174.16 | 182.82 | 170.39 |
+| Walk closing process RSS, MiB | 722.2 | 815.0 | 819.1 | 705.2 |
+| Standing FPS | 39.958 | 40.009 | 41.521 | 38.672 |
+| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [30,40) | [20,25) / [30,40) / [40,50) | [20,25) / [30,40) / [30,40) | [20,25) / [30,40) / [40,50) |
+| Standing slowest 1% mean, ms | 49.03 | 52.17 | 48.28 | 49.91 |
+| Standing closing process RSS, MiB | 660.2 | 571.0 | 566.1 | 734.1 |
 
-On the common 295 seconds, solid was 30.423, 29.520 and 29.511
+On the common 295 seconds, solid was 30.423, 29.520, 29.511 and 29.179
 ms/frame. The combined solid, indices/cold draws and terrain cache time
 improved against B even when each 15-second segment is omitted in
 turn. The two C runs have a 7.40 ms walk p99 difference on the same
@@ -1652,10 +1656,23 @@ of the 93–97 MiB RSS difference.
 
 The native counters cover 58 complete walk windows per build. They
 record no aborted frames or COM failures. The two C runs took about
-10.76 and 11.03 s of worker wall time across 3,727 and 3,858 staged
+11.02 and 11.03 s of worker wall time across 3,823 and 3,858 staged
 sections. Worker execution overlaps the game thread, which accounted
 for 92.73% and 92.50% of elapsed time. That makes terrain preparation
 worth reducing for N455 alongside the 29.6 ms solid submit stage.
+
+D improves walk on both whole-capture mean and p99 against the two C
+runs. Within the first 30 seconds B, C, C repeat and D have 11, 33, 35
+and 20 frames over 125 ms. D's native walk windows contain 3,856
+staged sections, 11.20 s of conversion wall and 271 collected
+material-decode jobs. The latter total 6.03 s of parallel worker wall
+for 357.84 MiB of restored bytes. The game's render thread was active
+92.90% of elapsed walk time. The 68 solid samples total 1.76 s of
+thread execution in 1.93 s of wall time, with coarse Windows CPU
+accounting. D's standing has no staged sections
+or material-decode jobs in its full log windows. Its lower mean FPS
+and higher RSS in standing belong in the comparison and have no
+direct worker-duration attribution. D remains the dev baseline.
 
 ### RTX 3050 and F3+A
 
@@ -1703,7 +1720,11 @@ block-entity geometry. These are separate limits on the comparison.
 DX9 has no GPU timestamps. Wgpu's health GPU medians in this interval
 are about 2.88 ms on GL, 2.26 ms on DX12 and 2.40 ms on Vulkan.
 
-DX9 also retains 281.7 MiB of encoded CPU shadows for re-upload,
+At the last full DX9 log window, about 98.5% of terrain buffer bytes
+use the wide 28-byte layout. The 20-byte layout requires exact position,
+UV and light coordinates throughout a section, so an unrepresentable
+position can put the section in the wide format. DX9 also retains
+281.7 MiB of encoded CPU shadows for re-upload,
 eviction and Reset. Arena bytes are allocation counts. RSS includes
 the whole process and driver mappings and gives no exact VRAM
 measurement. Together, the live payload, unused arena space and
@@ -1746,9 +1767,26 @@ compiler, ThinLTO and SSE3/SSSE3. Each pair produced the same output size.
 | 8,192 | 456.366 | 250.632 |
 | 32,768 | 1800.695 | 978.223 |
 
-The host result describes encoding cost. On GMA compare the
-300-second D and E walk, using staging completed counts, conversion
-wall time, frame distributions and solid work as the controls.
-Use the 180-second standing capture for the resident scene. Confirm
-the build SHA in the startup log before recording. The long C
-duplicates establish a reference for this route's timing variation.
+The host result describes encoding cost. Use the existing
+`realgmaD_walk.hzperf` and `realgmaD_stand.hzperf` as controls for
+300 seconds of walk and 180 seconds of standing on E. Compare
+staging completed counts, conversion wall time, frame distributions
+and solid work. Confirm the build SHA in the startup log before
+recording. The long C duplicates establish a reference for this
+route's timing variation.
+
+### Windows 7 packages for direct FFP shadow encoding
+
+[Run 45594475289](https://github.com/Mamsikas/horizon-legacy/actions/runs/45594475289) built E
+`f9b94f9f45ce480b258d40f4ed728a1ef423ab35` from `dx9-dev`.
+Both packages passed the native import audit, 15 Win7 import-policy
+tests and the CPU resource and embedded SM2 tests. Local client
+checks passed for dev x64 and x86 and ordinary x64.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| E x64 | [15014131349](https://github.com/Mamsikas/horizon-legacy/actions/runs/45594475289/artifacts/15014131349) | `514e7cbca647295ed8b1f4eb6853772eb4115e55e218ff008c051ef74a29abde` |
+| E x86 | [15013409265](https://github.com/Mamsikas/horizon-legacy/actions/runs/45594475289/artifacts/15013409265) | `073fb2c717db45a0242bde93f7846816e6b97f6fa12fc25924b6e74627653775` |
+
+The x64 package matches the GMA control architecture. GMA and HD4570
+graphics, resize and Reset checks await native testing of E.
