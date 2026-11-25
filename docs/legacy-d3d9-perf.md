@@ -2122,3 +2122,84 @@ with `latest.log`. Compare to the existing `E_walk2.hzperf` and
 at comparable submitted geometry, with the GUI and whole-frame
 times as regression checks. Native checks on GMA3150 and HD4570
 are pending.
+
+### GMA atlas UV result, captures of 2026-11-25
+
+`H.log` identifies clean H x64 at the SHA above, on Chell 1.8b,
+GMA3150 HAL SWVP with FFP32 and 1024×600 RGB565. Its profiler start
+times match the two recordings. Their recorded settings match E.
+The native counts use complete log windows and include no aborted
+frames or logged COM failures. DX9 GPU timestamps are unavailable.
+
+| GMA metric | E | H |
+| --- | ---: | ---: |
+| Walk seconds / frames | 299.129 / 4487 | 298.846 / 4510 |
+| Walk FPS | 15.000 | 15.091 |
+| Walk DX9 wall, ms/frame | 49.507 | 48.930 |
+| Walk solid wall, ms/frame | 28.641 | 28.726 |
+| Walk dynamic entity convert wall, ms/frame | 4.452 | 3.790 |
+| Walk dynamic entity submit wall, ms/frame | 3.427 | 3.621 |
+| Walk dynamic indexed vertices per frame | 8,678 | 8,630 |
+| Walk dynamic indexed draws per frame | 6.05 | 5.98 |
+| Walk GUI wall, ms/frame | 4.684 | 4.482 |
+| Walk frame p50 / p95 / p99, ms | 64.99 / 99.77 / 119.52 | 64.56 / 98.69 / 111.36 |
+| Walk slowest 1% mean, ms | 146.46 | 140.93 |
+| Standing FPS | 41.176 | 39.979 |
+| Standing DX9 wall, ms/frame | 20.001 | 20.592 |
+| Standing GUI wall, ms/frame | 2.119 | 2.114 |
+| Standing frame p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [30,40) | [20,25) / [30,40) / [30,40) |
+| Standing slowest 1% mean, ms | 42.15 | 47.34 |
+
+Dynamic conversion falls by 0.66 ms/frame at 0.55% fewer submitted
+indexed vertices. It falls in all 19 compared 15-second walk
+segments. In seconds 30–295 it falls from 4.57 to 3.88 ms/frame.
+Dynamic submission takes 0.19 ms/frame more over the whole walk.
+On the common first 295 seconds, deleting any one 15-second segment
+leaves a DX9 wall delta of −0.80 to −0.32 ms/frame and a total FPS
+delta of −0.01 to +0.15. The walk p99 improves while the single
+worst recorded frame grows from 231 to 419 ms.
+
+Standing has no dynamic entity geometry. It advertises the same
+24,624 solid vertices through 29 E or 31 H draws per frame. Solid
+and translucent wall time account for 0.56 ms/frame of the
+0.59 ms/frame renderer increase, and five-second median FPS is
+44.90 versus 44.43. GUI time is essentially flat. The standing
+frame difference deserves monitoring, and the capture does not
+attribute it to texture-coordinate conversion. Keep H in dev for
+the measured conversion saving. The whole-frame gain is small,
+with standing pacing and hardware visuals still open for acceptance.
+
+### Stage dynamic entity glint slices in one lock
+
+The H walk's dynamic pass makes 4.58 vertex buffer locks per frame.
+Its cumulative glint counters rise by 15,150 batches over roughly
+4,400 observed frames. Most of those batches use a separate lock
+in `legacy/glint.rs`. Base geometry already shares one staged
+upload per phase. Horizon's wgpu `gfx/entity_batch.rs` reuses a
+combined stream and draws ordered ranges. The DX9 trial applies the
+shared-buffer idea to the foil pass while preserving its sequence.
+
+In dev SWVP dynamic phases, collect references to drawable glint
+slices in the current order, then write them directly under one
+transient VB lock. `device.rs` reuses the existing DISCARD and
+NOOVERWRITE ring, upload counters and generation-checked tokens.
+`geometry.rs` validates each slice's quad alignment and the total
+before allocation. Each draw keeps its original mask, foil texture,
+blend, depth state and tight 16-bit index range. The entire foil
+stage still follows the base draws. Hand, HUD, static entities and HW
+VS2 use their previous foil submission.
+
+The maximum native payload is the existing quad ring capacity, below
+2 MiB. The temporary list has eight inline slice descriptors and at
+most one descriptor per complete quad. It retains no vertex copy
+or COM object. A single drawable batch, oversized or unallocatable
+slice list, or failed non-device-lost lock uses the existing per-batch
+draws. A device-loss error uses normal frame recovery. The staging
+token has a generation and a range and holds no new native resource.
+
+The diagnostic line adds `glint_groups_total` and
+`glint_locks_saved_total`. Compare the dynamic VB lock count and
+the dynamic submit span to H walk, plus vertices, draw counts,
+frame-time percentiles and visible glint on enchanted equipment.
+Standing is the frame-pacing control. The CPU fixture checks
+complete slices, limits and tight ranges at a non-aligned ring base.

@@ -294,10 +294,12 @@ impl Renderer {
             if self.last_log.elapsed() >= Duration::from_secs(5) {
                 if self.entity_staging {
                     log::info!(
-                        "D3D9 entity quad staging groups_total={} fallback_total={} scratch_bytes={}",
+                        "D3D9 entity quad staging groups_total={} fallback_total={} scratch_bytes={} glint_groups_total={} glint_locks_saved_total={}",
                         self.entity_stage_stats[0],
                         self.entity_stage_stats[1],
-                        self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>()
+                        self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>(),
+                        self.entity_stage_stats[2],
+                        self.entity_stage_stats[3],
                     );
                     let (tiles, recycled, overflow) = self.hud.atlas.entity_page_stats();
                     log::info!(
@@ -1139,7 +1141,7 @@ impl Renderer {
                 self.device.draw_transient(&b.vertices)?;
             }
         }
-        self.draw_glints(&glints, frame.pvp.glint)?;
+        self.draw_glints(&glints, frame.pvp.glint, dynamic && self.entity_staging)?;
         if let Some(laps) = &mut dynamic_laps {
             laps.lap("d3d9_dynamic_entity_submit");
         }
