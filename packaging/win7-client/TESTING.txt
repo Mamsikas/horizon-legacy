@@ -38,9 +38,15 @@ A different scene or a successful CPU test does not establish hardware FPS parit
 
 Profile through game chat, with no --control or other launcher argument:
   /profiler start client
-Perform the fixed route for 60-90 seconds, then:
-  /profiler stop client
-Send the local .hzperf and latest.log. No upload occurs unless you choose it.
+For the dev SWVP standing comparison, warm the terrain in the demanding server
+scene before starting. Hold the same position, camera and settings until the
+capture-saved message in chat, about 600 seconds later. The build alternates
+each candidate with the reference and saves the capture automatically. Attach
+the .hzperf and latest.log from this session. See docs/legacy-d3d9-perf.md for
+the trial schedule and the meaning of the log labels.
+
+On hardware VP and ordinary packages, record the fixed route for 60-90 seconds
+and finish with /profiler stop client. Send the local .hzperf and latest.log.
 Use no gpu/gpu_detail suffix: DX9 has no GPU pass timestamps. Detailed timeline
 can stop at its configured cap; ordinary longer phase/health captures still help.
 Phases include driver waits. Process CPU/RSS use upstream Windows probes.
@@ -56,13 +62,6 @@ base draws share a transient upload per eligible early or late phase. Identical
 stream-0 bindings reuse the current VB. The startup log says
 "D3D9 entity quad staging enabled=true" and "D3D9 stream0_cache enabled=true".
 Both strategies are selected at startup from the dev feature and software VP caps.
-
-Use the same full previous walk (~150 seconds), standing position, warmup, window
-and graphics settings, with default dev logging. Preserve each chat profile and
-its latest.log. SHA identifies each build. Restarting between builds is valid.
-Use the existing captures for fc813ed9fe (reference), a974320ab6 (entity uploads)
-and 27cfa36de1 (stream binding reuse) for comparison. Small differences need
-repeated evidence before claiming a gain.
 
 Check DynamicEntities VB locks and SetStreamSource calls against stream_requests,
 draws, NumVertices and upload payload. The entity staging log also reports total
