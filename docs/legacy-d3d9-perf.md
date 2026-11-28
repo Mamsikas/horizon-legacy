@@ -2384,3 +2384,66 @@ aborted frames. The render thread executes for 94.1% of wall time
 on J walk. Its 71 solid samples have 1,856 ms of CPU time in
 2,024 ms of wall time, with coarse Win7 accounting. The recordings
 do not supply GPU timestamps or a split between SWVP and driver CPU.
+
+### Single-run standing comparison
+
+Start from clean source `e8387600324b220136c3a23c39033c67d61cc356`.
+On the dev SWVP build, use `/profiler start client` in a demanding
+server standing scene after terrain settles. The dev diagnostics are
+enabled by default. Keep the same camera and settings until the
+ordinary capture-saved message appears in chat after about 600 seconds.
+Send the resulting `.hzperf` and `latest.log`. The capture uses the
+existing timer and leaves call-stack sampling off for this run.
+
+Each trial runs for 120 seconds in eight 15-second intervals, in
+the order A–B–B–A, B–A–A–B. Each interval gives the renderer two
+seconds of warmup and 13 seconds of measurement. A uses the H
+rendering strategy. B applies one experiment. The renderer returns
+to A when the capture ends. The capture adds a mark at each
+transition. Logs close counter windows before changing their labels
+and report the arm, trial and warmup status.
+
+| Seconds | B experiment | Activation and work counters |
+| --- | --- | --- |
+| 0–120 | Dense solid index windows from `31d02267b6` | `solid_draws_saved`, `solid_extra_vertices`, DrawIndexedPrimitive, IB uploads |
+| 120–240 | Solid face-group bounds from `bf9a027a41` | `solid_face_groups_culled`, visible plans, draws and vertices |
+| 240–360 | Cross-frame sampler and TSS reuse from `4e9eddda3b` | `sampler_history_frames`, native SetSamplerState and SetTextureStageState |
+| 360–480 | Ordered dynamic glint staging from `4912a445d9` | `glint_locks_saved`, dynamic draws, indexed vertices and LockVertex |
+| 480–600 | State reuse on base texture changes from `2499512de7` | `base_texture_only`, state probes and native texture binds |
+
+The first-upload arena trial `9d042bbfa4` needs fresh section
+arrivals. It belongs to a separate loading comparison. The static
+VB pool remains its own allocation experiment. Current material
+packing, shadow codecs, atlas UV and base entity staging are common
+to A and B. The suite measures the five changes separately.
+
+The dense arm keeps the historical caps and density rules, with a
+cached IB budget of at most 4 MiB and one sixteenth of the mesh
+budget. It releases test IBs on leaving the arm. Face bounds add
+168 bytes per section with solid geometry in dev SWVP. Both arms
+prepare bounds before the test, so this run measures use of the
+bounds with loaded sections. The exact mask is part of the solid
+plan stamp. The sampler arm retains successful numeric slots in
+the existing cache through Present. Reset, presentation rebuild,
+cancellation and switching out of the arm invalidate that history.
+Glint writes into the existing transient ring and maintains mask
+and draw order. The base-texture shortcut uses the same successful
+state and auxiliary texture checks. These trials preserve the
+graphics settings and rendering inputs.
+
+`benchmark.rs` defines the schedule. The DX9 device and submission
+collector own resource and counter handling. The legacy renderer
+gates the terrain and glint paths. The client capture adapter
+supplies the existing deadline, marks and chat completion. Hardware
+VP and ordinary packages use their usual profiler flow.
+
+Compare the four adjacent A/B interval pairs for each trial, using
+complete labeled measurement windows and actual frames. Check the
+target counters, submission wall time, periodically sampled thread
+CPU time, and frame-time distributions from the capture. Whole
+histogram buckets are the available quantile precision in some
+standing captures. Check geometry and activation counts alongside
+each timing, plus native errors and visuals. Zero activations leave
+that trial untested in the scene. Inconsistent differences stay open
+for retest. Stage wall timings retain driver work and possible GPU
+waits.

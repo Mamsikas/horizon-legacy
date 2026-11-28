@@ -116,6 +116,7 @@ mod tests {
             first,
             count: 4,
             source: first / 4..first / 4 + 1,
+            bucket: 0,
         }
     }
 

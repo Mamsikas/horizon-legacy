@@ -140,6 +140,26 @@ pub struct Renderer {
     shader_refusal: Option<(i32, String, Instant)>,
 }
 impl Renderer {
+    #[cfg(feature = "legacy-d3d9-dev")]
+    pub fn supports_benchmark(&self) -> bool {
+        self.diagnostics && self.device.caps.software_vertices && !self.suspended
+    }
+
+    #[cfg(feature = "legacy-d3d9-dev")]
+    pub fn set_benchmark_slot(&mut self, slot: Option<dx::benchmark::Slot>) -> bool {
+        use dx::benchmark::Trial::DenseIndices;
+        let was_dense = self.device.benchmark_active(DenseIndices);
+        if !self.device.set_benchmark_slot(slot) {
+            return false;
+        }
+        if was_dense && !self.device.benchmark_active(DenseIndices) {
+            for batch in self.solid_batches.values_mut() {
+                batch.release_indices();
+            }
+        }
+        true
+    }
+
     pub async fn new(
         window: Arc<Window>,
         _offscreen: bool,
@@ -234,10 +254,13 @@ impl Renderer {
             ..wgpu::AdapterInfo::new(wgpu::DeviceType::Other, wgpu::Backend::Noop)
         };
         let honey_layers = sprite_layers.and_then(|layers| sprites.honey_layers(layers));
+        let diagnostics = dx::log_stats_enabled();
+        let cull_solid = dx::development_build() && device.caps.software_vertices && diagnostics;
         let compactor = mesh::Compactor::new(
             sprites.layout.clone(),
             device.compact_vertices(),
             honey_layers,
+            cull_solid,
         );
         let glint = glint::Glint::new(&mut device, glint_pixels, glint_armor)?;
         let mut entity_staging = dx::development_build() && device.caps.software_vertices;
@@ -292,7 +315,7 @@ impl Renderer {
             },
             info,
             suspended: false,
-            diagnostics: dx::log_stats_enabled(),
+            diagnostics,
             msaa_requested: settings.msaa4x,
             paced_elsewhere: false,
             gpu_times: Vec::new(),
@@ -347,7 +370,7 @@ impl Renderer {
             pending_mesh_uploads: 0,
             seen_resets: 0,
             decode_scratch: Vec::new(),
-            convert_scratch: mesh::convert::Scratch::new(honey_layers),
+            convert_scratch: mesh::convert::Scratch::new(honey_layers, cull_solid),
             solid_batches: BTreeMap::new(),
             solid_cache: solid_cache::SolidCache::default(),
             solid_reused: false,

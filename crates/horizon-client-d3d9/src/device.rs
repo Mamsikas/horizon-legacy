@@ -178,6 +178,9 @@ impl Indices {
     pub fn bytes(&self) -> u64 {
         u64::from(self.count) * 2
     }
+    pub fn cpu_bytes(&self) -> usize {
+        self.windows.capacity() * size_of::<crate::geometry::IndexWindow>()
+    }
 }
 impl Mesh {
     /// Reset invalidates DEFAULT buffers; their owner can lazily upload its CPU data again.
@@ -357,6 +360,10 @@ pub struct Device {
     lost: bool,
     scene: bool,
     anisotropy: u32,
+    #[cfg(feature = "dev-diagnostics")]
+    benchmark_slot: Option<crate::benchmark::Slot>,
+    #[cfg(feature = "dev-diagnostics")]
+    sampler_history_valid: bool,
     cached_state: Option<(DrawState, usize, usize)>,
     state_cache: StateCache,
     cached_transform: Option<[[f32; 16]; 3]>,
@@ -397,8 +404,39 @@ impl Device {
     }
     #[inline(always)]
     pub fn log_submit_profile(&self) {
+        #[cfg(feature = "dev-diagnostics")]
+        if let Some(slot) = self.benchmark_slot {
+            log::info!("{}", slot.marker());
+        }
         #[cfg(feature = "submit-profile")]
         self.inner.profile.log();
+    }
+    #[cfg(feature = "dev-diagnostics")]
+    pub fn benchmark_active(&self, trial: crate::benchmark::Trial) -> bool {
+        self.benchmark_slot
+            .is_some_and(|slot| slot.candidate && slot.trial == trial)
+    }
+    #[cfg(feature = "dev-diagnostics")]
+    pub fn set_benchmark_slot(&mut self, slot: Option<crate::benchmark::Slot>) -> bool {
+        if self.benchmark_slot == slot {
+            return false;
+        }
+        // Close the preceding counter window before changing its label.
+        self.log_submit_profile();
+        self.benchmark_slot = slot;
+        if !self.benchmark_active(crate::benchmark::Trial::SamplerReuse) {
+            self.sampler_history_valid = false;
+        }
+        true
+    }
+    #[cfg(feature = "dev-diagnostics")]
+    pub fn profile_solid_face_groups(&self, count: u32) {
+        profile_count!(self.inner, |c| c.solid_face_groups_culled +=
+            u64::from(count));
+    }
+    #[cfg(feature = "dev-diagnostics")]
+    pub fn profile_glint_locks_saved(&self, count: usize) {
+        profile_count!(self.inner, |c| c.glint_locks_saved += count as u64);
     }
     pub fn fog_parameters(&self) -> Option<Fog> {
         self.fog_constants
@@ -613,6 +651,10 @@ impl Device {
             lost: false,
             scene: false,
             anisotropy: 1,
+            #[cfg(feature = "dev-diagnostics")]
+            benchmark_slot: None,
+            #[cfg(feature = "dev-diagnostics")]
+            sampler_history_valid: false,
             cached_state: None,
             state_cache: StateCache::default(),
             cached_transform: None,
@@ -779,6 +821,10 @@ impl Device {
             lost: self.lost,
             scene: false,
             anisotropy: self.anisotropy,
+            #[cfg(feature = "dev-diagnostics")]
+            benchmark_slot: None,
+            #[cfg(feature = "dev-diagnostics")]
+            sampler_history_valid: false,
             cached_state: None,
             state_cache: StateCache::default(),
             cached_transform: None,
@@ -1004,6 +1050,8 @@ impl Device {
         self.begin_scaled(color, 1.0)
     }
     pub fn begin_scaled(&mut self, color: [f32; 3], scale: f32) -> Result<bool> {
+        #[cfg(feature = "dev-diagnostics")]
+        let sampler_history_valid = std::mem::take(&mut self.sampler_history_valid);
         if self.present.BackBufferWidth == 0 || self.present.BackBufferHeight == 0 {
             return Ok(false);
         }
@@ -1018,6 +1066,8 @@ impl Device {
             Err(e) => return Err(e.into()),
             Ok(()) => {}
         }
+        #[cfg(feature = "dev-diagnostics")]
+        let sampler_history_valid = sampler_history_valid && !self.lost && !self.reset_pending;
         if self.reset_pending {
             self.state_cache.stream.invalidate();
             self.detach_presentation();
@@ -1081,9 +1131,8 @@ impl Device {
                 && p.height == self.present.BackBufferHeight
                 && p.interval == self.present.PresentationInterval
         });
-        if (self.surface_pending || !matches)
-            && let Err(error) = self.create_presentation()
-        {
+        let recreate_presentation = self.surface_pending || !matches;
+        if recreate_presentation && let Err(error) = self.create_presentation() {
             if is_device_lost(error.as_ref()) {
                 self.lost = true;
                 return Ok(false);
@@ -1114,7 +1163,18 @@ impl Device {
                 )?;
             }
         }
-        self.state_cache = StateCache::default();
+        #[cfg(feature = "dev-diagnostics")]
+        let keep_samplers = sampler_history_valid && !recreate_presentation;
+        #[cfg(not(feature = "dev-diagnostics"))]
+        let keep_samplers = false;
+        if keep_samplers {
+            self.state_cache.render.fill(None);
+            self.state_cache.textures.fill(usize::MAX);
+            self.state_cache.stream.invalidate();
+            profile_count!(self.inner, |c| c.sampler_history_frames += 1);
+        } else {
+            self.state_cache = StateCache::default();
+        }
         self.cached_transform = None;
         self.shader_active = None;
         self.fog_constants = None;
@@ -1214,6 +1274,9 @@ impl Device {
         Ok(())
     }
     pub fn finish(&mut self) -> Result<bool> {
+        #[cfg(feature = "dev-diagnostics")]
+        let remember_samplers =
+            self.scene && self.benchmark_active(crate::benchmark::Trial::SamplerReuse);
         if self.scene {
             // SAFETY: closes the matching BeginScene, including after a drawing error.
             let ended = unsafe { self.inner.device.EndScene() };
@@ -1242,10 +1305,20 @@ impl Device {
                 Ok(false)
             }
             Err(e) => Err(e.into()),
-            Ok(()) => Ok(true),
+            Ok(()) => {
+                #[cfg(feature = "dev-diagnostics")]
+                {
+                    self.sampler_history_valid = remember_samplers;
+                }
+                Ok(true)
+            }
         }
     }
     pub fn cancel_frame(&mut self) {
+        #[cfg(feature = "dev-diagnostics")]
+        {
+            self.sampler_history_valid = false;
+        }
         if self.scene {
             // SAFETY: best-effort matching EndScene on an error path; never called twice.
             let _ = unsafe { self.inner.device.EndScene() };
@@ -1257,6 +1330,10 @@ impl Device {
         }
     }
     pub fn mark_lost(&mut self) {
+        #[cfg(feature = "dev-diagnostics")]
+        {
+            self.sampler_history_valid = false;
+        }
         self.lost = true;
     }
     pub fn is_lost(&self) -> bool {
@@ -1788,9 +1865,30 @@ impl Device {
             .windows
             .get(group as usize)
             .ok_or("D3D9 missing cached index group")?;
+        self.draw_index_windows(mesh, indices, std::slice::from_ref(window))
+    }
+    pub fn draw_dense_solid(
+        &mut self,
+        mesh: &Mesh,
+        indices: &Indices,
+        _savings: crate::IndexSavings,
+    ) -> Result<()> {
+        self.draw_index_windows(mesh, indices, &indices.windows)?;
+        profile_count!(self.inner, |c| {
+            c.solid_draws_saved += u64::from(_savings.draws);
+            c.solid_extra_vertices += u64::from(_savings.extra_vertices);
+        });
+        Ok(())
+    }
+    fn draw_index_windows(
+        &mut self,
+        mesh: &Mesh,
+        indices: &Indices,
+        windows: &[crate::geometry::IndexWindow],
+    ) -> Result<()> {
         if !Rc::ptr_eq(&mesh.owner, &self.inner)
             || !Rc::ptr_eq(&indices.owner, &self.inner)
-            || window.end > mesh.filled
+            || windows.iter().any(|window| window.end > mesh.filled)
         {
             return Err("D3D9 cached draw bounds/device mismatch".into());
         }
@@ -1804,34 +1902,35 @@ impl Device {
                 SetIndices,
                 self.inner.device.SetIndices(&indices.raw)
             )?;
+            self.using_dynamic_indices = true;
             self.state_cache.bind_stream(
                 &self.inner,
                 raw,
                 mesh.stride() as u32,
                 crate::development_build() && self.caps.software_vertices,
             )?;
-            profile_call!(
-                self.inner,
-                DrawIndexedPrimitive,
-                self.inner.device.DrawIndexedPrimitive(
-                    D3DPT_TRIANGLELIST,
-                    0,
-                    window.start,
-                    window.end - window.start,
-                    window.first,
-                    window.count / 3,
-                )
-            )?;
         }
-        self.using_dynamic_indices = true;
-        profile_count!(self.inner, |c| c.draw(
-            true,
-            window.end - window.start,
-            window.count / 3,
-            0,
-            false
-        ));
-        self.record_draw();
+        for window in windows {
+            let vertices = window.end - window.start;
+            let triangles = window.count / 3;
+            // SAFETY: the validated windows refer to the bound mesh and indices.
+            unsafe {
+                profile_call!(
+                    self.inner,
+                    DrawIndexedPrimitive,
+                    self.inner.device.DrawIndexedPrimitive(
+                        D3DPT_TRIANGLELIST,
+                        0,
+                        window.start,
+                        vertices,
+                        window.first,
+                        triangles,
+                    )
+                )?;
+            }
+            profile_count!(self.inner, |c| c.draw(true, vertices, triangles, 0, false));
+            self.record_draw();
+        }
         Ok(())
     }
     pub fn state(
@@ -1854,7 +1953,35 @@ impl Device {
         if self.cached_state == Some(key) {
             return Ok(());
         }
-        self.cached_state = Some(key);
+        #[cfg(feature = "dev-diagnostics")]
+        let previous = self.cached_state;
+        // Publish the whole key only after the native calls have succeeded.
+        self.cached_state = None;
+        if self.state_cache.textures[0] != key.1 {
+            // SAFETY: the base texture was checked against the native owner above.
+            unsafe {
+                profile_call!(
+                    self.inner,
+                    SetTexture,
+                    self.inner.device.SetTexture(0, &texture.base)
+                )?;
+            }
+            self.state_cache.textures[0] = key.1;
+            self.binds += 1;
+        }
+        // All remaining settings for an ordinary unclipped draw depend on
+        // DrawState, the auxiliary texture, and the current device settings.
+        #[cfg(feature = "dev-diagnostics")]
+        if self.benchmark_active(crate::benchmark::Trial::BaseTextureReuse)
+            && state.scissor.is_none()
+            && state.hurt_overlay.is_none()
+            && state.glint == 0
+            && previous.is_some_and(|(old, _, auxiliary)| old == state && auxiliary == key.2)
+        {
+            self.cached_state = Some(key);
+            profile_count!(self.inner, |c| c.base_texture_only += 1);
+            return Ok(());
+        }
         let hurt = state
             .hurt_overlay
             .filter(|_| state.lightmap && state.glint == 0);
@@ -1869,11 +1996,6 @@ impl Device {
         unsafe {
             let d = &self.inner.device;
             let cache = &mut self.state_cache;
-            if cache.textures[0] != texture.raw.as_raw() as usize {
-                profile_call!(self.inner, SetTexture, d.SetTexture(0, &texture.base))?;
-                cache.textures[0] = texture.raw.as_raw() as usize;
-                self.binds += 1;
-            }
             cache.stage(
                 &self.inner,
                 0,
@@ -2192,6 +2314,7 @@ impl Device {
                 cache.sampler(&self.inner, sampler, D3DSAMP_ADDRESSV, address.0 as u32)?;
             }
         }
+        self.cached_state = Some(key);
         Ok(())
     }
     pub fn draw(&mut self, mesh: &Mesh, first: u32, count: u32) -> Result<()> {
@@ -2330,15 +2453,18 @@ impl Device {
     }
     /// Upload ordered entity quad batches once without expanding them to triangles.
     pub fn stage_quads(&mut self, vertices: &[Vertex]) -> Result<StagedQuads> {
-        if !vertices.len().is_multiple_of(4) {
-            return Err("D3D9 incomplete staged quad".into());
-        }
-        let first = self.stage_vertices(vertices)?;
+        self.stage_quad_slices(&[vertices])
+    }
+    /// Write the input slices in order into one ring reservation and one lock.
+    pub fn stage_quad_slices(&mut self, slices: &[&[Vertex]]) -> Result<StagedQuads> {
+        let count = crate::geometry::staged_quad_count(slices, self.max_vertices())
+            .ok_or("D3D9 staged quad slices outside alignment or buffer capacity")?;
+        let first = self.stage_vertex_slices(slices, count)?;
         Ok(StagedQuads {
             owner: self.inner.clone(),
             serial: self.transient_serial,
             first,
-            count: vertices.len() as u32,
+            count: count as u32,
         })
     }
     pub fn draw_staged_quads(
@@ -2452,9 +2578,15 @@ impl Device {
         Ok(())
     }
     fn stage_vertices(&mut self, vertices: &[Vertex]) -> Result<u32> {
-        if vertices.is_empty() || vertices.len() > self.max_vertices() {
+        self.stage_vertex_slices(&[vertices], vertices.len())
+    }
+    // Count is the sum of the lengths of these immutable slices, either from
+    // the single-slice caller or the checked quad count.
+    fn stage_vertex_slices(&mut self, slices: &[&[Vertex]], count: usize) -> Result<u32> {
+        if count == 0 || count > self.max_vertices() {
             return Err("D3D9 transient upload outside buffer capacity".into());
         }
+        debug_assert_eq!(count, slices.iter().map(|s| s.len()).sum::<usize>());
         if self.transient.is_none() {
             let mut buffer = None;
             self.transient_capacity = self.max_vertices() * size_of::<Vertex>();
@@ -2489,10 +2621,10 @@ impl Device {
             .ok_or("D3D9 upload sequence exhausted")?;
         self.inner.stream_sequence.set(serial);
         self.transient_serial = serial;
-        let bytes = bytemuck::cast_slice::<_, u8>(vertices);
+        let bytes = count * size_of::<Vertex>();
         let (offset, discard) = self
             .transient_ring
-            .reserve(bytes.len(), self.transient_capacity)
+            .reserve(bytes, self.transient_capacity)
             .ok_or("D3D9 transient ring overflow")?;
         if discard {
             self.state_cache.stream.invalidate();
@@ -2501,8 +2633,8 @@ impl Device {
             .transient
             .as_ref()
             .ok_or("D3D9 dynamic vertex buffer missing")?;
-        // SAFETY: lock size matches the copy. NOOVERWRITE appends to untouched storage;
-        // DISCARD lets the driver rename it when the bounded ring wraps.
+        // SAFETY: the immutable slices' total size matches the checked lock.
+        // NOOVERWRITE appends to untouched storage. DISCARD permits renaming.
         unsafe {
             let mut memory = ptr::null_mut();
             profile_call!(
@@ -2510,7 +2642,7 @@ impl Device {
                 LockVertex,
                 buffer.Lock(
                     offset as u32,
-                    bytes.len() as u32,
+                    bytes as u32,
                     &mut memory,
                     if discard {
                         D3DLOCK_DISCARD
@@ -2523,13 +2655,18 @@ impl Device {
                 profile_call!(self.inner, UnlockVertex, buffer.Unlock())?;
                 return Err("D3D9 empty transient lock".into());
             }
-            ptr::copy_nonoverlapping(bytes.as_ptr(), memory.cast::<u8>(), bytes.len());
+            let mut dest = memory.cast::<u8>();
+            for vertices in slices {
+                let source = bytemuck::cast_slice::<_, u8>(vertices);
+                ptr::copy_nonoverlapping(source.as_ptr(), dest, source.len());
+                dest = dest.add(source.len());
+            }
             profile_call!(self.inner, UnlockVertex, buffer.Unlock())?;
         }
-        self.uploads += bytes.len() as u64;
-        self.stream_uploads += bytes.len() as u64;
+        self.uploads += bytes as u64;
+        self.stream_uploads += bytes as u64;
         self.stream_locks += 1;
-        profile_count!(self.inner, |c| c.upload_bytes[1] += bytes.len() as u64);
+        profile_count!(self.inner, |c| c.upload_bytes[1] += bytes as u64);
         Ok((offset / size_of::<Vertex>()) as u32)
     }
     /// Capture only on request. Readback is deliberately absent from the normal frame path.

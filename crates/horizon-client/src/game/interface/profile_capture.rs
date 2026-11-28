@@ -140,6 +140,8 @@ pub(super) struct Profile {
     /// `profile stop` waits for the file to be whole.
     reply: Option<Sender<String>>,
     spans_were_on: bool,
+    #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+    dx9_benchmark_start: Option<f64>,
     /// The file the running capture was asked to write by `trace` or `HORIZON_TRACE`.
     trace_file: Option<String>,
     hardware_warmed: bool,
@@ -178,6 +180,8 @@ impl Profile {
             progress: None,
             reply: None,
             spans_were_on: false,
+            #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+            dx9_benchmark_start: None,
             trace_file: None,
             hardware_warmed: false,
             env_tried: false,
@@ -557,6 +561,21 @@ impl Game<'_> {
         if side == Some(ProfileSide::Server) {
             return self.start_server_only(options, trigger);
         }
+        #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+        let benchmark_options = (side == Some(ProfileSide::Client)
+            && trigger == Trigger::Command
+            && *options == StartOptions::default()
+            && self
+                .renderer
+                .as_ref()
+                .is_some_and(|r| r.supports_benchmark()))
+        .then(|| StartOptions {
+            seconds: Some(horizon_client::renderer::dx9_benchmark::SECONDS),
+            samples: false,
+            ..options.clone()
+        });
+        #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+        let options = benchmark_options.as_ref().unwrap_or(options);
         let trigger = if trigger == Trigger::Ctl && self.options.benchmark.is_some() {
             Trigger::Benchmark
         } else {
@@ -574,6 +593,15 @@ impl Game<'_> {
             self.profile
                 .perf
                 .start(t, &reports_dir(), trigger, options, start, Vec::new())?;
+        #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+        if benchmark_options.is_some() {
+            self.profile.dx9_benchmark_start = Some(t);
+            log::info!(
+                "D3D9 standing benchmark seconds={} samples=false",
+                horizon_client::renderer::dx9_benchmark::SECONDS
+            );
+            self.advance_dx9_benchmark(t);
+        }
         self.profile.started_by = trigger;
         self.profile.gpu = options.gpu;
         self.profile.trace_file = options.file.as_ref().map(|f| f.display().to_string());
@@ -679,6 +707,8 @@ impl Game<'_> {
         if !self.profile.perf.stop_with(t, reason, gpu, bench) {
             return Err("no capture is running".into());
         }
+        #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+        self.end_dx9_benchmark(t);
         if server && let Some(integrated) = &self.integrated {
             integrated.post(move |g| g.stop_server_capture(reason, None));
         }
@@ -686,6 +716,38 @@ impl Game<'_> {
         self.profile.link = ServerLink::Off;
         self.profile.gpu = GpuSwitch::Off;
         Ok(())
+    }
+
+    #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+    fn advance_dx9_benchmark(&mut self, now: f64) {
+        let Some(started) = self.profile.dx9_benchmark_start else {
+            return;
+        };
+        if let Some(renderer) = &mut self.renderer {
+            let slot = renderer
+                .supports_benchmark()
+                .then(|| horizon_client::renderer::dx9_benchmark::Slot::at((now - started) as u32))
+                .flatten();
+            if renderer.set_benchmark_slot(slot)
+                && let Some(slot) = slot
+            {
+                self.profile.perf.mark(now, &slot.marker());
+            }
+        }
+    }
+
+    #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+    fn end_dx9_benchmark(&mut self, now: f64) {
+        if let Some(started) = self.profile.dx9_benchmark_start.take() {
+            if let Some(renderer) = &mut self.renderer {
+                renderer.set_benchmark_slot(None);
+            }
+            self.profile.stopped_after.get_or_insert(now - started);
+            log::info!(
+                "D3D9 standing benchmark finished elapsed={:.3}",
+                now - started
+            );
+        }
     }
 
     /// The pass timings the running capture asked for, as the renderer shows them now.
@@ -1016,7 +1078,11 @@ impl Game<'_> {
         );
         if !self.profile.perf.capturing() {
             self.profile.gpu = GpuSwitch::Off;
+            #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+            self.end_dx9_benchmark(t);
         }
+        #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+        self.advance_dx9_benchmark(t);
         if matches!(self.profile.link, ServerLink::Pending) {
             self.join_server_capture();
         }
@@ -1058,6 +1124,16 @@ impl Game<'_> {
 
     /// Once per loop turn: the captures whose files are whole, told to whoever waits for them.
     pub(super) fn poll_profile(&mut self) {
+        #[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+        if let Some(started) = self.profile.dx9_benchmark_start {
+            let now = self.profile.perf.now();
+            if now - started >= f64::from(horizon_client::renderer::dx9_benchmark::SECONDS)
+                && let Err(error) = self.stop_profile(StopReason::Normal)
+            {
+                self.end_dx9_benchmark(now);
+                log::warn!("D3D9 standing benchmark stop: {error}");
+            }
+        }
         self.poll_server_link();
         self.poll_chat_answer();
         self.poll_progress();

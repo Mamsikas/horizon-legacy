@@ -47,7 +47,8 @@ impl Renderer {
                 && let Some(compressed) = ready.compressed
             {
                 self.mesh_bytes -= section.bytes;
-                section.bytes = compressed.bytes();
+                section.bytes -= section.vertices.bytes();
+                section.bytes += compressed.bytes();
                 section.vertices = compressed;
                 self.mesh_bytes += section.bytes;
                 // Geometry/revision/native buffers are unchanged by lossless storage compression.

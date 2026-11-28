@@ -5,6 +5,8 @@ pub use crate::gfx::Frame;
 mod legacy;
 #[cfg(not(all(windows, feature = "legacy-d3d9")))]
 pub use crate::gfx::Renderer;
+#[cfg(all(windows, feature = "legacy-d3d9-dev"))]
+pub use horizon_client_d3d9::benchmark as dx9_benchmark;
 #[cfg(all(windows, feature = "legacy-d3d9"))]
 pub use horizon_client_d3d9::system_cpu_ticks;
 #[cfg(all(windows, feature = "legacy-d3d9"))]

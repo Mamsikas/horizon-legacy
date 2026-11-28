@@ -3,6 +3,8 @@
 pub const fn development_build() -> bool {
     cfg!(feature = "dev-diagnostics")
 }
+#[cfg(feature = "dev-diagnostics")]
+pub mod benchmark;
 #[cfg(any(windows, test))]
 mod stream_cache;
 // Pass markers compile to empty inline methods in ordinary Windows builds.
@@ -26,7 +28,7 @@ pub use atlas::{AtlasLayout, AtlasSet, AtlasUv};
 pub mod clipboard;
 
 mod geometry;
-pub use geometry::{IndexBatch, MeshData, PaintWindow, Ring, Vertex, fog_interval};
+pub use geometry::{IndexBatch, IndexSavings, MeshData, PaintWindow, Ring, Vertex, fog_interval};
 mod preferences;
 pub use preferences::{ColorDepth, Preferences, VertexProcessing};
 #[cfg(any(windows, test))]

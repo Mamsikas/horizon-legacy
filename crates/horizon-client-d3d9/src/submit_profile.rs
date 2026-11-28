@@ -122,6 +122,7 @@ mod enabled {
         /// Requests reaching the low-level cache, after DrawState's whole-key cache.
         pub cache_requests: [u64; 3],
         pub state_requests: u64,
+        pub base_texture_only: u64,
         pub transform_requests: u64,
         pub stream_requests: u64,
         pub indexed_vertices: Ranges,
@@ -129,6 +130,11 @@ mod enabled {
         pub screen_vertices: u64,
         pub triangles: u64,
         pub lines: u64,
+        pub solid_draws_saved: u64,
+        pub solid_extra_vertices: u64,
+        pub solid_face_groups_culled: u64,
+        pub glint_locks_saved: u64,
+        pub sampler_history_frames: u64,
         /// Immutable VB, transient VB (including GUI), IB, texture patches.
         pub upload_bytes: [u64; 4],
         pub wall_ns: u64,
@@ -292,11 +298,12 @@ mod enabled {
             );
             for (pass, c) in PASSES.iter().zip(window.counters) {
                 log::info!(
-                    "D3D9 submit pass={pass:?} com={:?} failures={:?} cache_requests={:?} state_requests={} transform_requests={} stream_requests={} dip_num_vertices={} dip_ranges={} dip_min={:?} dip_max={} dip_p50_upper={:?} dip_p95_upper={:?} dp_vertices={} screen_vertices={} triangles={} lines={} upload_bytes={:?} wall_ms={:.6} sample_wall_ms={:.6} sample_cpu_ms={:.6} cpu_samples={} cpu_unavailable={}",
+                    "D3D9 submit pass={pass:?} com={:?} failures={:?} cache_requests={:?} state_requests={} base_texture_only={} transform_requests={} stream_requests={} dip_num_vertices={} dip_ranges={} dip_min={:?} dip_max={} dip_p50_upper={:?} dip_p95_upper={:?} dp_vertices={} screen_vertices={} triangles={} lines={} upload_bytes={:?} wall_ms={:.6} sample_wall_ms={:.6} sample_cpu_ms={:.6} cpu_samples={} cpu_unavailable={} solid_draws_saved={} solid_extra_vertices={} solid_face_groups_culled={} glint_locks_saved={} sampler_history_frames={}",
                     c.calls,
                     c.failures,
                     c.cache_requests,
                     c.state_requests,
+                    c.base_texture_only,
                     c.transform_requests,
                     c.stream_requests,
                     c.indexed_vertices.sum,
@@ -314,7 +321,12 @@ mod enabled {
                     c.cpu_sample_wall_ns as f64 / 1e6,
                     c.cpu_sample_ns as f64 / 1e6,
                     c.cpu_samples,
-                    c.cpu_unavailable
+                    c.cpu_unavailable,
+                    c.solid_draws_saved,
+                    c.solid_extra_vertices,
+                    c.solid_face_groups_culled,
+                    c.glint_locks_saved,
+                    c.sampler_history_frames
                 );
             }
         }

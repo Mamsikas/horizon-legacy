@@ -11,9 +11,12 @@ pub(super) struct Packet {
     pub first: u32,
     pub count: u32,
     pub source: Range<u32>,
+    pub bucket: u8,
 }
+pub(super) type SolidBounds = [[Vec3; 2]; 7];
 pub(super) struct Section {
     pub solid: Vec<Packet>,
+    pub solid_bounds: Option<Box<SolidBounds>>,
     pub translucent: Vec<dx::TextureRange>,
     pub translucent_order: std::cell::RefCell<dx::PageOrder>,
     pub vertices: Arc<dx::MeshData>,
@@ -82,6 +85,8 @@ pub(super) struct DrawBatch {
     pub next: Vec<(u32, u32)>,
     ranges: Vec<(u32, u32)>,
     indices: Option<dx::Indices>,
+    dense_attempted: bool,
+    dense_savings: dx::IndexSavings,
 }
 impl DrawBatch {
     pub fn append(&mut self, first: u32, count: u32) {
@@ -95,13 +100,51 @@ impl DrawBatch {
     }
     pub fn bytes(&self) -> usize {
         (self.next.capacity() + self.ranges.capacity()) * size_of::<(u32, u32)>()
+            + self.indices.as_ref().map_or(0, dx::Indices::cpu_bytes)
     }
     pub fn gpu_bytes(&self) -> u64 {
         self.indices.as_ref().map_or(0, dx::Indices::bytes)
     }
+    pub fn cached_bytes(&self) -> u64 {
+        self.indices
+            .as_ref()
+            .map_or(0, |indices| indices.bytes() + indices.cpu_bytes() as u64)
+    }
     pub fn release_indices(&mut self) {
         self.indices = None;
         self.ranges.clear();
+        self.dense_attempted = false;
+    }
+    fn prepare_dense_indices(
+        &mut self,
+        device: &mut dx::Device,
+        scratch: &mut dx::IndexBatch,
+        byte_limit: u64,
+    ) -> Result<()> {
+        if self.ranges != self.next {
+            self.release_indices();
+            // Observe the same canonical ranges again before uploading an IB.
+            if self.next.len() >= 4 {
+                self.ranges.clone_from(&self.next);
+            }
+        } else if !self.dense_attempted {
+            self.dense_attempted = true;
+            if let Some(savings) =
+                scratch.dense_solid(&self.ranges, device.caps.max_primitive_count, byte_limit)?
+            {
+                match device.cache_indices(scratch) {
+                    Ok(indices) => {
+                        self.indices = Some(indices);
+                        self.dense_savings = savings;
+                    }
+                    Err(error) if dx::is_device_lost(error.as_ref()) => return Err(error),
+                    Err(error) => {
+                        log::debug!("D3D9 dense solid indices: {error}; using shared quad indices")
+                    }
+                }
+            }
+        }
+        Ok(())
     }
     pub fn draw(
         &mut self,
@@ -109,6 +152,7 @@ impl DrawBatch {
         mesh: &dx::Mesh,
         scratch: &mut dx::IndexBatch,
         unchanged: bool,
+        dense_byte_limit: Option<u64>,
     ) -> Result<()> {
         if self.next.is_empty() {
             return Ok(());
@@ -138,9 +182,13 @@ impl DrawBatch {
             self.next.truncate(used);
         }
         if device.caps.software_vertices {
-            // Reuse the same visibility plan and group texture/state changes on
-            // FFP too. Keep every draw's transformed range tight: a sparse IB
-            // spanning a whole page would transform hidden vertices on the CPU.
+            if let Some(limit) = dense_byte_limit {
+                self.prepare_dense_indices(device, scratch, limit)?;
+                if let Some(indices) = &self.indices {
+                    return device.draw_dense_solid(mesh, indices, self.dense_savings);
+                }
+            }
+            // Keep the transformed range tight when the gaps would cost more VP.
             for &(first, count) in &self.next {
                 device.draw(mesh, first, count)?;
             }
@@ -297,6 +345,7 @@ impl Renderer {
         }
         let convert::Converted {
             solid,
+            solid_bounds,
             translucent,
             shadow,
             sides,
@@ -305,7 +354,8 @@ impl Renderer {
             visibility,
             gpu,
         } = ready;
-        let bytes = shadow.bytes();
+        let bytes =
+            shadow.bytes() + u64::from(solid_bounds.is_some()) * size_of::<SolidBounds>() as u64;
         let decoded_bytes = gpu.len() as u64 * size_of::<dx::Vertex>() as u64;
         self.release_gpu_section(key);
         if let Some(old) = self.sections.remove(&key) {
@@ -318,6 +368,7 @@ impl Renderer {
             Section {
                 translucent_order: Default::default(),
                 solid,
+                solid_bounds,
                 translucent,
                 vertices: shadow,
                 gpu: Vec::new(),
@@ -808,6 +859,7 @@ mod tests {
         let neighbour = ([-1, 5, 3], 20);
         let mut section = Section {
             solid: Vec::new(),
+            solid_bounds: None,
             translucent: Vec::new(),
             translucent_order: Default::default(),
             vertices: Arc::new(dx::MeshData::new(&[])),

@@ -297,7 +297,7 @@ impl Renderer {
                         "D3D9 entity quad staging groups_total={} fallback_total={} scratch_bytes={}",
                         self.entity_stage_stats[0],
                         self.entity_stage_stats[1],
-                        self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>()
+                        self.entity_stage_vertices.capacity() * size_of::<dx::Vertex>(),
                     );
                     let (tiles, recycled, overflow) = self.hud.atlas.entity_page_stats();
                     log::info!(
@@ -397,8 +397,9 @@ impl Renderer {
                     worker.log_material_decode();
                 }
                 log::info!(
-                    "D3D9 solid_plan_reused={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
+                    "D3D9 solid_plan_reused={} solid_culled_buckets={} uncached_visible_bytes={} staging_pending={} staging_reserved_bytes={} staged_sections={}",
                     self.solid_reused,
+                    self.solid_cache.culled_buckets(),
                     self.uncached_mesh_bytes,
                     self.pending_sections.len(),
                     self.compactor
@@ -602,13 +603,26 @@ impl Renderer {
                 .filter(|s| s.gpu.is_empty())
                 .map(|s| s.vertices.len() as u64 * size_of::<dx::Vertex>() as u64)
                 .sum();
+            #[cfg(feature = "legacy-d3d9-dev")]
+            let clip = self
+                .device
+                .benchmark_active(dx::benchmark::Trial::FaceBounds)
+                .then_some((&frustum, frame.camera, self.layout));
+            #[cfg(not(feature = "legacy-d3d9-dev"))]
+            let clip = None;
             self.solid_reused = self.solid_cache.update(
                 &self.sections,
                 &visible,
                 (self.next_arena, self.device.resets),
                 self.sides,
                 fog,
+                clip,
             );
+            #[cfg(feature = "legacy-d3d9-dev")]
+            if clip.is_some() {
+                self.device
+                    .profile_solid_face_groups(self.solid_cache.culled_buckets());
+            }
             self.drawn_sections = visible.len();
             let mut decoded = std::mem::take(&mut self.decode_scratch);
             let before = self.device.draws;
@@ -618,7 +632,7 @@ impl Renderer {
                 for batch in self.solid_batches.values_mut() {
                     batch.next.clear();
                 }
-                for v in &visible {
+                for (visible_index, v) in visible.iter().enumerate() {
                     let key = &v.key;
                     let origin = Vec3::from_array(v.origin);
                     let section = self.sections.at(v.slot);
@@ -650,10 +664,12 @@ impl Renderer {
                     } else {
                         runs.push(0..u32::MAX);
                     }
+                    let buckets = self.solid_cache.buckets(visible_index);
                     for packet in &section.solid {
-                        if !runs
-                            .iter()
-                            .any(|r| r.start < packet.source.end && packet.source.start < r.end)
+                        if buckets & (1 << packet.bucket) == 0
+                            || !runs
+                                .iter()
+                                .any(|r| r.start < packet.source.end && packet.source.start < r.end)
                         {
                             continue;
                         }
@@ -704,11 +720,29 @@ impl Renderer {
             }
             self.decode_scratch = decoded;
             self.stamp("terrain indices/cold draws", &mut clock);
+            #[cfg(feature = "legacy-d3d9-dev")]
+            let dense = self
+                .device
+                .benchmark_active(dx::benchmark::Trial::DenseIndices);
+            #[cfg(not(feature = "legacy-d3d9-dev"))]
+            let dense = false;
+            let index_budget = (self.mesh_budget / 16).min(4 << 20);
+            let mut cached_bytes = if dense {
+                self.solid_batches
+                    .values()
+                    .map(mesh::DrawBatch::cached_bytes)
+                    .sum()
+            } else {
+                0
+            };
             for (&(page, cutout, id, fog_program), batch) in &mut self.solid_batches {
+                if dense {
+                    cached_bytes -= batch.cached_bytes();
+                }
                 if batch.next.is_empty() {
                     // A changed fog class must not retain another copy of the
                     // old visible index plan in each inactive program bucket.
-                    // Keep small CPU vectors reusable; SWVP has no cached IB.
+                    // Keep small CPU vectors reusable.
                     batch.release_indices();
                     continue;
                 }
@@ -740,7 +774,11 @@ impl Renderer {
                     &arena.mesh,
                     &mut self.index_scratch,
                     self.solid_reused,
+                    dense.then(|| index_budget.saturating_sub(cached_bytes)),
                 )?;
+                if dense {
+                    cached_bytes += batch.cached_bytes();
+                }
             }
             self.section_draws = (self.device.draws - before) as usize;
             self.device.profile_pass(dx::SubmitPass::DynamicEntities);
@@ -1139,7 +1177,15 @@ impl Renderer {
                 self.device.draw_transient(&b.vertices)?;
             }
         }
-        self.draw_glints(&glints, frame.pvp.glint)?;
+        #[cfg(feature = "legacy-d3d9-dev")]
+        let stage_glint = dynamic
+            && self.entity_staging
+            && self
+                .device
+                .benchmark_active(dx::benchmark::Trial::GlintStaging);
+        #[cfg(not(feature = "legacy-d3d9-dev"))]
+        let stage_glint = false;
+        self.draw_glints(&glints, frame.pvp.glint, stage_glint)?;
         if let Some(laps) = &mut dynamic_laps {
             laps.lap("d3d9_dynamic_entity_submit");
         }
