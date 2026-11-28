@@ -2471,3 +2471,77 @@ and embedded fog, hurt and VS2 contracts. A synthetic log checked
 classification of complete native windows and warmup exclusion.
 Native standing timing and visual checks on GMA3150, along with
 HD4570 and native device-lifecycle smoke, await hardware.
+
+### Three paired standing captures on Atom N455
+
+The three November 28 recordings contain the complete 600-second
+suite, with 80 phase marks and normal automatic stops in each.
+The suite marks match the Win7 dev package above. The capture
+metadata reports Atom N455, the 7601.28064 OS build and x64.
+The source SHA, adapter, driver and native counters require the
+matching diagnostic log. The one-second client samples report 81
+chunks throughout and 52–69 entities across runs.
+
+| Capture (UTC in file name) | Frames | FPS | Frame p50 / p95 / p99, ms | Slowest 1% mean, ms |
+| --- | ---: | ---: | ---: | ---: |
+| `profile-20261128-140233Z.hzperf` | 9,930 | 16.549 | 59.77 / 64.82 / 68.66 | 79.71 |
+| `profile-20261128-141611Z.hzperf` | 9,953 | 16.588 | 59.18 / 66.13 / 69.86 | 79.06 |
+| `profile-20261128-145004Z.hzperf` | 10,022 | 16.702 | 58.99 / 64.05 / 69.11 | 84.13 |
+
+All 29,905 frames are over the live slow-event threshold and are
+present in sequence, matching the frame summary counts and wall
+totals. Frame distributions use those records within measured
+intervals, excluding the warmup and using the marks as boundaries.
+Pass means use the two complete five-second span blocks per slot.
+Each experiment has 12 adjacent A/B pairs across three sessions.
+The pass numbers are elapsed wall time, with driver and possible
+GPU waits included. No hardware GPU timing is present.
+
+| Candidate B | Target pass A → B, ms/frame | Target quicker in pairs | DX9 Δ, ms/frame | FPS A → B | Frame p50 / p95 / p99 A → B, ms | Slowest 1% mean A → B, ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| DenseIndices | Solid 22.766 → 22.796 | 5/12 | -0.023 | 16.631 → 16.638 | 59.59 / 64.78 / 68.04 → 59.65 / 64.77 / 68.47 | 71.87 → 72.06 |
+| FaceBounds | Solid 23.010 → 21.736 | 12/12 | -1.317 | 16.583 → 16.892 | 59.27 / 64.62 / 91.44 → 58.57 / 64.14 / 66.57 | 99.53 → 67.91 |
+| SamplerReuse | DX9 renderer 44.021 → 44.268 | 4/12 | +0.247 | 16.668 → 16.585 | 59.34 / 64.08 / 66.93 → 59.47 / 64.68 / 69.31 | 70.57 → 82.85 |
+| GlintStaging | Dynamic entity submit 4.711 → 4.749 | 5/12 | +0.241 | 16.350 → 16.464 | 60.80 / 66.83 / 69.83 → 59.32 / 66.24 / 89.16 | 77.69 → 99.80 |
+| BaseTextureReuse | Translucent terrain 1.267 → 1.237 | 12/12 | -0.367 | 16.545 → 16.801 | 59.23 / 66.09 / 70.11 → 58.69 / 63.95 / 67.00 | 80.87 → 69.32 |
+
+FaceBounds gives the strongest effect. Solid improves by 1.06,
+1.13 and 1.65 ms/frame in the three captures and in all 12 pairs.
+Its median paired saving is 1.11 ms. Omitting any entire pair
+keeps a mean saving of 1.05–1.35 ms/frame with equal pair weights.
+Trimming the slowest 5% of solid spans within each slot preserves
+a 1.22 ms/frame saving across the 24 slots. This is evidence for
+the hot solid pass in a loaded, demanding scene. It still needs
+native geometry counts and a visual check before adoption.
+
+The pooled FaceBounds frame p99 includes 28 frames above 90 ms
+in the A interval from seconds 124–135 of the third capture.
+The median per-pair p99 delta is −1.02 ms. Full FPS deltas by
+capture are +0.239, −0.013 and +0.703. In the second capture shared
+HUD preparation grows about 1.02 ms/frame during B, alongside
+the 1.13 ms/frame solid saving. The frame rate varies with that
+additional work.
+
+BaseTextureReuse takes 0.029 ms/frame off translucent terrain
+with a lower value in all 12 pairs. GUI submit takes 0.027 ms/frame
+less in 10 pairs. DX9 wall falls in all three captures and in 10 of
+12 pairs. Its delta includes 0.168 ms/frame from solid. Both actual
+texture-reuse counts and exact workload are needed to attribute
+the total change. Shared HUD preparation also varies. The measured
+translucent and GUI differences are small and repeatable here.
+
+DenseIndices has nearly flat solid time and unverified activation
+in the standing scene. SamplerReuse loses 0.247 ms/frame in DX9 on
+the pooled measurement. GlintStaging takes 0.037 ms/frame more in
+dynamic submit while the mean client FPS rises. Shared HUD
+preparation falls 0.679 ms/frame, larger than the DX9 change.
+Each glint test has a cluster of >90 ms frames around second 381
+in its first B interval, involving both solid and entity stages.
+The pass timings leave the cause and lock savings open. These three
+variants remain diagnostic candidates.
+
+Read the already-recorded logs by the suite labels to verify
+the caps, workload and activation and check HRESULT failures.
+The next candidate should use FaceBounds as the main change.
+The base-texture reuse path warrants a combined check after its
+native activation and the face culling geometry are verified.
