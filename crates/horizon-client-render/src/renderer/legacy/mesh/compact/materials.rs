@@ -117,6 +117,7 @@ mod tests {
             count: 4,
             source: first / 4..first / 4 + 1,
             bucket: 0,
+            clusters: 0..0,
         }
     }
 

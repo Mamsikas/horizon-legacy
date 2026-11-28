@@ -1,5 +1,6 @@
 use super::*;
 use std::cell::{Ref, RefCell};
+mod beam;
 
 pub(super) struct Sprites {
     pub layout: Arc<dx::AtlasSet>,
@@ -309,6 +310,7 @@ pub(super) struct Pixels {
     image: dx::TileImage,
     main: RefCell<PixelPages>,
     entities: Option<RefCell<PixelPages>>,
+    beams: RefCell<beam::Sprites>,
 }
 struct PixelPages {
     side: u32,
@@ -338,17 +340,21 @@ pub(super) struct PixelView<'a> {
     image: &'a dx::TileImage,
     layout: &'a RefCell<PixelPages>,
     compact: Option<&'a RefCell<PixelPages>>,
+    beams: &'a RefCell<beam::Sprites>,
 }
 
 pub(super) struct PixelTextures<'a> {
     main: Ref<'a, [Option<dx::Texture>]>,
     compact: Option<Ref<'a, PixelPages>>,
+    beams: Ref<'a, beam::Sprites>,
 }
 
 impl PixelTextures<'_> {
     pub fn get(&self, page: usize) -> Option<&dx::Texture> {
         if page == ENTITY_PAGE {
             self.compact.as_ref()?.pages.first()?.as_ref()
+        } else if beam::Sprites::uses_page(page) {
+            self.beams.get(page)
         } else {
             self.main[page].as_ref()
         }
@@ -534,6 +540,7 @@ impl Pixels {
             image,
             main,
             entities: None,
+            beams: Default::default(),
         })
     }
 
@@ -542,6 +549,7 @@ impl Pixels {
             image: &self.image,
             layout: &self.main,
             compact: None,
+            beams: &self.beams,
         }
     }
 
@@ -550,6 +558,7 @@ impl Pixels {
             image: &self.image,
             layout: &self.main,
             compact: Some(self.entities.as_ref()?),
+            beams: &self.beams,
         })
     }
 
@@ -597,6 +606,7 @@ impl Pixels {
 
     pub fn bytes(&self) -> u64 {
         self.main.borrow().bytes()
+            + self.beams.borrow().bytes()
             + self
                 .entities
                 .as_ref()
@@ -627,6 +637,7 @@ impl Pixels {
                 pages.get_mut().queue(id);
             }
         }
+        self.beams.get_mut().dirty([x, y, width, height]);
         Ok(())
     }
 
@@ -648,7 +659,16 @@ impl<'a> PixelView<'a> {
         PixelTextures {
             main: self.textures(),
             compact: self.compact.map(RefCell::borrow),
+            beams: self.beams.borrow(),
         }
+    }
+
+    pub fn repeat_v_texture(
+        self,
+        device: &mut dx::Device,
+        rect: [f32; 4],
+    ) -> Result<Option<(usize, u32)>> {
+        self.beams.borrow_mut().prepare(self.image, device, rect)
     }
 
     pub fn prepare(self, device: &mut dx::Device) -> Result<()> {
@@ -816,6 +836,7 @@ mod tests {
             height: 13,
             main: RefCell::new(PixelPages::new(&image, 16, false).unwrap()),
             entities: Some(RefCell::new(PixelPages::new(&image, 32, true).unwrap())),
+            beams: Default::default(),
             image,
         };
         let quad = |left, right| {
@@ -866,6 +887,7 @@ mod tests {
             height: 8,
             main: RefCell::new(PixelPages::new(&image, 16, false).unwrap()),
             entities: Some(RefCell::new(PixelPages::new(&image, 32, true).unwrap())),
+            beams: Default::default(),
             image,
         };
         let quad = [[6.0, 2.0], [10.0, 2.0], [10.0, 6.0], [6.0, 6.0]].map(|[x, y]| dx::Vertex {

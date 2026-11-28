@@ -440,7 +440,7 @@ pub(super) fn origin(key: SectionKey, min_y: i32, camera: DVec3) -> DVec3 {
 }
 
 /// The camera's chunk column.
-pub(super) fn camera_column(camera: DVec3) -> (i32, i32) {
+pub(crate) fn camera_column(camera: DVec3) -> (i32, i32) {
     (
         (camera.x.floor() as i32) >> 4,
         (camera.z.floor() as i32) >> 4,

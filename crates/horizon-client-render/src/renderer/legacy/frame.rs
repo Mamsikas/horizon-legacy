@@ -7,6 +7,7 @@ pub(super) struct Batch {
     pub(super) page: usize,
     pub(super) state: DrawState,
     pub(super) vertices: Vec<dx::Vertex>,
+    beam_v: Option<[f32; 2]>,
 }
 struct EntityBatches {
     pixels: Vec<Batch>,
@@ -78,6 +79,7 @@ impl GuiBatches {
                 page,
                 state: self.state,
                 vertices: self.pool.pop().unwrap_or_default(),
+                beam_v: None,
             });
             self.open.len() - 1
         };
@@ -113,12 +115,13 @@ fn batch(
 ) {
     if out
         .last()
-        .is_none_or(|b| b.page != page || b.state != state)
+        .is_none_or(|b| b.page != page || b.state != state || b.beam_v.is_some())
     {
         out.push(Batch {
             page,
             state,
             vertices: Vec::new(),
+            beam_v: None,
         });
     }
     if let Some(b) = out.last_mut() {
@@ -137,8 +140,33 @@ fn draw_pixels(
     triangles: bool,
 ) -> Result<()> {
     pixels.prepare(device)?;
-    let textures = pixels.draw_textures();
+    let mut textures = pixels.draw_textures();
     for b in batches {
+        if let Some([origin, height]) = b.beam_v {
+            drop(textures);
+            let quad = b.vertices.as_slice().try_into()?;
+            let mut strips = Vec::new();
+            let mut bands = 0;
+            beam_bands(quad, 1, |poly, band| {
+                for vertex in poly.iter_mut() {
+                    vertex.uv[1] = origin + (vertex.uv[1] - band) * height;
+                }
+                pixels.polygon(poly, |page, p| batch(&mut strips, page, b.state, p, false));
+                bands += 1;
+                if bands == 16 {
+                    // Bound scratch space, keeping these strips in the original draw order.
+                    draw_pixels(device, pixels, lightmap, &strips, false)?;
+                    strips.clear();
+                    bands = 0;
+                }
+                Ok(())
+            })?;
+            if !strips.is_empty() {
+                draw_pixels(device, pixels, lightmap, &strips, false)?;
+            }
+            textures = pixels.draw_textures();
+            continue;
+        }
         let Some(texture) = textures.get(b.page) else {
             continue;
         };
@@ -604,10 +632,16 @@ impl Renderer {
                 .map(|s| s.vertices.len() as u64 * size_of::<dx::Vertex>() as u64)
                 .sum();
             #[cfg(feature = "legacy-d3d9-dev")]
-            let clip = self
-                .device
-                .benchmark_active(dx::benchmark::Trial::FaceBounds)
-                .then_some((&frustum, frame.camera, self.layout));
+            let clip = (self.diagnostics && self.device.caps.software_vertices).then_some(
+                solid_cache::Clip {
+                    frustum: &frustum,
+                    camera: frame.camera,
+                    layout: self.layout,
+                    clusters: self
+                        .device
+                        .benchmark_active(dx::benchmark::Trial::SolidClusters),
+                },
+            );
             #[cfg(not(feature = "legacy-d3d9-dev"))]
             let clip = None;
             self.solid_reused = self.solid_cache.update(
@@ -620,8 +654,10 @@ impl Renderer {
             );
             #[cfg(feature = "legacy-d3d9-dev")]
             if clip.is_some() {
-                self.device
-                    .profile_solid_face_groups(self.solid_cache.culled_buckets());
+                self.device.profile_solid_clipping(
+                    self.solid_cache.culled_buckets(),
+                    self.solid_cache.trimmed_vertices(),
+                );
             }
             self.drawn_sections = visible.len();
             let mut decoded = std::mem::take(&mut self.decode_scratch);
@@ -630,7 +666,7 @@ impl Renderer {
                 self.solid_batches
                     .retain(|(_, _, id, _), _| self.arenas.contains_key(id));
                 for batch in self.solid_batches.values_mut() {
-                    batch.next.clear();
+                    batch.start_plan();
                 }
                 for (visible_index, v) in visible.iter().enumerate() {
                     let key = &v.key;
@@ -665,7 +701,9 @@ impl Renderer {
                         runs.push(0..u32::MAX);
                     }
                     let buckets = self.solid_cache.buckets(visible_index);
-                    for packet in &section.solid {
+                    let mut trims = self.solid_cache.packet_trims(v.slot).iter().peekable();
+                    for (i, packet) in section.solid.iter().enumerate() {
+                        let trim = trims.next_if(|trim| trim.packet == i);
                         if buckets & (1 << packet.bucket) == 0
                             || !runs
                                 .iter()
@@ -694,24 +732,40 @@ impl Renderer {
                                 &decoded,
                             )?;
                         } else {
-                            for slice in
-                                section.candidate_slices(packet.first..packet.first + packet.count)
-                            {
-                                let first = packet.first.max(slice.source.start);
-                                let end = (packet.first + packet.count).min(slice.source.end);
+                            let range = packet.first..packet.first + packet.count;
+                            for slice in section.candidate_slices(range.clone()) {
+                                let first = range.start.max(slice.source.start);
+                                let end = range.end.min(slice.source.end);
                                 if first < end {
-                                    self.solid_batches
+                                    let batch = self
+                                        .solid_batches
                                         .entry((
                                             packet.page,
                                             !packet.opaque,
                                             slice.arena,
                                             fog_program,
                                         ))
-                                        .or_default()
-                                        .append(
-                                            slice.first + first - slice.source.start,
-                                            end - first,
+                                        .or_default();
+                                    let gpu_first = slice.first + first - slice.source.start;
+                                    if clip.is_some_and(|clip| clip.clusters) {
+                                        let full = gpu_first..gpu_first + end - first;
+                                        let keep = trim.map_or_else(
+                                            || full.clone(),
+                                            |t| {
+                                                let start = first.max(t.vertices.start);
+                                                let end = end.min(t.vertices.end);
+                                                if start < end {
+                                                    gpu_first + start - first
+                                                        ..gpu_first + end - first
+                                                } else {
+                                                    0..0
+                                                }
+                                            },
                                         );
+                                        batch.append_clipped(full, keep);
+                                    } else {
+                                        batch.append(gpu_first, end - first);
+                                    }
                                 }
                             }
                         }
@@ -925,13 +979,14 @@ impl Renderer {
         Ok(())
     }
     fn entity_batches(
-        &self,
+        &mut self,
         frame: &Frame,
         input: &[Vertex],
         fog: Option<dx::Fog>,
         phase: u8,
-        pixels: atlas::PixelView<'_>,
+        compact: bool,
     ) -> Result<EntityBatches> {
+        let pixels = self.hud.atlas.entity_or_main(compact);
         let mut batches = Vec::new();
         let mut sprite_batches = Vec::new();
         let mut glints = Vec::new();
@@ -1033,7 +1088,41 @@ impl Renderer {
                     .atlas
                     .polygon(&foil, |page, p| batch(&mut glints, page, state, p, false));
             }
-            if matches!(overlay, 41..=44) {
+            if overlay == 6 && quad[0].normal == crate::mesher::CULL_BACK {
+                let (u0, u1) = uv_extent(&vertices, 0);
+                let rect = [
+                    u0,
+                    (quad[0].light & 0xffff) as f32 / 65535.0,
+                    u1,
+                    (quad[0].light >> 16) as f32 / 65535.0,
+                ];
+                if let Some((page, limit)) = pixels.repeat_v_texture(&mut self.device, rect)? {
+                    beam_bands(&vertices, limit as i32, |poly, band| {
+                        for v in poly.iter_mut() {
+                            v.uv = [(v.uv[0] - u0) / (u1 - u0), v.uv[1] - band];
+                        }
+                        batch(
+                            &mut batches,
+                            page,
+                            DrawState {
+                                wrap_v: true,
+                                ..state
+                            },
+                            poly,
+                            false,
+                        );
+                        Ok(())
+                    })?;
+                } else {
+                    // A fallback quad is expanded in bounded pieces at submission time.
+                    batches.push(Batch {
+                        page: 0,
+                        state,
+                        vertices: vertices.to_vec(),
+                        beam_v: Some([rect[1], rect[3]]),
+                    });
+                }
+            } else if matches!(overlay, 41..=44) {
                 let layer = if overlay == 41 {
                     quad[0].glint_uv[0] as u32
                 } else {
@@ -1089,13 +1178,7 @@ impl Renderer {
         let dynamic = matches!(phase, 0 | 1);
         let mut dynamic_laps = dynamic.then(crate::spans::laps);
         let mut compact = dynamic && self.hud.atlas.entity_view().is_some();
-        let mut batches = self.entity_batches(
-            frame,
-            input,
-            fog,
-            phase,
-            self.hud.atlas.entity_or_main(compact),
-        )?;
+        let mut batches = self.entity_batches(frame, input, fog, phase, compact)?;
         if let Some(laps) = &mut dynamic_laps {
             laps.lap("d3d9_dynamic_entity_convert");
         }
@@ -1116,7 +1199,7 @@ impl Renderer {
                 );
                 self.hud.atlas.drop_entity_page();
                 compact = false;
-                batches = self.entity_batches(frame, input, fog, phase, self.hud.atlas.view())?;
+                batches = self.entity_batches(frame, input, fog, phase, false)?;
             }
         }
         let EntityBatches {
@@ -1200,6 +1283,9 @@ impl Renderer {
         compact: bool,
     ) -> Result<bool> {
         if batches.is_empty() && sprites.is_empty() {
+            return Ok(false);
+        }
+        if batches.iter().any(|b| b.beam_v.is_some()) {
             return Ok(false);
         }
         let pixels = self.hud.atlas.entity_or_main(compact);
@@ -1635,6 +1721,64 @@ impl Renderer {
         );
     }
 }
+fn uv_extent(quad: &[dx::Vertex; 4], axis: usize) -> (f32, f32) {
+    quad.iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), v| {
+            (lo.min(v.uv[axis]), hi.max(v.uv[axis]))
+        })
+}
+
+fn beam_bands(
+    vertices: &[dx::Vertex; 4],
+    step: i32,
+    mut emit: impl FnMut(&mut [dx::Vertex], f32) -> Result<()>,
+) -> Result<()> {
+    let (u0, u1) = uv_extent(vertices, 0);
+    let (v_min, v_max) = uv_extent(vertices, 1);
+    let mut band = v_min.floor() as i32;
+    let last = (v_max.ceil() as i32).max(band.saturating_add(1));
+    if band.saturating_add(step) >= last {
+        let mut quad = *vertices;
+        return emit(&mut quad, band as f32);
+    }
+    while band < last {
+        let end = band.saturating_add(step).min(last);
+        let mut poly = atlas::clip_rect(vertices.to_vec(), [u0, band as f32, u1, end as f32]);
+        if poly.len() >= 3 {
+            emit(&mut poly, band as f32)?;
+        }
+        band = end;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[test]
+fn beacon_bands_preserve_winding_and_repeat_across_negative_uvs() {
+    let input = [[1.0, 2.25], [1.0, -0.75], [0.0, -0.75], [0.0, 2.25]].map(|uv| dx::Vertex {
+        pos: [uv[0], uv[1], 0.0],
+        uv,
+        color: 0x20ff_8844,
+        light: [0.0; 2],
+    });
+    let mut intervals = Vec::new();
+    beam_bands(&input, 1, |poly, band| {
+        assert_eq!(poly.len(), 4);
+        for v in poly.iter() {
+            assert_eq!(v.color, input[0].color);
+            assert!((0.0..=1.0).contains(&(v.uv[1] - band)));
+            assert_eq!(v.pos[1], v.uv[1]);
+        }
+        let a = Vec3::from_array(poly[1].pos) - Vec3::from_array(poly[0].pos);
+        let b = Vec3::from_array(poly[2].pos) - Vec3::from_array(poly[0].pos);
+        assert!(a.cross(b).z < 0.0);
+        intervals.push(band);
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(intervals, [-1.0, 0.0, 1.0, 2.0]);
+}
+
 fn repeat_quad(input: &[dx::Vertex; 4], rect: [f32; 4], mut emit: impl FnMut(&[dx::Vertex])) {
     let min = std::array::from_fn::<_, 2, _>(|k| {
         input

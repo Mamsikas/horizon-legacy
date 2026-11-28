@@ -3,49 +3,59 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Trial {
     DenseIndices,
-    FaceBounds,
     SamplerReuse,
     GlintStaging,
     BaseTextureReuse,
+    SolidClusters,
 }
 
-const TRIALS: [Trial; 5] = [
-    Trial::DenseIndices,
-    Trial::FaceBounds,
-    Trial::SamplerReuse,
-    Trial::GlintStaging,
-    Trial::BaseTextureReuse,
-];
-const CANDIDATE: [bool; 8] = [false, true, true, false, true, false, false, true];
-const SLOT_SECONDS: u32 = 15;
+// Each arm appears once in every position, and every ordered pair of
+// different arms occurs once within a block.
+const ORDER: [[u8; 4]; 4] = [[0, 1, 3, 2], [1, 2, 0, 3], [2, 3, 1, 0], [3, 0, 2, 1]];
+const ENDS: [u32; 4] = [38, 75, 113, 150];
+const BLOCK_SECONDS: u32 = ENDS[3];
 const WARMUP_SECONDS: u32 = 2;
-pub const SECONDS: u32 = SLOT_SECONDS * CANDIDATE.len() as u32 * TRIALS.len() as u32;
+pub const SECONDS: u32 = BLOCK_SECONDS * ORDER.len() as u32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Slot {
     pub number: u32,
-    pub trial: Trial,
-    pub candidate: bool,
+    arm: u8,
     pub measuring: bool,
 }
 
 impl Slot {
     pub fn at(elapsed_seconds: u32) -> Option<Self> {
-        let number = elapsed_seconds / SLOT_SECONDS;
-        let index = number as usize;
+        let block = elapsed_seconds / BLOCK_SECONDS;
+        let order = ORDER.get(block as usize)?;
+        let within = elapsed_seconds % BLOCK_SECONDS;
+        let position = ENDS.partition_point(|&end| end <= within);
+        let start = if position == 0 { 0 } else { ENDS[position - 1] };
         Some(Self {
-            number,
-            trial: *TRIALS.get(index / CANDIDATE.len())?,
-            candidate: CANDIDATE[index % CANDIDATE.len()],
-            measuring: elapsed_seconds % SLOT_SECONDS >= WARMUP_SECONDS,
+            number: block * 4 + position as u32,
+            arm: order[position],
+            measuring: within - start >= WARMUP_SECONDS,
         })
     }
 
+    pub fn active(self, trial: Trial) -> bool {
+        match trial {
+            Trial::SolidClusters => self.arm & 1 != 0,
+            Trial::BaseTextureReuse => self.arm & 2 != 0,
+            Trial::DenseIndices | Trial::SamplerReuse | Trial::GlintStaging => false,
+        }
+    }
+
+    pub(super) fn arm(self) -> char {
+        char::from(b'A' + self.arm)
+    }
+
     pub fn marker(self) -> String {
-        let arm = if self.candidate { "B" } else { "A" };
         format!(
-            "DX9 benchmark slot={} trial={:?} arm={arm} measuring={}",
-            self.number, self.trial, self.measuring
+            "DX9 benchmark slot={} trial=Terrain arm={} measuring={}",
+            self.number,
+            self.arm(),
+            self.measuring
         )
     }
 }
@@ -55,22 +65,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn half_the_measurement_time_in_each_arm_for_every_trial() {
+    fn equal_measurement_time_and_balanced_order_for_the_four_arms() {
         assert_eq!(SECONDS, 600);
-        let mut slots = [[0; 2]; TRIALS.len()];
+        let mut measured = [0; 4];
         for second in 0..SECONDS {
             let slot = Slot::at(second).unwrap();
-            assert_eq!(slot.number, second / SLOT_SECONDS);
-            assert_eq!(slot.measuring, second % SLOT_SECONDS >= 2);
             if slot.measuring {
-                let i = TRIALS
-                    .iter()
-                    .position(|&trial| trial == slot.trial)
-                    .unwrap();
-                slots[i][usize::from(slot.candidate)] += 1;
+                measured[usize::from(slot.arm)] += 1;
+            }
+            assert_eq!(slot.active(Trial::SolidClusters), matches!(slot.arm, 1 | 3));
+            assert_eq!(
+                slot.active(Trial::BaseTextureReuse),
+                matches!(slot.arm, 2 | 3)
+            );
+        }
+        assert_eq!(measured, [142; 4]);
+        let mut transitions = [[0; 4]; 4];
+        for order in ORDER {
+            for pair in order.windows(2) {
+                transitions[usize::from(pair[0])][usize::from(pair[1])] += 1;
             }
         }
-        assert_eq!(slots, [[52, 52]; TRIALS.len()]);
+        for (from, moves) in transitions.iter().enumerate() {
+            for (to, &count) in moves.iter().enumerate() {
+                assert_eq!(count, u8::from(from != to));
+            }
+        }
         assert!(Slot::at(SECONDS).is_none());
     }
 }

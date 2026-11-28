@@ -5220,6 +5220,19 @@ impl Game<'_> {
         self.entity_motion_posed.borrow_mut().push(posed);
     }
     /// ItemEntityRenderer: items bob and spin; blocks render as small cubes.
+    #[cfg(all(windows, feature = "legacy-d3d9"))]
+    fn dx9_block_model_columns(
+        &self,
+        camera: glam::DVec3,
+    ) -> impl Fn([i32; 3]) -> bool + Copy + '_ {
+        let near = Renderer::block_model_columns(camera, self.terrain_distance());
+        let chunks = &self.world.chunks;
+        move |pos| {
+            let column = (pos[0] >> 4, pos[2] >> 4);
+            near(column.0, column.1) && chunks.contains_key(&column)
+        }
+    }
+
     fn entity_geometry(
         &mut self,
         camera: glam::DVec3,
@@ -5511,6 +5524,8 @@ impl Game<'_> {
                     v.intersects(o - glam::Vec3::ONE, o + glam::Vec3::splat(2.0))
                 })
             };
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            let block_model_columns = self.dx9_block_model_columns(camera);
             let camera_list: Vec<&([i32; 3], u32)> = r
                 .visible_block_entities_in_frustum(
                     self.settings.chunk_fade,
@@ -5520,6 +5535,10 @@ impl Game<'_> {
                 )
                 .filter(|(block, section_inside)| {
                     let (pos, state) = **block;
+                    #[cfg(all(windows, feature = "legacy-d3d9"))]
+                    if !block_model_columns(pos) {
+                        return false;
+                    }
                     self.live_block_entity_render(pos, state)
                         && (off_screen(state) || *section_inside || in_view(&pos))
                 })

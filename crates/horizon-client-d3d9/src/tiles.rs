@@ -128,6 +128,43 @@ impl TileImage {
         }
         Ok(())
     }
+    /// Copy native texels across virtual tile seams, excluding the tile gutters.
+    pub fn copy_rect(&self, [x, y, w, h]: [u32; 4]) -> Result<Vec<u8>, String> {
+        let right = x.checked_add(w).filter(|&end| end <= self.width);
+        let bottom = y.checked_add(h).filter(|&end| end <= self.height);
+        let (Some(right), Some(bottom)) = (right, bottom) else {
+            return Err("D3D9 tiled rectangle outside atlas".into());
+        };
+        if w == 0 || h == 0 {
+            return Ok(Vec::new());
+        }
+        let len = w as usize * h as usize * 4;
+        let mut pixels = Vec::new();
+        pixels.try_reserve_exact(len).map_err(|e| e.to_string())?;
+        pixels.resize(len, 0);
+        let mut tile = Vec::new();
+        let cell = self.cell() as usize;
+        for ty in y / self.tile..=(bottom - 1) / self.tile {
+            for tx in x / self.tile..=(right - 1) / self.tile {
+                let id = (ty * self.columns + tx) as usize;
+                if !self.present(id) {
+                    continue;
+                }
+                self.decode(id, &mut tile)?;
+                let left = (tx * self.tile).max(x);
+                let end = ((tx + 1) * self.tile).min(right);
+                let columns = (end - left) as usize * 4;
+                for row in (ty * self.tile).max(y)..((ty + 1) * self.tile).min(bottom) {
+                    let src = ((row % self.tile + self.padding) as usize * cell
+                        + (left % self.tile + self.padding) as usize)
+                        * 4;
+                    let dst = ((row - y) as usize * w as usize + (left - x) as usize) * 4;
+                    pixels[dst..dst + columns].copy_from_slice(&tile[src..src + columns]);
+                }
+            }
+        }
+        Ok(pixels)
+    }
     /// Patch virtual texels and both sides of a tile seam, including the
     /// clamp-to-edge gutters at the outer image boundary.
     pub fn patch(
@@ -194,6 +231,26 @@ impl TileImage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copy_rect_uses_native_texels_across_tiles_after_a_patch() {
+        let pixels: Vec<_> = (0..9 * 6 * 4).map(|i| (i + 1) as u8).collect();
+        let mut image = TileImage::new(&pixels, 9, 6, 4, 1).unwrap();
+        image.patch(4, 4, 1, 1, &[255; 4]).unwrap();
+        let mut expected = Vec::new();
+        for y in 2..6 {
+            for x in 3..8 {
+                let start = (y * 9 + x) * 4;
+                expected.extend_from_slice(if (x, y) == (4, 4) {
+                    &[255; 4]
+                } else {
+                    &pixels[start..start + 4]
+                });
+            }
+        }
+        assert_eq!(image.copy_rect([3, 2, 5, 4]).unwrap(), expected);
+        assert!(image.copy_rect([u32::MAX, 0, 2, 1]).is_err());
+    }
     #[test]
     fn patches_only_invalidate_geometry_when_a_sparse_tile_becomes_present() {
         let mut image = TileImage::new(&[0; 128], 8, 4, 4, 0).unwrap();

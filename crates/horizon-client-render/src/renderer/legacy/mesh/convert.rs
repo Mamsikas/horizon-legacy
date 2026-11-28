@@ -1,6 +1,29 @@
 //! Atlas conversion and shadow encoding shared by synchronous edits and the bounded worker.
 use super::*;
 mod honey;
+const EMPTY_BOUNDS: Bounds = [Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)];
+
+fn position_bounds(vertices: &[dx::Vertex], offset: Vec3) -> Bounds {
+    let [mut lo, mut hi] = EMPTY_BOUNDS;
+    for vertex in vertices {
+        let pos = Vec3::from_array(vertex.pos) + offset;
+        if !pos.is_finite() {
+            return [Vec3::splat(f32::NAN); 2];
+        }
+        lo = lo.min(pos);
+        hi = hi.max(pos);
+    }
+    [lo, hi]
+}
+
+fn include_bounds(bounds: &mut Bounds, [lo, hi]: Bounds) {
+    if lo.is_finite() && !bounds[0].x.is_nan() {
+        bounds[0] = bounds[0].min(lo);
+        bounds[1] = bounds[1].max(hi);
+    } else {
+        *bounds = [Vec3::splat(f32::NAN); 2];
+    }
+}
 #[derive(Default)]
 pub(in super::super) struct Scratch {
     groups: Vec<Vec<dx::Vertex>>,
@@ -13,6 +36,7 @@ pub(in super::super) struct Scratch {
 pub(in super::super) struct Converted {
     pub solid: Vec<Packet>,
     pub solid_bounds: Option<Box<SolidBounds>>,
+    pub solid_clusters: Box<[Bounds]>,
     pub translucent: Vec<dx::TextureRange>,
     pub shadow: Arc<dx::MeshData>,
     pub sides: crate::mesher::Sides,
@@ -108,8 +132,9 @@ impl Scratch {
             (key.1.rem_euclid(8) * 16) as f32,
             (key.2.rem_euclid(8) * 16) as f32,
         );
-        let mut solid_bounds = (self.cull_solid && !mesh.solid.is_empty())
-            .then(|| Box::new([[Vec3::splat(f32::INFINITY), Vec3::splat(f32::NEG_INFINITY)]; 7]));
+        let mut solid_bounds =
+            (self.cull_solid && !mesh.solid.is_empty()).then(|| Box::new([EMPTY_BOUNDS; 7]));
+        let mut solid_clusters = Vec::new();
         let mut solid = Vec::new();
         for (i, part) in self
             .groups
@@ -119,18 +144,17 @@ impl Scratch {
         {
             let page = i / 2 % pages;
             let bucket = i / (2 * pages);
+            let start = solid_clusters.len() as u16;
             if let Some(bounds) = &mut solid_bounds {
-                let [lo, hi] = &mut bounds[bucket];
-                if !lo.x.is_nan() {
-                    for vertex in part {
-                        let pos = Vec3::from_array(vertex.pos) + offset;
-                        if !pos.is_finite() {
-                            *lo = Vec3::splat(f32::NAN);
-                            break;
-                        }
-                        *lo = lo.min(pos);
-                        *hi = hi.max(pos);
+                let width = cluster_vertices(part.len() as u32) as usize;
+                if solid_clusters.len() + part.len().div_ceil(width) <= MAX_SOLID_CLUSTERS {
+                    for cluster in part.chunks(width) {
+                        let cluster = position_bounds(cluster, offset);
+                        include_bounds(&mut bounds[bucket], cluster);
+                        solid_clusters.push(cluster);
                     }
+                } else {
+                    include_bounds(&mut bounds[bucket], position_bounds(part, offset));
                 }
             }
             let source = thresholds.map_or(0..mesh.solid.len() as u32 / 4, |ends| {
@@ -147,6 +171,7 @@ impl Scratch {
                 count: part.len() as u32,
                 source,
                 bucket: bucket as u8,
+                clusters: start..solid_clusters.len() as u16,
             });
             vertices.extend_from_slice(part);
         }
@@ -204,6 +229,7 @@ impl Scratch {
         Ok(Converted {
             solid,
             solid_bounds,
+            solid_clusters: solid_clusters.into_boxed_slice(),
             translucent,
             shadow,
             sides,

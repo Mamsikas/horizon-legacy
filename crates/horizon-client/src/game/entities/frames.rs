@@ -709,7 +709,13 @@ impl Game<'_> {
         // ItemFrame.shouldRenderAtSqrDistance: 1024 blocks at a view scale
         // of 1.
         let range = 16.0 * 64.0 * self.view_scale();
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        let block_model_columns = self.dx9_block_model_columns(camera);
         for f in &self.item_frames {
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            if !block_model_columns(f.pos) {
+                continue;
+            }
             // LevelExtractor: the camera entity is not drawn from its own eyes.
             if self.hides_as_camera(f.id) {
                 continue;

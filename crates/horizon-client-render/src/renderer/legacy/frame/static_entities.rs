@@ -215,8 +215,7 @@ impl Renderer {
                 .chunks_exact(4)
                 .all(|quad| quad[0].layer & 0xffff == 0)
             {
-                let batches =
-                    self.entity_batches(frame, &section.vertices, fog, 2, self.hud.atlas.view())?;
+                let batches = self.entity_batches(frame, &section.vertices, fog, 2, false)?;
                 debug_assert!(batches.sprites.is_empty() && batches.glints.is_empty());
                 self.retain_static_entity_buffer(section, &batches.pixels)?;
                 uncached = Some(batches.pixels);

@@ -94,6 +94,7 @@ pub struct DrawState {
     pub linear: bool,
     pub mipmaps: bool,
     pub wrap: bool,
+    pub wrap_v: bool,
 }
 impl Default for DrawState {
     fn default() -> Self {
@@ -115,6 +116,7 @@ impl Default for DrawState {
             linear: false,
             mipmaps: true,
             wrap: false,
+            wrap_v: false,
         }
     }
 }
@@ -363,6 +365,8 @@ pub struct Device {
     #[cfg(feature = "dev-diagnostics")]
     benchmark_slot: Option<crate::benchmark::Slot>,
     #[cfg(feature = "dev-diagnostics")]
+    gpu_probe: Option<crate::gpu_profile::Probe>,
+    #[cfg(feature = "dev-diagnostics")]
     sampler_history_valid: bool,
     cached_state: Option<(DrawState, usize, usize)>,
     state_cache: StateCache,
@@ -393,14 +397,22 @@ impl Device {
         self.inner.profile.begin();
     }
     #[inline(always)]
-    pub fn profile_pass(&self, _pass: crate::SubmitPass) {
+    pub fn profile_pass(&mut self, _pass: crate::SubmitPass) {
         #[cfg(feature = "submit-profile")]
         self.inner.profile.pass(_pass);
+        #[cfg(feature = "dev-diagnostics")]
+        if let Some(probe) = &mut self.gpu_probe {
+            probe.pass(_pass);
+        }
     }
     #[inline(always)]
-    pub fn profile_end_frame(&self, _presented: bool) {
+    pub fn profile_end_frame(&mut self, _presented: bool) {
         #[cfg(feature = "submit-profile")]
         self.inner.profile.end(_presented);
+        #[cfg(feature = "dev-diagnostics")]
+        if !_presented && let Some(probe) = &mut self.gpu_probe {
+            probe.abort();
+        }
     }
     #[inline(always)]
     pub fn log_submit_profile(&self) {
@@ -413,8 +425,7 @@ impl Device {
     }
     #[cfg(feature = "dev-diagnostics")]
     pub fn benchmark_active(&self, trial: crate::benchmark::Trial) -> bool {
-        self.benchmark_slot
-            .is_some_and(|slot| slot.candidate && slot.trial == trial)
+        self.benchmark_slot.is_some_and(|slot| slot.active(trial))
     }
     #[cfg(feature = "dev-diagnostics")]
     pub fn set_benchmark_slot(&mut self, slot: Option<crate::benchmark::Slot>) -> bool {
@@ -430,9 +441,11 @@ impl Device {
         true
     }
     #[cfg(feature = "dev-diagnostics")]
-    pub fn profile_solid_face_groups(&self, count: u32) {
-        profile_count!(self.inner, |c| c.solid_face_groups_culled +=
-            u64::from(count));
+    pub fn profile_solid_clipping(&self, faces: u32, vertices: u64) {
+        profile_count!(self.inner, |c| {
+            c.solid_face_groups_culled += u64::from(faces);
+            c.solid_cluster_vertices_outside += vertices;
+        });
     }
     #[cfg(feature = "dev-diagnostics")]
     pub fn profile_glint_locks_saved(&self, count: usize) {
@@ -654,6 +667,8 @@ impl Device {
             #[cfg(feature = "dev-diagnostics")]
             benchmark_slot: None,
             #[cfg(feature = "dev-diagnostics")]
+            gpu_probe: crate::log_stats_enabled().then(crate::gpu_profile::Probe::default),
+            #[cfg(feature = "dev-diagnostics")]
             sampler_history_valid: false,
             cached_state: None,
             state_cache: StateCache::default(),
@@ -823,6 +838,8 @@ impl Device {
             anisotropy: self.anisotropy,
             #[cfg(feature = "dev-diagnostics")]
             benchmark_slot: None,
+            #[cfg(feature = "dev-diagnostics")]
+            gpu_probe: self.gpu_probe.as_ref().map(|_| Default::default()),
             #[cfg(feature = "dev-diagnostics")]
             sampler_history_valid: false,
             cached_state: None,
@@ -1069,6 +1086,10 @@ impl Device {
         #[cfg(feature = "dev-diagnostics")]
         let sampler_history_valid = sampler_history_valid && !self.lost && !self.reset_pending;
         if self.reset_pending {
+            #[cfg(feature = "dev-diagnostics")]
+            if let Some(probe) = &mut self.gpu_probe {
+                *probe = Default::default();
+            }
             self.state_cache.stream.invalidate();
             self.detach_presentation();
             // Textures/indices are MANAGED. Terrain buffers have a CPU cache in the
@@ -1178,6 +1199,10 @@ impl Device {
         self.cached_transform = None;
         self.shader_active = None;
         self.fog_constants = None;
+        #[cfg(feature = "dev-diagnostics")]
+        if let Some(probe) = &mut self.gpu_probe {
+            probe.begin(&self.inner.device);
+        }
         // Select the world target before Clear, so scaling does not also clear a full-size window.
         self.select_world_target(scale)?;
         // SAFETY: state values are D3D9 constants; begin/finish pair on this thread.
@@ -1289,6 +1314,10 @@ impl Device {
                 Err(e) => return Err(e.into()),
                 Ok(()) => {}
             }
+        }
+        #[cfg(feature = "dev-diagnostics")]
+        if let Some(probe) = &mut self.gpu_probe {
+            probe.end(self.benchmark_slot);
         }
         // SAFETY: null rectangles present the complete windowed swapchain.
         match unsafe {
@@ -1421,6 +1450,24 @@ impl Device {
         rgba: &[u8],
     ) -> Result<Texture> {
         self.texture_with_pixels(width, height, levels, Some(rgba))
+    }
+
+    pub fn repeat_v_limit(&self, width: u32, height: u32) -> Option<u32> {
+        let caps = &self.caps.raw;
+        let pow2 = caps.TextureCaps & D3DPTEXTURECAPS_POW2 as u32 != 0;
+        let square = caps.TextureCaps & D3DPTEXTURECAPS_SQUAREONLY as u32 != 0;
+        let scaled_repeat = caps.TextureCaps & D3DPTEXTURECAPS_TEXREPEATNOTSCALEDBYSIZE as u32 == 0;
+        let limit = if caps.MaxTextureRepeat == 0 {
+            i32::MAX as u32
+        } else {
+            caps.MaxTextureRepeat / if scaled_repeat { height.max(1) } else { 1 }
+        };
+        (caps.TextureAddressCaps & D3DPTADDRESSCAPS_INDEPENDENTUV as u32 != 0
+            && caps.TextureAddressCaps & D3DPTADDRESSCAPS_WRAP as u32 != 0
+            && (!pow2 || (width.is_power_of_two() && height.is_power_of_two()))
+            && (!square || width == height)
+            && limit > 0)
+            .then_some(limit.min(i32::MAX as u32))
     }
 
     /// Allocate a single-level managed texture filled with transparent black.
@@ -2311,7 +2358,12 @@ impl Device {
                     D3DTADDRESS_CLAMP
                 };
                 cache.sampler(&self.inner, sampler, D3DSAMP_ADDRESSU, address.0 as u32)?;
-                cache.sampler(&self.inner, sampler, D3DSAMP_ADDRESSV, address.0 as u32)?;
+                let address_v = if sampler == 0 && state.wrap_v {
+                    D3DTADDRESS_WRAP
+                } else {
+                    address
+                };
+                cache.sampler(&self.inner, sampler, D3DSAMP_ADDRESSV, address_v.0 as u32)?;
             }
         }
         self.cached_state = Some(key);

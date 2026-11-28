@@ -2545,3 +2545,70 @@ the caps, workload and activation and check HRESULT failures.
 The next candidate should use FaceBounds as the main change.
 The base-texture reuse path warrants a combined check after its
 native activation and the face culling geometry are verified.
+
+### Four-arm standing suite with solid clusters
+
+The previous standing captures put the renderer at about 43 ms/frame
+with FaceBounds active. Reaching 20 FPS from about 59 ms/frame
+requires roughly 9 ms/frame across the frame. The solid pass is the
+largest measured DX9 stage, at about 22 ms/frame.
+
+This dev suite uses the meshlet principle of precomputing bounds for
+groups of primitives. DX9 stores bounds on contiguous solid material
+packets during the existing mesh conversion. Each section has room for
+128 bounds (3 KiB), with up to eight clusters per packet and at least
+64 quads per full cluster. While planning solid draws, packets near
+the screen edge can lose clusters wholly outside a padded frustum.
+Ranges use the original arena vertices and keep interior gaps inside
+each originally contiguous draw. The plan compares exact clipped
+ranges plus section revisions and the device generation. Incomplete
+GPU residency takes the original unclipped draw path for that frame.
+The cluster principle is described by [meshoptimizer](https://github.com/zeux/meshoptimizer#cluster-culling).
+
+| Arm | Face bounds | Solid clusters | Base texture reuse |
+| --- | --- | --- | --- |
+| A | Yes | | |
+| B | Yes | Yes | |
+| C | Yes | | Yes |
+| D | Yes | Yes | Yes |
+
+Use the audited dev SWVP client, warm up the fixed server standing
+location, and run `/profiler start client` three times from the same
+position and view. Settings stay fixed. Each capture completes in 600
+seconds and reports the save in chat. The four 150-second blocks use
+ABDC, BCAD, CDBA and DACB. In every slot the first two seconds are
+warmup. Every arm gets 142 measured seconds across four slots. The
+`DX9 benchmark` capture marks delimit intervals. Each capture should
+travel with its DX9 log, which contains the build SHA and HAL caps.
+
+Compare B with A and D with C for solid clusters. Compare C with A and
+D with B for base texture reuse. Report all three repeats and the
+combined D versus A result. The log records actual DIP ranges,
+NumVertices, and an upper bound on vertices available to trim
+(`solid_cluster_vertices_outside`). Base-texture reuse counts show
+whether that branch was active. Also compare frame p50/p95/p99 and
+slowest 1% with the pass times. Loading and serverwalk can be checked
+separately when a steady-state candidate warrants a moving-scene test.
+
+The same dev log probes DX9 timestamp/frequency/disjoint support.
+Samples every 64 frames reaching the scene setup bracket the scene and solid
+submission. Three query slots are polled from later frames with
+`GetData` flags zero. GPU timestamp intervals can include gaps in the
+command stream. On drivers with EVENT support only, the log gives the
+wall interval between the last pending poll and first completed poll
+when both exist, and an upper bound on observable completion age
+otherwise. It reports unsupported when query creation is unavailable.
+The sampled thread CPU durations measure CPU execution. Existing
+resident and upload counters measure owned resources. Driver bandwidth,
+hardware utilization, and VRAM residency still require other evidence.
+
+All four arms use the same DX9 beacon and attached-model fixes.
+Beacon and gateway walls repeat the actual sprite on V with caps-aware
+sampling. The managed sprite cache is capped at 1 MiB of texels, is
+dirtied by overlapping atlas patches, and follows the atlas lifetime.
+Unsupported texture layouts use bounded strips, retaining depth and
+alpha order. Block entity models, item frames and paintings use the
+terrain near-column mask and client chunk presence. Check a coloured
+beacon and glow, including from inside the beam, and approach a chest,
+banner and item frame across the edge of the loaded view. A device
+reset and a resource reload should retain the corrected rendering.

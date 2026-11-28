@@ -133,6 +133,7 @@ mod enabled {
         pub solid_draws_saved: u64,
         pub solid_extra_vertices: u64,
         pub solid_face_groups_culled: u64,
+        pub solid_cluster_vertices_outside: u64,
         pub glint_locks_saved: u64,
         pub sampler_history_frames: u64,
         /// Immutable VB, transient VB (including GUI), IB, texture patches.
@@ -290,7 +291,7 @@ mod enabled {
             let mut state = self.state.borrow_mut();
             let window = std::mem::take(&mut state.window);
             log::info!(
-                "D3D9 submit_window v=1 seconds={:.6} started={} presented={} aborted={} cpu_sample_period=64 gpu_timing=not_instrumented",
+                "D3D9 submit_window v=1 seconds={:.6} started={} presented={} aborted={} cpu_sample_period=64",
                 window.since.elapsed().as_secs_f64(),
                 window.started,
                 window.presented,
@@ -298,7 +299,7 @@ mod enabled {
             );
             for (pass, c) in PASSES.iter().zip(window.counters) {
                 log::info!(
-                    "D3D9 submit pass={pass:?} com={:?} failures={:?} cache_requests={:?} state_requests={} base_texture_only={} transform_requests={} stream_requests={} dip_num_vertices={} dip_ranges={} dip_min={:?} dip_max={} dip_p50_upper={:?} dip_p95_upper={:?} dp_vertices={} screen_vertices={} triangles={} lines={} upload_bytes={:?} wall_ms={:.6} sample_wall_ms={:.6} sample_cpu_ms={:.6} cpu_samples={} cpu_unavailable={} solid_draws_saved={} solid_extra_vertices={} solid_face_groups_culled={} glint_locks_saved={} sampler_history_frames={}",
+                    "D3D9 submit pass={pass:?} com={:?} failures={:?} cache_requests={:?} state_requests={} base_texture_only={} transform_requests={} stream_requests={} dip_num_vertices={} dip_ranges={} dip_min={:?} dip_max={} dip_p50_upper={:?} dip_p95_upper={:?} dp_vertices={} screen_vertices={} triangles={} lines={} upload_bytes={:?} wall_ms={:.6} sample_wall_ms={:.6} sample_cpu_ms={:.6} cpu_samples={} cpu_unavailable={} solid_draws_saved={} solid_extra_vertices={} solid_face_groups_culled={} solid_cluster_vertices_outside={} glint_locks_saved={} sampler_history_frames={}",
                     c.calls,
                     c.failures,
                     c.cache_requests,
@@ -325,6 +326,7 @@ mod enabled {
                     c.solid_draws_saved,
                     c.solid_extra_vertices,
                     c.solid_face_groups_culled,
+                    c.solid_cluster_vertices_outside,
                     c.glint_locks_saved,
                     c.sampler_history_frames
                 );

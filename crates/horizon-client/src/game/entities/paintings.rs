@@ -460,7 +460,13 @@ impl Game<'_> {
         let Some(back) = sprites.get("painting/back").copied() else {
             return;
         };
+        #[cfg(all(windows, feature = "legacy-d3d9"))]
+        let block_model_columns = self.dx9_block_model_columns(camera);
         for p in &self.paintings {
+            #[cfg(all(windows, feature = "legacy-d3d9"))]
+            if !block_model_columns(p.pos) {
+                continue;
+            }
             // EntityRenderer.shouldRender: the default range and its box,
             // measured from the box's centre (HangingEntity's position).
             let (lo, hi) = p.bounds();

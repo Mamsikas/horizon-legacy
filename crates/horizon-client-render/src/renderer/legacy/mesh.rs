@@ -12,11 +12,21 @@ pub(super) struct Packet {
     pub count: u32,
     pub source: Range<u32>,
     pub bucket: u8,
+    pub clusters: Range<u16>,
 }
-pub(super) type SolidBounds = [[Vec3; 2]; 7];
+pub(super) type Bounds = [Vec3; 2];
+pub(super) type SolidBounds = [Bounds; 7];
+pub(super) const MAX_SOLID_CLUSTERS: usize = 128;
+
+pub(super) fn cluster_vertices(count: u32) -> u32 {
+    // At most eight clusters in one packet, each ending on a quad boundary.
+    (count / 4).div_ceil(8).max(64) * 4
+}
+
 pub(super) struct Section {
     pub solid: Vec<Packet>,
     pub solid_bounds: Option<Box<SolidBounds>>,
+    pub solid_clusters: Box<[Bounds]>,
     pub translucent: Vec<dx::TextureRange>,
     pub translucent_order: std::cell::RefCell<dx::PageOrder>,
     pub vertices: Arc<dx::MeshData>,
@@ -83,12 +93,20 @@ struct PendingArena {
 #[derive(Default)]
 pub(super) struct DrawBatch {
     pub next: Vec<(u32, u32)>,
+    run_end: u32,
+    run_has_draw: bool,
     ranges: Vec<(u32, u32)>,
     indices: Option<dx::Indices>,
     dense_attempted: bool,
     dense_savings: dx::IndexSavings,
 }
 impl DrawBatch {
+    pub fn start_plan(&mut self) {
+        self.next.clear();
+        self.run_end = 0;
+        self.run_has_draw = false;
+    }
+
     pub fn append(&mut self, first: u32, count: u32) {
         if let Some(last) = self.next.last_mut()
             && last.0 + last.1 == first
@@ -96,6 +114,26 @@ impl DrawBatch {
             last.1 += count;
         } else {
             self.next.push((first, count));
+        }
+    }
+    pub fn append_clipped(&mut self, full: Range<u32>, keep: Range<u32>) {
+        if full.start != self.run_end {
+            self.run_has_draw = false;
+        }
+        self.run_end = full.end;
+        let first = full.start.max(keep.start);
+        let end = full.end.min(keep.end);
+        if first >= end {
+            return;
+        }
+        if self.run_has_draw {
+            // Clip the whole original contiguous draw. Keep interior gaps
+            // between visible packets so culling cannot increase draw count.
+            let last = self.next.last_mut().unwrap();
+            last.1 = end - last.0;
+        } else {
+            self.next.push((first, end - first));
+            self.run_has_draw = true;
         }
     }
     pub fn bytes(&self) -> usize {
@@ -346,6 +384,7 @@ impl Renderer {
         let convert::Converted {
             solid,
             solid_bounds,
+            solid_clusters,
             translucent,
             shadow,
             sides,
@@ -354,8 +393,9 @@ impl Renderer {
             visibility,
             gpu,
         } = ready;
-        let bytes =
-            shadow.bytes() + u64::from(solid_bounds.is_some()) * size_of::<SolidBounds>() as u64;
+        let bytes = shadow.bytes()
+            + u64::from(solid_bounds.is_some()) * size_of::<SolidBounds>() as u64
+            + size_of_val(solid_clusters.as_ref()) as u64;
         let decoded_bytes = gpu.len() as u64 * size_of::<dx::Vertex>() as u64;
         self.release_gpu_section(key);
         if let Some(old) = self.sections.remove(&key) {
@@ -369,6 +409,7 @@ impl Renderer {
                 translucent_order: Default::default(),
                 solid,
                 solid_bounds,
+                solid_clusters,
                 translucent,
                 vertices: shadow,
                 gpu: Vec::new(),
@@ -712,6 +753,11 @@ impl Renderer {
     pub fn block_entities(&self) -> impl Iterator<Item = &([i32; 3], u32)> {
         self.sections.values().flat_map(|s| &s.blocks)
     }
+    /// Use the same near-column mask as the legacy terrain walk.
+    pub fn block_model_columns(camera: DVec3, radius: i32) -> impl Fn(i32, i32) -> bool + Copy {
+        let center = gfx::resident::camera_column(camera);
+        move |x, z| crate::streaming::in_view_distance(center, radius, x, z)
+    }
     pub fn visible_block_entities(
         &self,
         _fade_seconds: f32,
@@ -854,12 +900,27 @@ mod tests {
     }
 
     #[test]
+    fn clipped_solid_draws_keep_contiguous_runs_without_adding_calls() {
+        let mut batch = DrawBatch::default();
+        batch.append_clipped(0..8, 4..8);
+        batch.append_clipped(8..16, 0..0);
+        batch.append_clipped(16..24, 16..20);
+        batch.append_clipped(24..32, 0..0);
+        batch.append_clipped(40..48, 44..48);
+        assert_eq!(batch.next, [(4, 16), (44, 4)]);
+        batch.start_plan();
+        batch.append_clipped(48..56, 52..56);
+        assert_eq!(batch.next, [(52, 4)]);
+    }
+
+    #[test]
     fn moving_a_block_entity_invalidates_its_snapshot_without_invalidating_the_mesh() {
         let moved = [-2, 5, 3];
         let neighbour = ([-1, 5, 3], 20);
         let mut section = Section {
             solid: Vec::new(),
             solid_bounds: None,
+            solid_clusters: Box::default(),
             translucent: Vec::new(),
             translucent_order: Default::default(),
             vertices: Arc::new(dx::MeshData::new(&[])),

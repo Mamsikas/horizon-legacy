@@ -14,6 +14,8 @@ mod submit_profile;
 pub use submit_profile::SubmitPass;
 #[cfg(windows)]
 mod device;
+#[cfg(all(windows, feature = "dev-diagnostics"))]
+mod gpu_profile;
 #[cfg(windows)]
 pub use device::*;
 #[cfg(windows)]
