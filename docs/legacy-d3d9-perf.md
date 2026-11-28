@@ -2553,6 +2553,14 @@ with FaceBounds active. Reaching 20 FPS from about 59 ms/frame
 requires roughly 9 ms/frame across the frame. The solid pass is the
 largest measured DX9 stage, at about 22 ms/frame.
 
+In the three earlier captures, 88 frames exceeded 90 ms. Median solid
+time in those frames was 38.8–39.6 ms by capture, compared with
+22.4–22.8 ms in frames of 58–62 ms. Entity draw was likewise
+20.1–20.6 ms versus about 13 ms. The client frame loop computes its
+`cpu_ms` field from elapsed time minus `last_wait`. That leaves waits
+inside the passes in the field and motivates the separate HAL and
+thread CPU samples.
+
 This dev suite uses the meshlet principle of precomputing bounds for
 groups of primitives. DX9 stores bounds on contiguous solid material
 packets during the existing mesh conversion. Each section has room for
@@ -2612,3 +2620,25 @@ terrain near-column mask and client chunk presence. Check a coloured
 beacon and glow, including from inside the beam, and approach a chest,
 banner and item frame across the edge of the loaded view. A device
 reset and a resource reload should retain the corrected rendering.
+
+Source baseline `7e0858fe4fd44e32b3a8e14c3e23ab6ca976aa3b`.
+The dev packages pin `0e34e63b200242eaa339b7b06d8a4cf6528990b0`
+and use the existing Win7 ThinLTO workflow. The complete file list
+is in the [diff from the baseline](https://github.com/Mamsikas/horizon-legacy/compare/7e0858fe4f...0e34e63b20).
+
+Local Win7 compile checks passed for dev and ordinary x64/x86.
+DX9 host tests passed 39 in dev and 36 in ordinary mode. The import
+policy test suite passed 15 checks. A host exercise of the clipping
+and beam math covered 4,096 combinations of contiguous and separated
+draw ranges, clip borders, unknown bounds and negative UVs. A
+synthetic capture validated marker and diagnostic window attribution.
+The speed and visual checks still require native GMA3150, and
+HD4570 has yet to run the package.
+
+| Win7 package | Actions artifact SHA-256 |
+| --- | --- |
+| [x64](https://github.com/Mamsikas/horizon-legacy/actions/runs/46166249514/artifacts/15271334872) | `8887fb42a66d61d0b3164d287f3b70163548392f7e702c49f86fddb4d60b974e` |
+| [x86](https://github.com/Mamsikas/horizon-legacy/actions/runs/46166249514/artifacts/15271689898) | `f635d1ff1e370f8df8c970c43e0ac121a4185c696e3c364d8b2d8d43d94ed9cc` |
+
+Both packages passed the Win7 executable import audit and the import
+policy tests in [GitHub Actions](https://github.com/Mamsikas/horizon-legacy/actions/runs/46166249514).
