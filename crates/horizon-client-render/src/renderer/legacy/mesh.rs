@@ -93,18 +93,21 @@ struct PendingArena {
 #[derive(Default)]
 pub(super) struct DrawBatch {
     pub next: Vec<(u32, u32)>,
-    run_end: u32,
-    run_has_draw: bool,
+    clipped: Vec<ClippedRange>,
     ranges: Vec<(u32, u32)>,
     indices: Option<dx::Indices>,
     dense_attempted: bool,
     dense_savings: dx::IndexSavings,
 }
+struct ClippedRange {
+    full: Range<u32>,
+    kept: Range<u32>,
+}
+
 impl DrawBatch {
     pub fn start_plan(&mut self) {
         self.next.clear();
-        self.run_end = 0;
-        self.run_has_draw = false;
+        self.clipped.clear();
     }
 
     pub fn append(&mut self, first: u32, count: u32) {
@@ -117,27 +120,53 @@ impl DrawBatch {
         }
     }
     pub fn append_clipped(&mut self, full: Range<u32>, keep: Range<u32>) {
-        if full.start != self.run_end {
-            self.run_has_draw = false;
-        }
-        self.run_end = full.end;
-        let first = full.start.max(keep.start);
-        let end = full.end.min(keep.end);
-        if first >= end {
+        let kept = full.start.max(keep.start)..full.end.min(keep.end);
+        self.clipped.push(ClippedRange { full, kept });
+    }
+    pub fn finish_plan(&mut self) {
+        if !self.clipped.is_empty() {
+            // Visible sections arrive in camera order. Find the contiguous
+            // draws in arena order before trimming either end of each draw.
+            self.clipped.sort_unstable_by_key(|part| part.full.start);
+            let mut kept = 0..0;
+            let mut end = 0;
+            for part in self.clipped.drain(..) {
+                if part.full.start != end {
+                    if !kept.is_empty() {
+                        self.next.push((kept.start, kept.end - kept.start));
+                    }
+                    kept = 0..0;
+                }
+                end = part.full.end;
+                if !part.kept.is_empty() {
+                    if kept.is_empty() {
+                        kept.start = part.kept.start;
+                    }
+                    kept.end = part.kept.end;
+                }
+            }
+            if !kept.is_empty() {
+                self.next.push((kept.start, kept.end - kept.start));
+            }
             return;
         }
-        if self.run_has_draw {
-            // Clip the whole original contiguous draw. Keep interior gaps
-            // between visible packets so culling cannot increase draw count.
-            let last = self.next.last_mut().unwrap();
-            last.1 = end - last.0;
-        } else {
-            self.next.push((first, end - first));
-            self.run_has_draw = true;
+        // Canonical ranges keep camera motion from rewriting the IB.
+        self.next.sort_unstable();
+        let mut used = 0;
+        for i in 0..self.next.len() {
+            let (first, count) = self.next[i];
+            if used > 0 && self.next[used - 1].0 + self.next[used - 1].1 == first {
+                self.next[used - 1].1 += count;
+            } else {
+                self.next[used] = (first, count);
+                used += 1;
+            }
         }
+        self.next.truncate(used);
     }
     pub fn bytes(&self) -> usize {
         (self.next.capacity() + self.ranges.capacity()) * size_of::<(u32, u32)>()
+            + self.clipped.capacity() * size_of::<ClippedRange>()
             + self.indices.as_ref().map_or(0, dx::Indices::cpu_bytes)
     }
     pub fn gpu_bytes(&self) -> u64 {
@@ -202,22 +231,6 @@ impl DrawBatch {
             if let Some(indices) = &self.indices {
                 return device.draw_cached(mesh, indices);
             }
-        }
-        // Visibility membership matters; near-first ordering of opaque sections
-        // does not. Canonical ranges keep camera motion from rewriting the IB.
-        if !unchanged {
-            self.next.sort_unstable();
-            let mut used = 0;
-            for i in 0..self.next.len() {
-                let (first, count) = self.next[i];
-                if used > 0 && self.next[used - 1].0 + self.next[used - 1].1 == first {
-                    self.next[used - 1].1 += count;
-                } else {
-                    self.next[used] = (first, count);
-                    used += 1;
-                }
-            }
-            self.next.truncate(used);
         }
         if device.caps.software_vertices {
             if let Some(limit) = dense_byte_limit {
@@ -902,14 +915,16 @@ mod tests {
     #[test]
     fn clipped_solid_draws_keep_contiguous_runs_without_adding_calls() {
         let mut batch = DrawBatch::default();
-        batch.append_clipped(0..8, 4..8);
-        batch.append_clipped(8..16, 0..0);
         batch.append_clipped(16..24, 16..20);
-        batch.append_clipped(24..32, 0..0);
         batch.append_clipped(40..48, 44..48);
+        batch.append_clipped(0..8, 4..8);
+        batch.append_clipped(24..32, 0..0);
+        batch.append_clipped(8..16, 0..0);
+        batch.finish_plan();
         assert_eq!(batch.next, [(4, 16), (44, 4)]);
         batch.start_plan();
         batch.append_clipped(48..56, 52..56);
+        batch.finish_plan();
         assert_eq!(batch.next, [(52, 4)]);
     }
 

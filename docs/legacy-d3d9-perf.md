@@ -2642,3 +2642,91 @@ HD4570 has yet to run the package.
 
 Both packages passed the Win7 executable import audit and the import
 policy tests in [GitHub Actions](https://github.com/Mamsikas/horizon-legacy/actions/runs/46166249514).
+
+### ABCD result on GMA3150
+
+The three 600-second captures and their shared log pin clean Win7 x64
+`0e34e63b200242eaa339b7b06d8a4cf6528990b0`, Chell 1.8b GMA3150,
+software vertex processing and HAL rasterization. The captures stopped
+normally and carry every one of the 29,861 frame records. The 28,263
+measured frames omit the two-second warmup per slot. Complete native
+windows agree with the capture slot counts within one frame, with zero
+reported COM failures or aborted frames. Client health reports 81 chunks
+throughout the measured windows.
+
+| Capture (UTC in path) | D minus A FPS | D minus A renderer, ms/frame | D minus A solid, ms/frame |
+| --- | ---: | ---: | ---: |
+| `profile-20261128-182545Z.hzperf` | +0.130 | −0.679 | −0.776 |
+| `profile-20261128-184928Z.hzperf` | +0.409 | −1.446 | −0.988 |
+| `profile-20261128-190204Z.hzperf` | +0.223 | −0.753 | −0.791 |
+
+| Arm | FPS | Frame p50 / p95 / p99, ms | Renderer / solid / planning, ms/frame | Solid DIP / NumVertices per frame |
+| --- | ---: | ---: | ---: | ---: |
+| A | 16.446 | 59.24 / 65.88 / 92.22 | 45.042 / 22.447 / 0.105 | 139.44 / 70,203 |
+| B | 16.584 | 59.15 / 65.16 / 84.32 | 44.395 / 21.759 / 0.249 | 114.89 / 68,707 |
+| C | 16.611 | 59.20 / 65.42 / 69.09 | 44.356 / 21.953 / 0.104 | 133.87 / 70,208 |
+| D | 16.700 | 58.93 / 64.48 / 70.91 | 44.090 / 21.598 / 0.250 | 113.07 / 68,721 |
+
+Frame timings use the full live records. Pass means use complete
+five-second span blocks inside measured slots. Native call and vertex
+counts come from complete labelled log windows. Pair D with A within
+each of the 12 balanced blocks for a median +0.130 FPS, −0.554 ms of
+renderer wall and −0.653 ms of solid wall. D improved FPS in 11 blocks
+and solid wall in all 12. The median p99 change was −0.97 ms with a
+wider spread. The large pooled p99 gap is sensitive to spike placement.
+
+For clusters, pair B with A and D with C. Across the 24 differences
+the median solid saving is 0.459 ms and the median planning cost is
+0.144 ms. The median net saving is 0.316 ms, with 20 of 24 net
+improvements. The bounds identify 5,980 removable vertices per frame
+at packet ends before preserving interior gaps. The native reduction
+averages about 1,500 vertices with roughly 21–25 fewer draws per frame
+within each texture-reuse setting. This measures the count supplied to
+DIP. The driver determines actual transform and rasterization work.
+
+For base-texture state reuse, C versus A and D versus B save a median
+0.018 ms per frame in translucent terrain across 24 differences.
+The log shows one reuse in solid, five in translucent terrain and
+occasional reuse in GUI. Unrelated solid and HUD variation makes the
+whole-frame effect of that state change hard to isolate.
+
+The HAL exposes EVENT queries. All 438 measured EVENT results were
+already ready at the first poll two frames later, about 75–77 ms in
+the arm medians. These are completion-age upper bounds. The captures
+contain zero GPU timestamp intervals. Render-thread execution occupies
+a median 97% of the logged standing windows. In the sampled Solid
+intervals, aggregated CPU execution is 93–95% of the sampled wall
+time by arm. Windows thread timing is coarse at individual pass scale.
+That supports prioritizing CPU-side transformation and submission.
+It leaves GPU time and memory bandwidth unresolved. Visual validation
+on GMA and HD4570 is still pending.
+
+### Use the measured combination on the fixed route
+
+Dev SWVP gameplay enables both optimizations outside a labelled
+standing comparison. The four arms remain selectable by the existing
+600-second suite. The previous checks of contiguous clipped draws
+covered packets already in draw order. Visibility supplies packets in
+camera order, which can interleave ranges later merged by the arena
+sort. The solid planner now sorts the full source ranges first and
+trims the ends of each contiguous run. It retains gaps inside a run,
+keeps each surviving range inside its original bounds and cannot add a
+draw through trimming. Validate the changed planner on movement and
+compare the sum of `terrain solid` and `terrain indices/cold draws`,
+since the sort now belongs to the planning span.
+
+The first EVENT `GetData` check now comes directly after the successful
+Present for that sample. A pending result can be read again when the
+next frame begins. `poll_frames=0` identifies the same-frame check.
+The earlier check uses flags zero and starts no wait loop. Use the
+recorded completion-age interval as a bound on queue completion.
+
+On both the earlier ABCD package and the new dev package, use
+`/profiler start client gpu` for the fixed serverwalk and
+`/profiler stop client` after the same roughly 300-second route. The
+suffix selects an ordinary client capture. The earlier package
+supplies the A geometry and state reference outside its standing
+suite. The new package uses the adjusted D. Keep the same warmup,
+start, turns, settings and world where possible. Save the client
+capture and matching `latest.log` for each package. Compare complete
+route segments, solid work, p95/p99 and cold section costs.

@@ -642,7 +642,7 @@ impl Renderer {
                     layout: self.layout,
                     clusters: self
                         .device
-                        .benchmark_active(dx::benchmark::Trial::SolidClusters),
+                        .trial_enabled(dx::benchmark::Trial::SolidClusters),
                 });
             #[cfg(not(feature = "legacy-d3d9-dev"))]
             let clip = None;
@@ -665,6 +665,7 @@ impl Renderer {
             let mut decoded = std::mem::take(&mut self.decode_scratch);
             let before = self.device.draws;
             if !self.solid_reused {
+                let has_cluster_trims = self.solid_cache.trimmed_vertices() != 0;
                 self.solid_batches
                     .retain(|(_, _, id, _), _| self.arenas.contains_key(id));
                 for batch in self.solid_batches.values_mut() {
@@ -749,7 +750,7 @@ impl Renderer {
                                         ))
                                         .or_default();
                                     let gpu_first = slice.first + first - slice.source.start;
-                                    if clip.is_some_and(|clip| clip.clusters) {
+                                    if has_cluster_trims {
                                         let full = gpu_first..gpu_first + end - first;
                                         let keep = trim.map_or_else(
                                             || full.clone(),
@@ -773,13 +774,16 @@ impl Renderer {
                         }
                     }
                 }
+                for batch in self.solid_batches.values_mut() {
+                    batch.finish_plan();
+                }
             }
             self.decode_scratch = decoded;
             self.stamp("terrain indices/cold draws", &mut clock);
             #[cfg(feature = "legacy-d3d9-dev")]
             let dense = self
                 .device
-                .benchmark_active(dx::benchmark::Trial::DenseIndices);
+                .trial_enabled(dx::benchmark::Trial::DenseIndices);
             #[cfg(not(feature = "legacy-d3d9-dev"))]
             let dense = false;
             let index_budget = (self.mesh_budget / 16).min(4 << 20);
@@ -1267,7 +1271,7 @@ impl Renderer {
             && self.entity_staging
             && self
                 .device
-                .benchmark_active(dx::benchmark::Trial::GlintStaging);
+                .trial_enabled(dx::benchmark::Trial::GlintStaging);
         #[cfg(not(feature = "legacy-d3d9-dev"))]
         let stage_glint = false;
         self.draw_glints(&glints, frame.pvp.glint, stage_glint)?;

@@ -46,14 +46,19 @@ cluster clipping, C adds base-texture state reuse, and D uses both additions.
 Repeat three times and attach the .hzperf files and the matching latest.log.
 See docs/legacy-d3d9-perf.md for the schedule and counter labels.
 
+For the fixed server route on dev SWVP use /profiler start client gpu. That
+records the client with its default cluster clipping and base-texture reuse.
+Use /profiler stop client at the end of the route. The gpu suffix selects
+a regular capture and the DX9 EVENT measurements travel in latest.log.
 On hardware VP and ordinary packages, record the fixed route for 60-90 seconds
 and finish with /profiler stop client. Send the local .hzperf and latest.log.
-Use the bare command for this comparison. The .hzperf phase times include
-driver waits. Process CPU/RSS use the existing Windows probes.
+The .hzperf phase times include driver waits. Process CPU/RSS use the existing
+Windows probes.
 Dev packages (build-info.txt: dev_diagnostics=1) log DX9 stats by default, including
 5-second per-pass submission totals and sampled render-thread CPU durations.
 The dev log reports DX9 timestamps where the HAL supports them. On EVENT-only
-drivers it reports completion polls. HORIZON_D3D9_LOG_STATS=0 disables diagnostics
+drivers it starts completion polls immediately after Present.
+HORIZON_D3D9_LOG_STATS=0 disables diagnostics
 when explicitly needed. Keep diagnostics on for renderer experiments;
 the first diagnostic-overhead pair has already been collected.
 Ordinary packages keep periodic logs off; HORIZON_D3D9_LOG_STATS=1 enables their

@@ -11,7 +11,7 @@ use windows::{
 
 const SAMPLE_PERIOD: u64 = 64;
 const RING_SIZE: usize = 3;
-const POLL_DELAY: u64 = 2;
+const TIMESTAMP_POLL_DELAY: u64 = 2;
 const MAX_PENDING: u64 = SAMPLE_PERIOD * RING_SIZE as u64;
 
 #[derive(Default)]
@@ -170,6 +170,47 @@ fn read<T: Default>(query: &IDirect3DQuery9) -> windows::core::Result<Option<T>>
     }
 }
 
+impl Slot {
+    fn poll(&mut self, frame: u64) {
+        let Some(sample) = &mut self.pending else {
+            return;
+        };
+        let delay = frame - sample.frame;
+        let poll_start = sample.submitted.elapsed().as_micros();
+        let bench_slot = sample.bench.map(|slot| slot.number);
+        let arm = sample.bench.map(|slot| slot.arm());
+        let measuring = sample.bench.is_some_and(|slot| slot.measuring);
+        match self.queries.read(self.solid_marks == 2) {
+            Ok(Some(Sample::Timestamp { frame_ms, solid_ms })) => {
+                log::info!(
+                    "D3D9 gpu_sample frame={} frame_ms={frame_ms:.6} solid_ms={solid_ms:?} bench_slot={bench_slot:?} arm={arm:?} measuring={measuring}",
+                    sample.frame
+                );
+            }
+            Ok(Some(Sample::Completion)) => {
+                let age = sample.submitted.elapsed().as_micros();
+                log::info!(
+                    "D3D9 gpu_event frame={} completion_upper_us={age} last_pending_us={:?} poll_frames={delay} bench_slot={bench_slot:?} arm={arm:?} measuring={measuring}",
+                    sample.frame,
+                    sample.last_pending_us
+                );
+            }
+            Ok(Some(Sample::Disjoint)) => {
+                log::debug!("D3D9 gpu_sample frame={} discarded=disjoint", sample.frame);
+            }
+            Ok(None) if delay < MAX_PENDING => {
+                sample.last_pending_us = Some(poll_start);
+                return;
+            }
+            Ok(None) => log::warn!("D3D9 gpu_sample frame={} discarded=timeout", sample.frame),
+            Err(error) => {
+                log::warn!("D3D9 gpu_sample frame={} discarded={error}", sample.frame)
+            }
+        }
+        self.pending = None;
+    }
+}
+
 impl Probe {
     pub(super) fn begin(&mut self, device: &IDirect3DDevice9) {
         if !self.initialized {
@@ -217,45 +258,14 @@ impl Probe {
         self.frame += 1;
         let frame = self.frame;
         for slot in &mut self.slots {
-            let Some(sample) = &mut slot.pending else {
+            let Some(sample) = &slot.pending else {
                 continue;
             };
-            let delay = frame - sample.frame;
-            if delay < POLL_DELAY {
-                continue;
+            if matches!(slot.queries, Queries::Event(_))
+                || frame - sample.frame >= TIMESTAMP_POLL_DELAY
+            {
+                slot.poll(frame);
             }
-            let poll_start = sample.submitted.elapsed().as_micros();
-            let bench_slot = sample.bench.map(|slot| slot.number);
-            let arm = sample.bench.map(|slot| slot.arm());
-            let measuring = sample.bench.is_some_and(|slot| slot.measuring);
-            match slot.queries.read(slot.solid_marks == 2) {
-                Ok(Some(Sample::Timestamp { frame_ms, solid_ms })) => {
-                    log::info!(
-                        "D3D9 gpu_sample frame={} frame_ms={frame_ms:.6} solid_ms={solid_ms:?} bench_slot={bench_slot:?} arm={arm:?} measuring={measuring}",
-                        sample.frame
-                    );
-                }
-                Ok(Some(Sample::Completion)) => {
-                    let age = sample.submitted.elapsed().as_micros();
-                    log::info!(
-                        "D3D9 gpu_event frame={} completion_upper_us={age} last_pending_us={:?} poll_frames={delay} bench_slot={bench_slot:?} arm={arm:?} measuring={measuring}",
-                        sample.frame,
-                        sample.last_pending_us
-                    );
-                }
-                Ok(Some(Sample::Disjoint)) => {
-                    log::debug!("D3D9 gpu_sample frame={} discarded=disjoint", sample.frame);
-                }
-                Ok(None) if delay < MAX_PENDING => {
-                    sample.last_pending_us = Some(poll_start);
-                    continue;
-                }
-                Ok(None) => log::warn!("D3D9 gpu_sample frame={} discarded=timeout", sample.frame),
-                Err(error) => {
-                    log::warn!("D3D9 gpu_sample frame={} discarded={error}", sample.frame)
-                }
-            }
-            slot.pending = None;
         }
         if frame.is_multiple_of(SAMPLE_PERIOD)
             && let Some(index) = self.slots.iter().position(|slot| slot.pending.is_none())
@@ -268,6 +278,23 @@ impl Probe {
                 }
                 Err(error) => log::warn!("D3D9 gpu query start failed ({error})"),
             }
+        }
+    }
+
+    pub(super) fn after_present(&mut self) {
+        if !self.frame.is_multiple_of(SAMPLE_PERIOD) {
+            return;
+        }
+        // The first EVENT poll follows the matching successful Present.
+        // A pending result can be polled again when the next draw frame begins.
+        if let Some(slot) = self.slots.iter_mut().find(|slot| {
+            matches!(slot.queries, Queries::Event(_))
+                && slot
+                    .pending
+                    .as_ref()
+                    .is_some_and(|sample| sample.frame == self.frame)
+        }) {
+            slot.poll(self.frame);
         }
     }
 

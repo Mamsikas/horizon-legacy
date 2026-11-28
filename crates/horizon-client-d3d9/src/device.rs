@@ -424,8 +424,8 @@ impl Device {
         self.inner.profile.log();
     }
     #[cfg(feature = "dev-diagnostics")]
-    pub fn benchmark_active(&self, trial: crate::benchmark::Trial) -> bool {
-        self.benchmark_slot.is_some_and(|slot| slot.active(trial))
+    pub fn trial_enabled(&self, trial: crate::benchmark::Trial) -> bool {
+        trial.enabled(self.caps.software_vertices, self.benchmark_slot)
     }
     #[cfg(feature = "dev-diagnostics")]
     pub fn set_benchmark_slot(&mut self, slot: Option<crate::benchmark::Slot>) -> bool {
@@ -435,7 +435,7 @@ impl Device {
         // Close the preceding counter window before changing its label.
         self.log_submit_profile();
         self.benchmark_slot = slot;
-        if !self.benchmark_active(crate::benchmark::Trial::SamplerReuse) {
+        if !self.trial_enabled(crate::benchmark::Trial::SamplerReuse) {
             self.sampler_history_valid = false;
         }
         true
@@ -1301,7 +1301,7 @@ impl Device {
     pub fn finish(&mut self) -> Result<bool> {
         #[cfg(feature = "dev-diagnostics")]
         let remember_samplers =
-            self.scene && self.benchmark_active(crate::benchmark::Trial::SamplerReuse);
+            self.scene && self.trial_enabled(crate::benchmark::Trial::SamplerReuse);
         if self.scene {
             // SAFETY: closes the matching BeginScene, including after a drawing error.
             let ended = unsafe { self.inner.device.EndScene() };
@@ -1338,6 +1338,9 @@ impl Device {
                 #[cfg(feature = "dev-diagnostics")]
                 {
                     self.sampler_history_valid = remember_samplers;
+                    if let Some(probe) = &mut self.gpu_probe {
+                        probe.after_present();
+                    }
                 }
                 Ok(true)
             }
@@ -2019,7 +2022,7 @@ impl Device {
         // All remaining settings for an ordinary unclipped draw depend on
         // DrawState, the auxiliary texture, and the current device settings.
         #[cfg(feature = "dev-diagnostics")]
-        if self.benchmark_active(crate::benchmark::Trial::BaseTextureReuse)
+        if self.trial_enabled(crate::benchmark::Trial::BaseTextureReuse)
             && state.scissor.is_none()
             && state.hurt_overlay.is_none()
             && state.glint == 0

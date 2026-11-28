@@ -9,6 +9,16 @@ pub enum Trial {
     SolidClusters,
 }
 
+impl Trial {
+    pub(super) fn enabled(self, software_vertices: bool, slot: Option<Slot>) -> bool {
+        software_vertices
+            && slot.map_or_else(
+                || matches!(self, Self::SolidClusters | Self::BaseTextureReuse),
+                |slot| slot.active(self),
+            )
+    }
+}
+
 // Each arm appears once in every position, and every ordered pair of
 // different arms occurs once within a block.
 const ORDER: [[u8; 4]; 4] = [[0, 1, 3, 2], [1, 2, 0, 3], [2, 3, 1, 0], [3, 0, 2, 1]];
@@ -73,9 +83,12 @@ mod tests {
             if slot.measuring {
                 measured[usize::from(slot.arm)] += 1;
             }
-            assert_eq!(slot.active(Trial::SolidClusters), matches!(slot.arm, 1 | 3));
             assert_eq!(
-                slot.active(Trial::BaseTextureReuse),
+                Trial::SolidClusters.enabled(true, Some(slot)),
+                matches!(slot.arm, 1 | 3)
+            );
+            assert_eq!(
+                Trial::BaseTextureReuse.enabled(true, Some(slot)),
                 matches!(slot.arm, 2 | 3)
             );
         }
@@ -92,5 +105,22 @@ mod tests {
             }
         }
         assert!(Slot::at(SECONDS).is_none());
+    }
+
+    #[test]
+    fn unlabelled_software_vertex_draws_use_both_measured_optimizations() {
+        assert!(Trial::SolidClusters.enabled(true, None));
+        assert!(Trial::BaseTextureReuse.enabled(true, None));
+        for trial in [
+            Trial::DenseIndices,
+            Trial::SamplerReuse,
+            Trial::GlintStaging,
+        ] {
+            assert!(!trial.enabled(true, None));
+        }
+        for trial in [Trial::SolidClusters, Trial::BaseTextureReuse] {
+            assert!(!trial.enabled(false, None));
+            assert!(!trial.enabled(false, Slot::at(75)));
+        }
     }
 }

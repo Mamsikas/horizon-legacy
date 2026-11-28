@@ -148,11 +148,11 @@ impl Renderer {
     #[cfg(feature = "legacy-d3d9-dev")]
     pub fn set_benchmark_slot(&mut self, slot: Option<dx::benchmark::Slot>) -> bool {
         use dx::benchmark::Trial::DenseIndices;
-        let was_dense = self.device.benchmark_active(DenseIndices);
+        let was_dense = self.device.trial_enabled(DenseIndices);
         if !self.device.set_benchmark_slot(slot) {
             return false;
         }
-        if was_dense && !self.device.benchmark_active(DenseIndices) {
+        if was_dense && !self.device.trial_enabled(DenseIndices) {
             for batch in self.solid_batches.values_mut() {
                 batch.release_indices();
             }
@@ -287,6 +287,12 @@ impl Renderer {
             );
             log::info!("D3D9 static entity cache budget_bytes={static_entity_budget}");
         }
+        #[cfg(feature = "legacy-d3d9-dev")]
+        log::info!(
+            "D3D9 SWVP defaults solid_clusters={} base_texture_reuse={}",
+            device.trial_enabled(dx::benchmark::Trial::SolidClusters),
+            device.trial_enabled(dx::benchmark::Trial::BaseTextureReuse),
+        );
         Ok(Self {
             device,
             sprites,
