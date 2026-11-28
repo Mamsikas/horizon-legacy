@@ -2339,3 +2339,48 @@ include `latest.log`. Use `base_texture_only`, cache probe counts
 and actual texture binds to validate the mechanism. Compare pass
 wall times and frame distributions. Native smoke on HD4570 and
 native GMA visual checks remain open.
+
+### GMA texture-only state reuse result
+
+`J.log` identifies clean J at `2499512de794dc242c91334b59b3fac565356315`.
+It matches both profiler starts on November 26 (UTC+7), at 00:40:59
+and 00:44:54. H and J used the same x64 toolchain, Chell 1.8b GMA3150
+HAL SWVP, FFP32, PS2, 1024×600 RGB565 and recorded options.
+
+| GMA metric | H | J |
+| --- | ---: | ---: |
+| Walk seconds / frames | 298.846 / 4510 | 300.341 / 4584 |
+| Walk FPS | 15.091 | 15.263 |
+| Walk DX9 wall, ms/frame | 48.930 | 48.525 |
+| Walk solid / translucent wall, ms/frame | 28.726 / 3.295 | 28.570 / 3.224 |
+| Walk entity / GUI wall, ms/frame | 8.386 / 4.482 | 8.324 / 4.372 |
+| Walk solid draws / DIP NumVertices per frame | 159.54 / 86,451 | 160.86 / 86,483 |
+| Walk GUI render / sampler / TSS probes per frame | 364 / 397 / 554 | 154 / 168 / 248 |
+| Walk GUI native SetTexture/frame | 36.10 | 36.28 |
+| Walk frame p50 / p95 / p99, ms | 64.56 / 98.69 / 111.36 | 63.57 / 98.39 / 112.16 |
+| Walk slowest 1% mean, ms | 140.93 | 141.87 |
+| Standing seconds / frames | 180.293 / 7208 | 180.467 / 7137 |
+| Standing FPS | 39.979 | 39.547 |
+| Standing DX9 wall, ms/frame | 20.592 | 20.863 |
+| Standing solid / translucent wall, ms/frame | 9.292 / 7.569 | 9.380 / 7.739 |
+| Standing translucent render / sampler / TSS probes per frame | 253 / 276 / 368 | 11 / 12 / 16 |
+| Standing translucent draws / DIP NumVertices / SetTexture per frame | 26 / 20,084 / 23 | 26 / 20,084 / 23 |
+| Standing p50 / p95 / p99 buckets, ms | [20,25) / [30,40) / [30,40) | [20,25) / [30,40) / [30,40) |
+| Standing slowest 1% mean, ms | 47.34 | 46.33 |
+
+J takes its shortcut 22 times per standing frame in translucent,
+13.13 per walk frame in translucent and 19.28 in walk GUI. On the
+first 295 s of walk, dropping any one 15 s segment gives a DX9
+delta of −0.68 to −0.05 ms/frame. GUI improves in 17 of 19 blocks,
+by 0.11 ms/frame overall. Shared prepare also falls 0.18 ms/frame.
+On the common 180 s of standing, dropping any 15 s segment gives
++0.16 to +0.39 ms/frame in DX9. The opposite directions and mostly
+identical native rendering workload leave the performance effect
+inconclusive. Restore H as the reference for paired retesting.
+
+Complete windows cover 7,009 H and 6,926 J standing frames and
+4,423 H and 4,542 J walk frames. They have zero COM failures or
+aborted frames. The render thread executes for 94.1% of wall time
+on J walk. Its 71 solid samples have 1,856 ms of CPU time in
+2,024 ms of wall time, with coarse Win7 accounting. The recordings
+do not supply GPU timestamps or a split between SWVP and driver CPU.
