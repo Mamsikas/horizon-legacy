@@ -2447,3 +2447,27 @@ each timing, plus native errors and visuals. Zero activations leave
 that trial untested in the scene. Inconsistent differences stay open
 for retest. Stage wall timings retain driver work and possible GPU
 waits.
+
+### Windows 7 packages for the standing comparison
+
+[Run 46122344726](https://github.com/Mamsikas/horizon-legacy/actions/runs/46122344726)
+built both packages at `4c6063ca8fee344f8dd7838e4cbd82520a572d11`
+on `dx9-dev`. The renderer suite is in
+`154c65e7d6c13a14e1ac63d6a1af50eb7dcd4e15`. Both jobs passed
+the Win7 executable import audit, 15 import-policy tests per
+architecture and CPU resource and embedded SM2 validation.
+
+| Package | Artifact | GitHub ZIP SHA256 |
+| --- | --- | --- |
+| x64 | [15254388463](https://github.com/Mamsikas/horizon-legacy/actions/runs/46122344726/artifacts/15254388463) | `62ad97a272e594152e64d62ffbe84673452937ecbb32b6b89543b67dec255eaa` |
+| x86 | [15255505615](https://github.com/Mamsikas/horizon-legacy/actions/runs/46122344726/artifacts/15255505615) | `028daf23e9dfeb019f8add235adc5222696494eb92f35321a6e810c792e2b867` |
+
+Local Win7 client checks passed on x64 and x86 in both dev and
+ordinary configurations. The DX9 host tests passed 38 in dev and
+35 in ordinary mode. CPU checks covered the exact interval balance,
+old-label log closure and sampler state at arm transitions, dense
+indices and budgets, padding at face-clip edges, staged quad limits,
+and embedded fog, hurt and VS2 contracts. A synthetic log checked
+classification of complete native windows and warmup exclusion.
+Native standing timing and visual checks on GMA3150, along with
+HD4570 and native device-lifecycle smoke, await hardware.
