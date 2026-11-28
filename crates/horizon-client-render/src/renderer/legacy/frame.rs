@@ -632,16 +632,18 @@ impl Renderer {
                 .map(|s| s.vertices.len() as u64 * size_of::<dx::Vertex>() as u64)
                 .sum();
             #[cfg(feature = "legacy-d3d9-dev")]
-            let clip = (self.diagnostics && self.device.caps.software_vertices).then_some(
-                solid_cache::Clip {
+            let clip = self
+                .device
+                .caps
+                .software_vertices
+                .then_some(solid_cache::Clip {
                     frustum: &frustum,
                     camera: frame.camera,
                     layout: self.layout,
                     clusters: self
                         .device
                         .benchmark_active(dx::benchmark::Trial::SolidClusters),
-                },
-            );
+                });
             #[cfg(not(feature = "legacy-d3d9-dev"))]
             let clip = None;
             self.solid_reused = self.solid_cache.update(
@@ -653,7 +655,7 @@ impl Renderer {
                 clip,
             );
             #[cfg(feature = "legacy-d3d9-dev")]
-            if clip.is_some() {
+            if self.diagnostics && clip.is_some() {
                 self.device.profile_solid_clipping(
                     self.solid_cache.culled_buckets(),
                     self.solid_cache.trimmed_vertices(),

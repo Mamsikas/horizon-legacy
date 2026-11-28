@@ -40,22 +40,24 @@ Profile through game chat, with no --control or other launcher argument:
   /profiler start client
 For the dev SWVP standing comparison, warm the terrain in the demanding server
 scene before starting. Hold the same position, camera and settings until the
-capture-saved message in chat, about 600 seconds later. The build alternates
-each candidate with the reference and saves the capture automatically. Attach
-the .hzperf and latest.log from this session. See docs/legacy-d3d9-perf.md for
-the trial schedule and the meaning of the log labels.
+capture-saved message in chat, about 600 seconds later. The client runs four
+arms and saves the capture automatically. A uses face bounds, B adds solid
+cluster clipping, C adds base-texture state reuse, and D uses both additions.
+Repeat three times and attach the .hzperf files and the matching latest.log.
+See docs/legacy-d3d9-perf.md for the schedule and counter labels.
 
 On hardware VP and ordinary packages, record the fixed route for 60-90 seconds
 and finish with /profiler stop client. Send the local .hzperf and latest.log.
-Use no gpu/gpu_detail suffix: DX9 has no GPU pass timestamps. Detailed timeline
-can stop at its configured cap; ordinary longer phase/health captures still help.
-Phases include driver waits. Process CPU/RSS use upstream Windows probes.
+Use the bare command for this comparison. The .hzperf phase times include
+driver waits. Process CPU/RSS use the existing Windows probes.
 Dev packages (build-info.txt: dev_diagnostics=1) log DX9 stats by default, including
-5-second per-pass submission totals. HORIZON_D3D9_LOG_STATS=0 disables diagnostics
+5-second per-pass submission totals and sampled render-thread CPU durations.
+The dev log reports DX9 timestamps where the HAL supports them. On EVENT-only
+drivers it reports completion polls. HORIZON_D3D9_LOG_STATS=0 disables diagnostics
 when explicitly needed. Keep diagnostics on for renderer experiments;
 the first diagnostic-overhead pair has already been collected.
 Ordinary packages keep periodic logs off; HORIZON_D3D9_LOG_STATS=1 enables their
-existing coarse stats. GPU timings are not instrumented by the P0a counters.
+existing coarse stats.
 
 The dev software VP package combines the two measured changes. Dynamic entity
 base draws share a transient upload per eligible early or late phase. Identical

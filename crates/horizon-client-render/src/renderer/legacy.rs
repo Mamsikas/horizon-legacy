@@ -255,7 +255,7 @@ impl Renderer {
         };
         let honey_layers = sprite_layers.and_then(|layers| sprites.honey_layers(layers));
         let diagnostics = dx::log_stats_enabled();
-        let cull_solid = dx::development_build() && device.caps.software_vertices && diagnostics;
+        let cull_solid = dx::development_build() && device.caps.software_vertices;
         let compactor = mesh::Compactor::new(
             sprites.layout.clone(),
             device.compact_vertices(),
